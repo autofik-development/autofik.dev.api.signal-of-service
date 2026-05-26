@@ -16,6 +16,7 @@ import org.locationtech.jts.geom.Point;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
+@ToString(exclude = {"user", "vehicle", "bids", "statusHistory", "feedback"})
 public class SosRequest {
 
     @Id
