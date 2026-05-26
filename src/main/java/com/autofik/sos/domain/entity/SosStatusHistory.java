@@ -61,4 +61,20 @@ public class SosStatusHistory {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "sos_id", nullable = false)
     private SosRequest sosRequest;
+
+    @Override
+    public String toString() {
+        return "SosStatusHistory{" +
+                "id=" + id +
+                ", changeAt=" + changeAt +
+                ", fromStatus=" + fromStatus +
+                ", toStatus=" + toStatus +
+                ", proposedAt=" + proposedAt +
+                ", approveAt=" + approveAt +
+                ", approvedStatus=" + approvedStatus +
+                ", proposedById=" + (proposedBy != null ? proposedBy.getId() : null) +
+                ", approvedById=" + (approvedBy != null ? approvedBy.getId() : null) +
+                ", sosRequestId=" + (sosRequest != null ? sosRequest.getId() : null) +
+                '}';
+    }
 }
