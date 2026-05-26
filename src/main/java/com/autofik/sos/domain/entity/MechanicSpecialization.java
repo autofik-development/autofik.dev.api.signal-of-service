@@ -9,7 +9,6 @@ import lombok.*;
 @IdClass(MechanicSpecializationId.class)
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
-@Builder
 public class MechanicSpecialization {
 
     @Id
