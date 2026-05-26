@@ -15,6 +15,7 @@ import java.util.UUID;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
+@ToString
 public class Feedback {
 
     @Id
@@ -38,14 +39,17 @@ public class Feedback {
     }
 
     // Relations
+    @ToString.Exclude
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    @ToString.Exclude
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "sos_id", nullable = false, unique = true)
     private SosRequest sosRequest;
 
+    @ToString.Exclude
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "mechanic_id", nullable = false)
     private Mechanic mechanic;
