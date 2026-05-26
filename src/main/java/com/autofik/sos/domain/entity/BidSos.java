@@ -14,6 +14,7 @@ import java.util.UUID;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
+@ToString(exclude = {"sosRequest", "mechanic"})
 public class BidSos {
 
     @Id
