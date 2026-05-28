@@ -72,9 +72,9 @@ public class SosStatusHistory {
                 ", proposedAt=" + proposedAt +
                 ", approveAt=" + approveAt +
                 ", approvedStatus=" + approvedStatus +
-                ", proposedById=" + (proposedBy != null ? proposedBy.getId() : null) +
-                ", approvedById=" + (approvedBy != null ? approvedBy.getId() : null) +
-                ", sosRequestId=" + (sosRequest != null ? sosRequest.getId() : null) +
+                ", proposedById=" + (proposedBy != null ? proposedBy.getMechanicId() : null) +
+                ", approvedById=" + (approvedBy != null ? approvedBy.getUserId() : null) +
+                ", sosRequestId=" + (sosRequest != null ? sosRequest.getSosId() : null) +
                 '}';
     }
 }
