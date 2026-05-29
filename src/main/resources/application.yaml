@@ -23,6 +23,13 @@ spring:
       properties:
         spring.json.add.type.headers: false
         enable.idempotence: true
+    consumer:
+      group-id: sos-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.autofik.sos.*"
 
 server:
   port: ${SERVER_PORT:8080}
