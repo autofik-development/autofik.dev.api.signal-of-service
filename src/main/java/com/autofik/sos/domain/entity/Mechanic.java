@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.UUID;
 
 @Entity
-@Table(name = "mechanic")
+@Table(name = "mechanic", indexes = {
+        @Index(name = "idx_mechanic_current_h3_index", columnList = "current_h3_index")
+})
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
@@ -43,8 +45,18 @@ public class Mechanic {
     @Builder.Default
     private BigDecimal ratingAvg = BigDecimal.ZERO;
 
-    @Column(columnDefinition = "geography(Point, 4326)", nullable = false)
-    private Point location;
+    @Column(name = "base_location", columnDefinition = "geography(Point, 4326)")
+    private Point baseLocation;
+
+    @Column(name = "current_location", columnDefinition = "geography(Point, 4326)")
+    private Point currentLocation;
+
+    @Column(name = "current_h3_index", length = 16)
+    private String currentH3Index;
+
+    @Column(name = "service_radius_m", nullable = false)
+    @Builder.Default
+    private Integer serviceRadiusM = 10000;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

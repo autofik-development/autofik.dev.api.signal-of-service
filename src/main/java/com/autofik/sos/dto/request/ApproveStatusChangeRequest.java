@@ -1,6 +1,6 @@
 package com.autofik.sos.dto.request;
 
-import com.autofik.sos.domain.Enum.ApprovedStatus;
+import com.autofik.sos.domain.enums.ApprovedStatus;
 import jakarta.validation.constraints.NotNull;
 
 import java.util.UUID;

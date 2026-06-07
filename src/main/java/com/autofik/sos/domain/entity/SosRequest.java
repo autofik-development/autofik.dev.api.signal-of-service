@@ -1,6 +1,6 @@
 package com.autofik.sos.domain.entity;
 
-import com.autofik.sos.domain.Enum.SosStatus;
+import com.autofik.sos.domain.enums.SosStatus;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UuidGenerator;

@@ -1,7 +1,7 @@
 package com.autofik.sos.domain.entity;
 
-import com.autofik.sos.domain.Enum.ApprovedStatus;
-import com.autofik.sos.domain.Enum.SosStatus;
+import com.autofik.sos.domain.enums.ApprovedStatus;
+import com.autofik.sos.domain.enums.SosStatus;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UuidGenerator;
@@ -73,7 +73,7 @@ public class SosStatusHistory {
                 ", approveAt=" + approveAt +
                 ", approvedStatus=" + approvedStatus +
                 ", proposedById=" + (proposedBy != null ? proposedBy.getMechanicId() : null) +
-                ", approvedById=" + (approvedBy != null ? approvedBy.getUserId() : null) +
+                ", approvedById=" + (approvedBy != null ? approvedBy.getId() : null) +
                 ", sosRequestId=" + (sosRequest != null ? sosRequest.getSosId() : null) +
                 '}';
     }

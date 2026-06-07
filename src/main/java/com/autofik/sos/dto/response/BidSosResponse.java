@@ -1,6 +1,6 @@
 package com.autofik.sos.dto.response;
 
-import com.autofik.sos.domain.Enum.BidStatus;
+import com.autofik.sos.domain.enums.BidStatus;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;

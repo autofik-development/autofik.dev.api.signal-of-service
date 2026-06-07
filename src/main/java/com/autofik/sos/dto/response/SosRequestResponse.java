@@ -1,6 +1,6 @@
 package com.autofik.sos.dto.response;
 
-import com.autofik.sos.domain.Enum.SosStatus;
+import com.autofik.sos.domain.enums.SosStatus;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
