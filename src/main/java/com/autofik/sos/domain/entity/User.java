@@ -23,7 +23,7 @@ public class User {
     @GeneratedValue
     @UuidGenerator
     @Column(name = "user_id", updatable = false, nullable = false)
-    private UUID userId;
+    private UUID id;
 
     @Column(nullable = false)
     private String name;

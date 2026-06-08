@@ -8,7 +8,6 @@ import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
-
 @Slf4j
 @Configuration
 @RequiredArgsConstructor

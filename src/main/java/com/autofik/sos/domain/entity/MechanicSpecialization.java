@@ -1,6 +1,6 @@
 package com.autofik.sos.domain.entity;
 
-import com.autofik.sos.domain.Enum.ExperienceLevel;
+import com.autofik.sos.domain.enums.ExperienceLevel;
 import jakarta.persistence.*;
 import lombok.*;
 

@@ -13,3 +13,4 @@ public interface BidSosMapper {
 
     List<BidSosResponse> toResponseList(List<BidSos> bids);
 }
+
