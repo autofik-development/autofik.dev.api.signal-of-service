@@ -8,7 +8,6 @@ import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.UserService;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,7 +19,6 @@ public class UserServiceImpl implements UserService {
 
     private final UserRepository userRepository;
     private final UserMapper userMapper;
-    private final PasswordEncoder passwordEncoder;
 
     @Override
     @Transactional
@@ -29,7 +27,6 @@ public class UserServiceImpl implements UserService {
                 .name(request.name())
                 .phone(request.phone())
                 .email(request.email())
-                .hashPassword(passwordEncoder.encode(request.password()))
                 .build();
         return userMapper.toResponse(userRepository.save(user));
     }

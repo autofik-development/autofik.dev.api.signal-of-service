@@ -14,7 +14,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -30,7 +29,6 @@ class UserServiceImplTest {
 
     @Mock UserRepository userRepository;
     @Mock UserMapper userMapper;
-    @Mock PasswordEncoder passwordEncoder;
 
     @InjectMocks UserServiceImpl userService;
 
@@ -44,30 +42,13 @@ class UserServiceImplTest {
                 .id(userId)
                 .name("Alice")
                 .email("alice@example.com")
-                .hashPassword("hashed")
                 .build();
         userResponse = new UserResponse(userId, "Alice", null, "alice@example.com", null);
     }
 
     @Test
-    void create_encodesPasswordBeforeSaving() {
-        CreateUserRequest request = new CreateUserRequest("Alice", null, "alice@example.com", "plain");
-        when(passwordEncoder.encode("plain")).thenReturn("hashed");
-        when(userRepository.save(any(User.class))).thenReturn(user);
-        when(userMapper.toResponse(user)).thenReturn(userResponse);
-
-        UserResponse result = userService.create(request);
-
-        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
-        verify(userRepository).save(captor.capture());
-        assertThat(captor.getValue().getHashPassword()).isEqualTo("hashed");
-        assertThat(result).isEqualTo(userResponse);
-    }
-
-    @Test
     void create_setsAllFieldsFromRequest() {
-        CreateUserRequest request = new CreateUserRequest("Alice", "0812345678", "alice@example.com", "plain");
-        when(passwordEncoder.encode("plain")).thenReturn("hashed");
+        CreateUserRequest request = new CreateUserRequest("Alice", "0812345678", "alice@example.com");
         when(userRepository.save(any(User.class))).thenReturn(user);
         when(userMapper.toResponse(user)).thenReturn(userResponse);
 
@@ -79,6 +60,15 @@ class UserServiceImplTest {
         assertThat(saved.getName()).isEqualTo("Alice");
         assertThat(saved.getPhone()).isEqualTo("0812345678");
         assertThat(saved.getEmail()).isEqualTo("alice@example.com");
+    }
+
+    @Test
+    void create_returnsMapperResponse() {
+        CreateUserRequest request = new CreateUserRequest("Alice", null, "alice@example.com");
+        when(userRepository.save(any(User.class))).thenReturn(user);
+        when(userMapper.toResponse(user)).thenReturn(userResponse);
+
+        assertThat(userService.create(request)).isEqualTo(userResponse);
     }
 
     @Test

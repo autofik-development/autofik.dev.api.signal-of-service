@@ -17,7 +17,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -39,7 +38,6 @@ class MechanicServiceImplTest {
 
     @Mock MechanicRepository mechanicRepository;
     @Mock MechanicMapper mechanicMapper;
-    @Mock PasswordEncoder passwordEncoder;
 
     @InjectMocks MechanicServiceImpl mechanicService;
 
@@ -58,9 +56,8 @@ class MechanicServiceImplTest {
     // ── create ────────────────────────────────────────────────────────────────
 
     @Test
-    void create_encodesPasswordSetsH3IndexAndLocations() {
-        CreateMechanicRequest request = new CreateMechanicRequest("Bob", "081", "bob@fix.com", "plain", LAT, LNG);
-        when(passwordEncoder.encode("plain")).thenReturn("hashed");
+    void create_setsH3IndexAndLocations() {
+        CreateMechanicRequest request = new CreateMechanicRequest("Bob", "081", "bob@fix.com", LAT, LNG);
         when(mechanicRepository.save(any(Mechanic.class))).thenReturn(mechanic);
         when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
 
@@ -69,7 +66,6 @@ class MechanicServiceImplTest {
         ArgumentCaptor<Mechanic> captor = ArgumentCaptor.forClass(Mechanic.class);
         verify(mechanicRepository).save(captor.capture());
         Mechanic saved = captor.getValue();
-        assertThat(saved.getHashPassword()).isEqualTo("hashed");
         assertThat(saved.getCurrentH3Index()).isNotBlank();
         assertThat(saved.getCurrentLocation()).isNotNull();
         assertThat(saved.getBaseLocation()).isNotNull();

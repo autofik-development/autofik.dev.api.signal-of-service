@@ -12,7 +12,6 @@ import lombok.RequiredArgsConstructor;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.PrecisionModel;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,7 +38,6 @@ public class MechanicServiceImpl implements MechanicService {
 
     private final MechanicRepository mechanicRepository;
     private final MechanicMapper mechanicMapper;
-    private final PasswordEncoder passwordEncoder;
 
     @Override
     @Transactional
@@ -49,7 +47,6 @@ public class MechanicServiceImpl implements MechanicService {
                 .name(request.name())
                 .phone(request.phone())
                 .email(request.email())
-                .hashPassword(passwordEncoder.encode(request.password()))
                 .baseLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
                 .currentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
                 .currentH3Index(h3Index)

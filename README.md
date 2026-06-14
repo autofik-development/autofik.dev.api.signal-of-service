@@ -210,5 +210,5 @@ The app starts on `http://localhost:8080` (configurable via `SERVER_PORT`).
 | REST controllers | In progress |
 | Kafka producers/consumers | Pending |
 | WebSocket broadcasts | Pending |
-| JWT authentication | Out of scope — handled by SSO team |
+| JWT validation | Pending — token issued by SSO team, this service validates only |
 
