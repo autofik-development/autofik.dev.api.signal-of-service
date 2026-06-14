@@ -17,5 +17,5 @@ public interface SosService {
     List<SosRequestResponse> getByStatus(SosStatus status);
     SosStatusHistoryResponse proposeStatusChange(ProposeStatusChangeRequest request);
     SosRequestResponse approveStatusChange(ApproveStatusChangeRequest request);
-    SosRequestResponse cancel(UUID sosId, UUID userId);
+    SosRequestResponse cancel(UUID sosId);
 }
