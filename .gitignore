@@ -42,3 +42,14 @@ graphify-out/
 SOS_System_Updated_v2.md
 PLAN.md
 CLAUDE.md
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### Logs ###
+*.log
+logs/
+
+### Docker override ###
+docker-compose.override.yml
