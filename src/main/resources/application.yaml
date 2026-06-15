@@ -12,9 +12,10 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: false
-    database-platform: org.hibernate.dialect.PostgreSQLDialect
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    admin:
+      fail-fast: false
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
@@ -32,4 +33,4 @@ spring:
         spring.json.trusted.packages: "com.autofik.sos.*"
 
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${SERVER_PORT:28080}
