@@ -16,4 +16,6 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
     List<BidSos> findByMechanicMechanicId(UUID mechanicId);
 
     List<BidSos> findBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
+
+    boolean existsBySosRequestSosIdAndMechanicMechanicId(UUID sosId, UUID mechanicId);
 }

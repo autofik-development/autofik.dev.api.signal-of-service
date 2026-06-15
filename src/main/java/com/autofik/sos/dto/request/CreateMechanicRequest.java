@@ -8,7 +8,6 @@ public record CreateMechanicRequest(
         @NotBlank String name,
         @NotBlank String phone,
         @NotBlank @Email String email,
-        @NotBlank String password,
         @NotNull Double latitude,
         @NotNull Double longitude
 ) {}
