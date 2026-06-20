@@ -13,6 +13,9 @@ import com.autofik.sos.mapper.SosStatusHistoryMapper;
 import com.autofik.sos.repository.*;
 import com.autofik.sos.service.impl.SosServiceImpl;
 import jakarta.persistence.EntityNotFoundException;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.PrecisionModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,8 +43,11 @@ class SosServiceImplTest {
     @Mock SosStatusHistoryRepository sosStatusHistoryRepository;
     @Mock SosMapper sosMapper;
     @Mock SosStatusHistoryMapper sosStatusHistoryMapper;
+    @Mock GoogleMapsService googleMapsService;
 
     @InjectMocks SosServiceImpl sosService;
+
+    private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
 
     private final UUID userId     = UUID.randomUUID();
     private final UUID sosId      = UUID.randomUUID();
@@ -65,7 +71,7 @@ class SosServiceImplTest {
         pendingSos = SosRequest.builder()
                 .sosId(sosId).problemType("Flat Tire").status(SosStatus.PENDING)
                 .user(user).vehicle(vehicle).build();
-        sosResponse = new SosRequestResponse(sosId, "Flat Tire", null, SosStatus.PENDING,
+        sosResponse = new SosRequestResponse(sosId, "Flat Tire", null, null, SosStatus.PENDING,
                 13.7, 100.5, null, null, null, null, null);
         historyResponse = new SosStatusHistoryResponse(historyId, SosStatus.ACCEPTED,
                 SosStatus.ON_THE_WAY, null, null, null, ApprovedStatus.PENDING_APPROVAL, null, null);
@@ -79,12 +85,13 @@ class SosServiceImplTest {
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
-        when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
+        when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+        when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
 
         SosRequestResponse result = sosService.create(request);
 
         ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
-        verify(sosRequestRepository).save(captor.capture());
+        verify(sosRequestRepository, atLeastOnce()).save(captor.capture());
         SosRequest saved = captor.getValue();
         assertThat(saved.getLocation()).isNotNull();
         assertThat(saved.getLocation().getY()).isEqualTo(13.7563);
@@ -100,6 +107,36 @@ class SosServiceImplTest {
         assertThatThrownBy(() -> sosService.create(request))
                 .isInstanceOf(EntityNotFoundException.class)
                 .hasMessageContaining(userId.toString());
+    }
+
+    @Test
+    void create_mapsReturnsAddress_setsLocationAddressAndSavesTwice() {
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
+        when(googleMapsService.reverseGeocode(13.7563, 100.5018)).thenReturn("Sukhumvit Rd, Bangkok");
+        when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+        sosService.create(request);
+
+        ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
+        verify(sosRequestRepository, times(2)).save(captor.capture());
+        assertThat(captor.getValue().getLocationAddress()).isEqualTo("Sukhumvit Rd, Bangkok");
+    }
+
+    @Test
+    void create_mapsReturnsNull_sosStillSavedWithoutAddress() {
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
+        when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+        when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+        sosService.create(request);
+
+        verify(sosRequestRepository, times(1)).save(any(SosRequest.class));
     }
 
     @Test

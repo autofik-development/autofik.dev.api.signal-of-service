@@ -12,7 +12,9 @@ import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
+import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.service.BidService;
+import com.autofik.sos.service.GoogleMapsService;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -30,6 +32,7 @@ public class BidServiceImpl implements BidService {
     private final SosRequestRepository sosRequestRepository;
     private final MechanicRepository mechanicRepository;
     private final BidSosMapper bidSosMapper;
+    private final GoogleMapsService googleMapsService;
 
     @Override
     @Transactional
@@ -48,13 +51,25 @@ public class BidServiceImpl implements BidService {
             throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
         }
 
-        BidSos bid = BidSos.builder()
+        BidSos.BidSosBuilder bidBuilder = BidSos.builder()
                 .price(request.price())
                 .note(request.note())
                 .sosRequest(sosRequest)
-                .mechanic(mechanic)
-                .build();
-        return bidSosMapper.toResponse(bidSosRepository.save(bid));
+                .mechanic(mechanic);
+
+        if (mechanic.getCurrentLocation() != null) {
+            DistanceInfo info = googleMapsService.getDistanceInfo(
+                    mechanic.getCurrentLocation(), sosRequest.getLocation());
+            if (info != null) {
+                bidBuilder
+                        .estimatedDistanceM(info.distanceMeters())
+                        .estimatedDurationS(info.durationSeconds())
+                        .estimatedDistanceText(info.distanceText())
+                        .estimatedDurationText(info.durationText());
+            }
+        }
+
+        return bidSosMapper.toResponse(bidSosRepository.save(bidBuilder.build()));
     }
 
     @Override

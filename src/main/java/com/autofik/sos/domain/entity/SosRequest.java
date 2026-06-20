@@ -39,6 +39,9 @@ public class SosRequest {
     @Column(columnDefinition = "geography(Point, 4326)", nullable = false)
     private Point location;
 
+    @Column(name = "location_address", columnDefinition = "TEXT")
+    private String locationAddress;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 

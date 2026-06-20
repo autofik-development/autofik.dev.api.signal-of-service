@@ -11,9 +11,10 @@ import java.util.List;
 public interface SosMapper {
 
     // location is a JTS Point: X = longitude, Y = latitude (WGS-84)
-    @Mapping(target = "latitude",  expression = "java(sosRequest.getLocation() != null ? sosRequest.getLocation().getY() : null)")
-    @Mapping(target = "longitude", expression = "java(sosRequest.getLocation() != null ? sosRequest.getLocation().getX() : null)")
-    @Mapping(target = "mechanic",  ignore = true)
+    @Mapping(target = "latitude",        expression = "java(sosRequest.getLocation() != null ? sosRequest.getLocation().getY() : null)")
+    @Mapping(target = "longitude",       expression = "java(sosRequest.getLocation() != null ? sosRequest.getLocation().getX() : null)")
+    @Mapping(target = "locationAddress", source = "locationAddress")
+    @Mapping(target = "mechanic",        ignore = true)
     SosRequestResponse toResponse(SosRequest sosRequest);
 
     List<SosRequestResponse> toResponseList(List<SosRequest> sosRequests);

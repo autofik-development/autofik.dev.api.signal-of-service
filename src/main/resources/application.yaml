@@ -32,5 +32,9 @@ spring:
       properties:
         spring.json.trusted.packages: "com.autofik.sos.*"
 
+google:
+  maps:
+    api-key: ${GOOGLE_MAPS_API_KEY:}
+
 server:
   port: ${SERVER_PORT:28080}

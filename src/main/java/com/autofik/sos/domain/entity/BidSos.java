@@ -40,6 +40,18 @@ public class BidSos {
     @Column(name = "responded_at")
     private LocalDateTime respondedAt;
 
+    @Column(name = "estimated_distance_m")
+    private Long estimatedDistanceM;
+
+    @Column(name = "estimated_duration_s")
+    private Long estimatedDurationS;
+
+    @Column(name = "estimated_distance_text")
+    private String estimatedDistanceText;
+
+    @Column(name = "estimated_duration_text")
+    private String estimatedDurationText;
+
     @PrePersist
     protected void onCreate() {
         bidAt = LocalDateTime.now();
