@@ -11,6 +11,10 @@ public record BidSosResponse(
         BigDecimal price,
         String note,
         BidStatus status,
+        Long estimatedDistanceM,
+        Long estimatedDurationS,
+        String estimatedDistanceText,
+        String estimatedDurationText,
         LocalDateTime bidAt,
         LocalDateTime respondedAt,
         MechanicResponse mechanic

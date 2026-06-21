@@ -9,6 +9,7 @@ public record SosRequestResponse(
         UUID sosId,
         String problemType,
         String description,
+        String locationAddress,
         SosStatus status,
         Double latitude,
         Double longitude,

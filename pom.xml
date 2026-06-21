@@ -131,6 +131,11 @@
             <artifactId>h3</artifactId>
             <version>3.7.2</version>
         </dependency>
+        <dependency>
+            <groupId>com.google.maps</groupId>
+            <artifactId>google-maps-services</artifactId>
+            <version>2.2.0</version>
+        </dependency>
     </dependencies>
 
     <build>

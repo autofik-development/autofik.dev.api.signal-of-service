@@ -14,8 +14,13 @@ import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
+import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.service.impl.BidServiceImpl;
 import jakarta.persistence.EntityNotFoundException;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.Point;
+import org.locationtech.jts.geom.PrecisionModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -27,6 +32,8 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+
+import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -41,8 +48,11 @@ class BidServiceImplTest {
     @Mock SosRequestRepository sosRequestRepository;
     @Mock MechanicRepository mechanicRepository;
     @Mock BidSosMapper bidSosMapper;
+    @Mock GoogleMapsService googleMapsService;
 
     @InjectMocks BidServiceImpl bidService;
+
+    private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
 
     private final UUID sosId      = UUID.randomUUID();
     private final UUID bidId      = UUID.randomUUID();
@@ -66,7 +76,7 @@ class BidServiceImplTest {
                 .status(SosStatus.PENDING).user(user).vehicle(vehicle).build();
         bid = BidSos.builder().bidId(bidId).price(BigDecimal.valueOf(500))
                 .sosRequest(pendingSos).mechanic(mechanic).build();
-        bidResponse = new BidSosResponse(bidId, BigDecimal.valueOf(500), null, BidStatus.PENDING, null, null, null);
+        bidResponse = new BidSosResponse(bidId, BigDecimal.valueOf(500), null, BidStatus.PENDING, null, null, null, null, null, null, null);
     }
 
     // ── create ────────────────────────────────────────────────────────────────
@@ -119,6 +129,77 @@ class BidServiceImplTest {
         assertThatThrownBy(() -> bidService.create(request))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("already submitted");
+    }
+
+    @Test
+    void create_mechanicHasCurrentLocation_enrichesBidWithDistanceInfo() {
+        Point mechanicLocation = GEO.createPoint(new Coordinate(100.50, 13.75));
+        Point sosLocation = GEO.createPoint(new Coordinate(100.55, 13.80));
+        Mechanic mechanicWithLocation = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
+                .email("bob@fix.com").hashPassword("h").isAvailable(true)
+                .currentLocation(mechanicLocation).build();
+        SosRequest sosWithLocation = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
+                .status(SosStatus.PENDING).user(user).vehicle(vehicle).location(sosLocation).build();
+
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), "On my way");
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosWithLocation));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanicWithLocation));
+        when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
+        when(googleMapsService.getDistanceInfo(mechanicLocation, sosLocation))
+                .thenReturn(new DistanceInfo(3200, 480, "3.2 km", "8 mins"));
+        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+        bidService.create(request);
+
+        ArgumentCaptor<BidSos> captor = ArgumentCaptor.forClass(BidSos.class);
+        verify(bidSosRepository).save(captor.capture());
+        BidSos saved = captor.getValue();
+        assertThat(saved.getEstimatedDistanceM()).isEqualTo(3200);
+        assertThat(saved.getEstimatedDurationS()).isEqualTo(480);
+        assertThat(saved.getEstimatedDistanceText()).isEqualTo("3.2 km");
+        assertThat(saved.getEstimatedDurationText()).isEqualTo("8 mins");
+    }
+
+    @Test
+    void create_mechanicHasCurrentLocationButMapsReturnsNull_bidStillSaved() {
+        Point mechanicLocation = GEO.createPoint(new Coordinate(100.50, 13.75));
+        Point sosLocation = GEO.createPoint(new Coordinate(100.55, 13.80));
+        Mechanic mechanicWithLocation = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
+                .email("bob@fix.com").hashPassword("h").isAvailable(true)
+                .currentLocation(mechanicLocation).build();
+        SosRequest sosWithLocation = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
+                .status(SosStatus.PENDING).user(user).vehicle(vehicle).location(sosLocation).build();
+
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), null);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosWithLocation));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanicWithLocation));
+        when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
+        when(googleMapsService.getDistanceInfo(any(), any())).thenReturn(null);
+        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+        bidService.create(request);
+
+        ArgumentCaptor<BidSos> captor = ArgumentCaptor.forClass(BidSos.class);
+        verify(bidSosRepository).save(captor.capture());
+        BidSos saved = captor.getValue();
+        assertThat(saved.getEstimatedDistanceM()).isNull();
+        assertThat(saved.getEstimatedDurationS()).isNull();
+    }
+
+    @Test
+    void create_mechanicHasNoCurrentLocation_distanceNotQueried() {
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), null);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
+        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+        bidService.create(request);
+
+        verify(googleMapsService, never()).getDistanceInfo(any(), any());
     }
 
     // ── getBySosRequest / getByMechanic ───────────────────────────────────────

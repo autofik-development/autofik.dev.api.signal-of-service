@@ -19,6 +19,7 @@ import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.repository.VehicleRepository;
+import com.autofik.sos.service.GoogleMapsService;
 import com.autofik.sos.service.SosService;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -54,6 +55,7 @@ public class SosServiceImpl implements SosService {
     private final SosStatusHistoryRepository sosStatusHistoryRepository;
     private final SosMapper sosMapper;
     private final SosStatusHistoryMapper sosStatusHistoryMapper;
+    private final GoogleMapsService googleMapsService;
 
     @Override
     @Transactional
@@ -69,7 +71,15 @@ public class SosServiceImpl implements SosService {
                 .user(user)
                 .vehicle(vehicle)
                 .build();
-        return sosMapper.toResponse(sosRequestRepository.save(sos));
+        sosRequestRepository.save(sos);
+
+        String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
+        if (address != null) {
+            sos.setLocationAddress(address);
+            sosRequestRepository.save(sos);
+        }
+
+        return sosMapper.toResponse(sos);
     }
 
     @Override
