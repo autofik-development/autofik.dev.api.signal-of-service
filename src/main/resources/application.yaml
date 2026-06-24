@@ -25,7 +25,7 @@ spring:
         spring.json.add.type.headers: false
         enable.idempotence: true
     consumer:
-      group-id: sos-service
+      group-id: sos-location-group
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
@@ -34,7 +34,15 @@ spring:
 
 google:
   maps:
-    api-key: ${GOOGLE_MAPS_API_KEY:}
+    api-key: ${GOOGLE_MAPS_API_KEY}
+    
+aws:
+  s3:
+    endpoint: ${S3_ENDPOINT}
+    access-key: ${S3_ACCESS_KEY}
+    secret-key: ${S3_SECRET_KEY}
+    region: ${S3_REGION:us-east-1}
+    bucket: ${S3_BUCKET_NAME}
 
 server:
   port: ${SERVER_PORT:28080}

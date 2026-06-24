@@ -1,5 +1,7 @@
 package com.autofik.sos.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -28,6 +30,7 @@ public class KafkaConfig {
     public static final String TOPIC_SOS_BID_CREATED            = "sos.bid.created";
     public static final String TOPIC_SOS_BID_ACCEPTED           = "sos.bid.accepted";
     public static final String TOPIC_SOS_BID_REJECTED           = "sos.bid.rejected";
+    public static final String TOPIC_SOS_BID_CANCELLED          = "sos.bid.cancelled";
     public static final String TOPIC_SOS_STATUS_UPDATED         = "sos.status.updated";
     public static final String TOPIC_SOS_DLQ                    = "sos.dlq";
     public static final String TOPIC_MECHANIC_LOCATION_UPDATED  = "mechanic.location.updated";
@@ -39,17 +42,26 @@ public class KafkaConfig {
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
 
+    // Spring Boot's auto-configured ObjectMapper (used by REST controllers) already has
+    // JavaTimeModule registered. JsonSerializer/JsonDeserializer build their own internal
+    // ObjectMapper when configured by class reference, so LocalDateTime fields on event
+    // records (e.g. SosCreatedEvent.createdAt) fail to (de)serialize unless we register
+    // the module here too.
+    private static ObjectMapper kafkaObjectMapper() {
+        return new ObjectMapper().registerModule(new JavaTimeModule());
+    }
+
     @Bean
     public ProducerFactory<String, Object> producerFactory() {
         Map<String, Object> props = new HashMap<>();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         props.put(ProducerConfig.RETRIES_CONFIG, 3);
-        props.put(JsonSerializer.ADD_TYPE_INFO_HEADERS, false);
-        return new DefaultKafkaProducerFactory<>(props);
+
+        JsonSerializer<Object> valueSerializer = new JsonSerializer<>(kafkaObjectMapper());
+        valueSerializer.setAddTypeInfo(false);
+        return new DefaultKafkaProducerFactory<>(props, new StringSerializer(), valueSerializer);
     }
 
     @Bean
@@ -75,6 +87,11 @@ public class KafkaConfig {
     @Bean
     public NewTopic sosBidRejectedTopic() {
         return TopicBuilder.name(TOPIC_SOS_BID_REJECTED).partitions(PARTITION_COUNT).replicas(REPLICATION_FACTOR).build();
+    }
+
+    @Bean
+    public NewTopic sosBidCancelledTopic() {
+        return TopicBuilder.name(TOPIC_SOS_BID_CANCELLED).partitions(PARTITION_COUNT).replicas(REPLICATION_FACTOR).build();
     }
 
     @Bean
@@ -106,10 +123,12 @@ public class KafkaConfig {
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, consumerGroupId);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
-        props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.autofik.sos.*");
-        return new DefaultKafkaConsumerFactory<>(props);
+
+        // No fixed target type here (matches the original class-reference config) — the actual
+        // type is inferred per-listener from the @KafkaListener method's parameter (e.g. MechanicLocationEvent).
+        JsonDeserializer<Object> valueDeserializer = new JsonDeserializer<>(kafkaObjectMapper());
+        valueDeserializer.addTrustedPackages("com.autofik.sos.*");
+        return new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), valueDeserializer);
     }
 
     @Bean

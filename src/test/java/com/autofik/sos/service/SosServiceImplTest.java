@@ -2,12 +2,19 @@ package com.autofik.sos.service;
 
 import com.autofik.sos.domain.entity.*;
 import com.autofik.sos.domain.enums.ApprovedStatus;
+import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
+import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import com.autofik.sos.dto.event.SosCreatedEvent;
+import com.autofik.sos.dto.event.SosNotificationEvent;
+import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
+import com.autofik.sos.kafka.producer.SosEventProducer;
+import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.mapper.SosMapper;
 import com.autofik.sos.mapper.SosStatusHistoryMapper;
 import com.autofik.sos.repository.*;
@@ -23,6 +30,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.util.List;
 import java.util.Optional;
@@ -40,10 +48,14 @@ class SosServiceImplTest {
     @Mock UserRepository userRepository;
     @Mock VehicleRepository vehicleRepository;
     @Mock MechanicRepository mechanicRepository;
+    @Mock BidSosRepository bidSosRepository;
     @Mock SosStatusHistoryRepository sosStatusHistoryRepository;
     @Mock SosMapper sosMapper;
     @Mock SosStatusHistoryMapper sosStatusHistoryMapper;
+    @Mock MechanicMapper mechanicMapper;
     @Mock GoogleMapsService googleMapsService;
+    @Mock SosEventProducer sosEventProducer;
+    @Mock SimpMessagingTemplate messagingTemplate;
 
     @InjectMocks SosServiceImpl sosService;
 
@@ -64,7 +76,7 @@ class SosServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        user = User.builder().id(userId).name("Alice").hashPassword("hash").build();
+        user = User.builder().userId(userId).name("Alice").hashPassword("hash").build();
         vehicle = Vehicle.builder().vehicleId(vehicleId).plateNumber("ABC123")
                 .brand("Toyota").model("Camry").year(2020).build();
         mechanic = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081").email("bob@fix.com").hashPassword("h").build();
@@ -97,6 +109,35 @@ class SosServiceImplTest {
         assertThat(saved.getLocation().getY()).isEqualTo(13.7563);
         assertThat(saved.getLocation().getX()).isEqualTo(100.5018);
         assertThat(result).isEqualTo(sosResponse);
+        verify(sosEventProducer).publishSosCreated(any(SosCreatedEvent.class));
+        verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
+    }
+
+    @Test
+    void create_publishesSosCreatedEventWithRequestData() {
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", "desc", 13.7563, 100.5018, vehicleId);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        // Mimics Hibernate's @UuidGenerator, which sets the generated id on the entity in place during save()
+        when(sosRequestRepository.save(any(SosRequest.class))).thenAnswer(inv -> {
+            SosRequest arg = inv.getArgument(0);
+            arg.setSosId(sosId);
+            return arg;
+        });
+        when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+        when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+        sosService.create(request);
+
+        ArgumentCaptor<SosCreatedEvent> captor = ArgumentCaptor.forClass(SosCreatedEvent.class);
+        verify(sosEventProducer).publishSosCreated(captor.capture());
+        SosCreatedEvent event = captor.getValue();
+        assertThat(event.sosId()).isEqualTo(sosId);
+        assertThat(event.userId()).isEqualTo(userId);
+        assertThat(event.vehicleId()).isEqualTo(vehicleId);
+        assertThat(event.problemType()).isEqualTo("Flat Tire");
+        assertThat(event.latitude()).isEqualTo(13.7563);
+        assertThat(event.longitude()).isEqualTo(100.5018);
     }
 
     @Test
@@ -168,12 +209,29 @@ class SosServiceImplTest {
                 .isInstanceOf(EntityNotFoundException.class);
     }
 
+    @Test
+    void getById_withAcceptedBid_resolvesMechanicFromBid() {
+        BidSos acceptedBid = BidSos.builder().bidId(UUID.randomUUID()).status(BidStatus.ACCEPTED)
+                .sosRequest(pendingSos).mechanic(mechanic).build();
+        MechanicResponse mechanicResponse = new MechanicResponse(
+                mechanicId, "Bob", "081", "bob@fix.com", true, null, null, null);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
+        when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.of(acceptedBid));
+        when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
+
+        SosRequestResponse result = sosService.getById(sosId);
+
+        assertThat(result.mechanic()).isEqualTo(mechanicResponse);
+    }
+
     // ── getByUser / getByStatus ───────────────────────────────────────────────
 
     @Test
     void getByUser_delegatesToRepositoryAndMapsResult() {
-        when(sosRequestRepository.findByUserId(userId)).thenReturn(List.of(pendingSos));
-        when(sosMapper.toResponseList(List.of(pendingSos))).thenReturn(List.of(sosResponse));
+        when(sosRequestRepository.findByUserUserId(userId)).thenReturn(List.of(pendingSos));
+        when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
         assertThat(sosService.getByUser(userId)).containsExactly(sosResponse);
     }
@@ -181,7 +239,7 @@ class SosServiceImplTest {
     @Test
     void getByStatus_delegatesToRepositoryAndMapsResult() {
         when(sosRequestRepository.findByStatus(SosStatus.PENDING)).thenReturn(List.of(pendingSos));
-        when(sosMapper.toResponseList(List.of(pendingSos))).thenReturn(List.of(sosResponse));
+        when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
         assertThat(sosService.getByStatus(SosStatus.PENDING)).containsExactly(sosResponse);
     }
@@ -261,6 +319,37 @@ class SosServiceImplTest {
 
         assertThat(acceptedSos.getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
         verify(sosRequestRepository).save(acceptedSos);
+
+        ArgumentCaptor<SosStatusUpdatedEvent> captor = ArgumentCaptor.forClass(SosStatusUpdatedEvent.class);
+        verify(sosEventProducer).publishStatusUpdated(captor.capture());
+        SosStatusUpdatedEvent event = captor.getValue();
+        assertThat(event.sosId()).isEqualTo(sosId);
+        assertThat(event.mechanicId()).isEqualTo(mechanicId);
+        assertThat(event.fromStatus()).isEqualTo(SosStatus.ACCEPTED);
+        assertThat(event.toStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+        verify(messagingTemplate).convertAndSendToUser(mechanicId.toString(), "/queue/sos-updates", event);
+        verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
+    }
+
+    @Test
+    void approveStatusChange_completed_publishesNotificationToUserAndMechanic() {
+        SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
+                .problemType("X").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
+        SosStatusHistory history = SosStatusHistory.builder()
+                .id(historyId).fromStatus(SosStatus.ARRIVED).toStatus(SosStatus.COMPLETED)
+                .proposedBy(mechanic).sosRequest(arrivedSos)
+                .approvedStatus(ApprovedStatus.PENDING_APPROVAL).build();
+        ApproveStatusChangeRequest request = new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.ACCEPTED);
+
+        when(sosStatusHistoryRepository.findById(historyId)).thenReturn(Optional.of(history));
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(sosStatusHistoryRepository.save(history)).thenReturn(history);
+        when(sosRequestRepository.save(arrivedSos)).thenReturn(arrivedSos);
+        when(sosMapper.toResponse(arrivedSos)).thenReturn(sosResponse);
+
+        sosService.approveStatusChange(request);
+
+        verify(sosEventProducer, times(2)).publishNotification(any(SosNotificationEvent.class));
     }
 
     @Test
@@ -282,6 +371,8 @@ class SosServiceImplTest {
 
         assertThat(acceptedSos.getStatus()).isEqualTo(SosStatus.ACCEPTED);
         verify(sosRequestRepository, never()).save(any());
+        verify(sosEventProducer, never()).publishStatusUpdated(any());
+        verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
     }
 
     // ── cancel ────────────────────────────────────────────────────────────────
@@ -296,6 +387,12 @@ class SosServiceImplTest {
 
         assertThat(pendingSos.getStatus()).isEqualTo(SosStatus.CANCELLED);
         verify(sosRequestRepository).save(pendingSos);
+
+        ArgumentCaptor<SosStatusUpdatedEvent> captor = ArgumentCaptor.forClass(SosStatusUpdatedEvent.class);
+        verify(sosEventProducer).publishStatusUpdated(captor.capture());
+        assertThat(captor.getValue().toStatus()).isEqualTo(SosStatus.CANCELLED);
+        assertThat(captor.getValue().fromStatus()).isEqualTo(SosStatus.PENDING);
+        verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
     }
 
     @Test

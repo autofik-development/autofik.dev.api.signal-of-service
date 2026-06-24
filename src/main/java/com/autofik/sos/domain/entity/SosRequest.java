@@ -16,7 +16,7 @@ import org.locationtech.jts.geom.Point;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
-@ToString(exclude = {"user", "vehicle", "bids", "statusHistory", "feedback"})
+@ToString(exclude = {"user", "vehicle", "bids", "statusHistory", "feedback", "media"})
 public class SosRequest {
 
     @Id
@@ -76,4 +76,7 @@ public class SosRequest {
 
     @OneToOne(mappedBy = "sosRequest", cascade = CascadeType.ALL)
     private Feedback feedback;
+
+    @OneToMany(mappedBy = "sosRequest", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<SosMedia> media;
 }

@@ -11,9 +11,9 @@ import java.util.UUID;
 @Repository
 public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
 
-    List<SosRequest> findByUserId(UUID userId);
+    List<SosRequest> findByUserUserId(UUID userId);
 
     List<SosRequest> findByStatus(SosStatus status);
 
-    List<SosRequest> findByUserIdAndStatus(UUID userId, SosStatus status);
+    List<SosRequest> findByUserUserIdAndStatus(UUID userId, SosStatus status);
 }

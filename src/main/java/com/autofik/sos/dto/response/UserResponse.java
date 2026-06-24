@@ -1,5 +1,7 @@
 package com.autofik.sos.dto.response;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
+
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -8,5 +10,5 @@ public record UserResponse(
         String name,
         String phone,
         String email,
-        LocalDateTime createdAt
+        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime createdAt
 ) {}

@@ -1,19 +1,26 @@
 package com.autofik.sos.service.impl;
 
+import com.autofik.sos.kafka.producer.SosEventProducer;
+import com.autofik.sos.dto.event.SosCreatedEvent;
+import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.SosStatusHistory;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.entity.Vehicle;
 import com.autofik.sos.domain.enums.ApprovedStatus;
+import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
+import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.mapper.SosMapper;
 import com.autofik.sos.mapper.SosStatusHistoryMapper;
+import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
@@ -28,6 +35,8 @@ import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -52,10 +61,14 @@ public class SosServiceImpl implements SosService {
     private final UserRepository userRepository;
     private final VehicleRepository vehicleRepository;
     private final MechanicRepository mechanicRepository;
+    private final BidSosRepository bidSosRepository;
     private final SosStatusHistoryRepository sosStatusHistoryRepository;
     private final SosMapper sosMapper;
     private final SosStatusHistoryMapper sosStatusHistoryMapper;
+    private final MechanicMapper mechanicMapper;
     private final GoogleMapsService googleMapsService;
+    private final SosEventProducer sosEventProducer;
+    private final SimpMessagingTemplate messagingTemplate;
 
     @Override
     @Transactional
@@ -79,25 +92,37 @@ public class SosServiceImpl implements SosService {
             sosRequestRepository.save(sos);
         }
 
-        return sosMapper.toResponse(sos);
+        sosEventProducer.publishSosCreated(new SosCreatedEvent(
+            sos.getSosId(), user.getUserId(), vehicle.getVehicleId(),
+            sos.getProblemType(), sos.getDescription(),
+            request.latitude(), request.longitude(),
+            sos.getLocationAddress(), sos.getCreatedAt()
+        ));
+        sosEventProducer.publishNotification(new SosNotificationEvent(
+                "SOS_CREATED", null, "MECHANIC", sos.getSosId(),
+                "New SOS request nearby",
+                "Problem: " + sos.getProblemType()
+        ));
+
+        return toResponseWithMechanic(sos);
     }
 
     @Override
     @Transactional(readOnly = true)
     public SosRequestResponse getById(UUID sosId) {
-        return sosMapper.toResponse(findSosOrThrow(sosId));
+        return toResponseWithMechanic(findSosOrThrow(sosId));
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<SosRequestResponse> getByUser(UUID userId) {
-        return sosMapper.toResponseList(sosRequestRepository.findByUserId(userId));
+        return toResponseListWithMechanic(sosRequestRepository.findByUserUserId(userId));
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<SosRequestResponse> getByStatus(SosStatus status) {
-        return sosMapper.toResponseList(sosRequestRepository.findByStatus(status));
+        return toResponseListWithMechanic(sosRequestRepository.findByStatus(status));
     }
 
     @Override
@@ -133,22 +158,90 @@ public class SosServiceImpl implements SosService {
 
         SosRequest sos = history.getSosRequest();
         if (request.approvedStatus() == ApprovedStatus.ACCEPTED) {
-            validateTransition(sos.getStatus(), history.getToStatus());
+            SosStatus fromStatus = sos.getStatus();
+            validateTransition(fromStatus, history.getToStatus());
             sos.setStatus(history.getToStatus());
             sosRequestRepository.save(sos);
+
+            UUID mechanicId = history.getProposedBy().getMechanicId();
+            SosStatusUpdatedEvent statusEvent = new SosStatusUpdatedEvent(
+                    sos.getSosId(), mechanicId, user.getUserId(),
+                    fromStatus, history.getToStatus(), LocalDateTime.now()
+            );
+            sosEventProducer.publishStatusUpdated(statusEvent);
+            messagingTemplate.convertAndSendToUser(mechanicId.toString(), "/queue/sos-updates", statusEvent);
+
+            publishStatusNotifications(history.getToStatus(), sos, mechanicId);
         }
-        return sosMapper.toResponse(sos);
+        return toResponseWithMechanic(sos);
+    }
+
+    private void publishStatusNotifications(SosStatus toStatus, SosRequest sos, UUID mechanicId){
+        UUID userId = sos.getUser().getUserId();
+        switch (toStatus) {
+            case ON_THE_WAY -> sosEventProducer.publishNotification(new SosNotificationEvent(
+                    "STATUS_ON_THE_WAY", userId, "USER", sos.getSosId(),
+                    "Mechanic is on the way", "Your mechanic is heading to your location"));
+            case ARRIVED -> sosEventProducer.publishNotification(new SosNotificationEvent(
+                    "STATUS_ARRIVED", userId, "USER", sos.getSosId(),
+                    "Mechanic has arrived", "Your mechanic has arrived at your location"));
+            case COMPLETED -> {
+                sosEventProducer.publishNotification(new SosNotificationEvent(
+                        "STATUS_COMPLETED", userId, "USER", sos.getSosId(),
+                        "Service completed", "Your repair has been completed"));
+                sosEventProducer.publishNotification(new SosNotificationEvent(
+                        "STATUS_COMPLETED", mechanicId, "MECHANIC", sos.getSosId(),
+                        "Service completed", "The service has been marked completed"));
+            }
+            default -> { } 
+        }
     }
 
     @Override
     @Transactional
     public SosRequestResponse cancel(UUID sosId, UUID userId) {
         SosRequest sos = findSosOrThrow(sosId);
-        if (!VALID_TRANSITIONS.containsKey(sos.getStatus())) {
-            throw new IllegalStateException("Cannot cancel a request with status: " + sos.getStatus());
+        SosStatus fromStatus = sos.getStatus();
+        if (!VALID_TRANSITIONS.containsKey(fromStatus)) {
+            throw new IllegalStateException("Cannot cancel a request with status: " + fromStatus);
         }
         sos.setStatus(SosStatus.CANCELLED);
-        return sosMapper.toResponse(sosRequestRepository.save(sos));
+        sosRequestRepository.save(sos);
+
+        sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
+                sos.getSosId(), null, userId, fromStatus, SosStatus.CANCELLED, LocalDateTime.now()
+        ));
+        sosEventProducer.publishNotification(new SosNotificationEvent(
+                "STATUS_CANCELLED", userId, "USER", sos.getSosId(),
+                "SOS request cancelled", "Your SOS request has been cancelled"
+        ));
+
+        return toResponseWithMechanic(sos);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<SosRequestResponse> getAll() {
+        return toResponseListWithMechanic(sosRequestRepository.findAll());
+    }
+
+    // SosRequest has no direct mechanic relation — the assigned mechanic is resolved
+    // from the ACCEPTED bid on this SOS request (at most one can exist).
+    private SosRequestResponse toResponseWithMechanic(SosRequest sos) {
+        SosRequestResponse base = sosMapper.toResponse(sos);
+        MechanicResponse mechanic = bidSosRepository
+                .findFirstBySosRequestSosIdAndStatus(sos.getSosId(), BidStatus.ACCEPTED)
+                .map(bid -> mechanicMapper.toResponse(bid.getMechanic()))
+                .orElse(null);
+        return new SosRequestResponse(
+                base.sosId(), base.problemType(), base.description(), base.locationAddress(),
+                base.status(), base.latitude(), base.longitude(), base.createdAt(), base.updatedAt(),
+                base.user(), base.vehicle(), mechanic
+        );
+    }
+
+    private List<SosRequestResponse> toResponseListWithMechanic(List<SosRequest> sosList) {
+        return sosList.stream().map(this::toResponseWithMechanic).toList();
     }
 
     private SosRequest findSosOrThrow(UUID sosId) {

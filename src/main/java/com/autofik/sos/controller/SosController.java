@@ -28,6 +28,11 @@ public class SosController {
         return sosService.create(request);
     }
 
+    @GetMapping
+    public List<SosRequestResponse> getAll() {
+        return sosService.getAll();
+    }
+
     @GetMapping("/{sosId}")
     public SosRequestResponse getById(@PathVariable UUID sosId) {
         return sosService.getById(sosId);

@@ -42,14 +42,11 @@ public class MechanicServiceImpl implements MechanicService {
     @Override
     @Transactional
     public MechanicResponse create(CreateMechanicRequest request) {
-        String h3Index = H3.geoToH3Address(request.latitude(), request.longitude(), H3_RESOLUTION);
         Mechanic mechanic = Mechanic.builder()
                 .name(request.name())
                 .phone(request.phone())
                 .email(request.email())
                 .baseLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
-                .currentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
-                .currentH3Index(h3Index)
                 .build();
         return mechanicMapper.toResponse(mechanicRepository.save(mechanic));
     }
@@ -101,5 +98,11 @@ public class MechanicServiceImpl implements MechanicService {
         mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
         mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
         return mechanicMapper.toResponse(mechanicRepository.save(mechanic));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<MechanicResponse> getAll() {
+        return mechanicMapper.toResponseList(mechanicRepository.findAll());
     }
 }

@@ -50,13 +50,13 @@ class MechanicServiceImplTest {
         mechanic = Mechanic.builder()
                 .mechanicId(mechanicId).name("Bob").phone("081").email("bob@fix.com")
                 .hashPassword("hashed").isAvailable(true).ratingAvg(BigDecimal.ZERO).build();
-        mechanicResponse = new MechanicResponse(mechanicId, "Bob", "081", "bob@fix.com", true, BigDecimal.ZERO);
+        mechanicResponse = new MechanicResponse(mechanicId, "Bob", "081", "bob@fix.com", true, BigDecimal.ZERO, null, null);
     }
 
     // ── create ────────────────────────────────────────────────────────────────
 
     @Test
-    void create_setsH3IndexAndLocations() {
+    void create_setsBaseLocationOnly_leavesCurrentLocationUnset() {
         CreateMechanicRequest request = new CreateMechanicRequest("Bob", "081", "bob@fix.com", LAT, LNG);
         when(mechanicRepository.save(any(Mechanic.class))).thenReturn(mechanic);
         when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
@@ -66,11 +66,11 @@ class MechanicServiceImplTest {
         ArgumentCaptor<Mechanic> captor = ArgumentCaptor.forClass(Mechanic.class);
         verify(mechanicRepository).save(captor.capture());
         Mechanic saved = captor.getValue();
-        assertThat(saved.getCurrentH3Index()).isNotBlank();
-        assertThat(saved.getCurrentLocation()).isNotNull();
         assertThat(saved.getBaseLocation()).isNotNull();
-        assertThat(saved.getCurrentLocation().getY()).isEqualTo(LAT);
-        assertThat(saved.getCurrentLocation().getX()).isEqualTo(LNG);
+        assertThat(saved.getBaseLocation().getY()).isEqualTo(LAT);
+        assertThat(saved.getBaseLocation().getX()).isEqualTo(LNG);
+        assertThat(saved.getCurrentLocation()).isNull();
+        assertThat(saved.getCurrentH3Index()).isNull();
     }
 
     // ── getById ───────────────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ class MechanicServiceImplTest {
         Mechanic flatTireMechanic = buildMechanicWithSpecialization("Flat Tire");
         Mechanic engineMechanic   = buildMechanicWithSpecialization("Engine");
         MechanicResponse flatTireResponse = new MechanicResponse(
-                flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com", true, BigDecimal.ZERO);
+                flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com", true, BigDecimal.ZERO, null, null);
 
         when(mechanicRepository.findByH3Cells(anyList()))
                 .thenReturn(List.of(flatTireMechanic, engineMechanic));

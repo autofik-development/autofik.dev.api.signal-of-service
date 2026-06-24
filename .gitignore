@@ -53,3 +53,9 @@ logs/
 
 ### Docker override ###
 docker-compose.override.yml
+
+postman/
+
+SESSION_CHANGES.md
+SPRING_DATA_JPA_KEYWORDS.md
+api-tests.http
