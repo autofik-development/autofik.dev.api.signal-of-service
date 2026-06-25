@@ -9,5 +9,7 @@ public record MechanicResponse(
         String phone,
         String email,
         Boolean isAvailable,
-        BigDecimal ratingAvg
+        BigDecimal ratingAvg,
+        Double latitude,
+        Double longitude
 ) {}

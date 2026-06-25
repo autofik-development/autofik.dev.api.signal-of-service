@@ -58,7 +58,7 @@ class FeedbackServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        user = User.builder().id(userId).name("Alice").hashPassword("h").build();
+        user = User.builder().userId(userId).name("Alice").hashPassword("h").build();
         mechanic = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
                 .email("bob@fix.com").hashPassword("h").ratingAvg(BigDecimal.ZERO).build();
         Vehicle vehicle = Vehicle.builder().vehicleId(UUID.randomUUID()).plateNumber("ABC")

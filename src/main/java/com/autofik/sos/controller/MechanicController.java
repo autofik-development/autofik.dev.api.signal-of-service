@@ -24,6 +24,11 @@ public class MechanicController {
         return mechanicService.create(request);
     }
 
+    @GetMapping
+    public List<MechanicResponse> getAll() {
+        return mechanicService.getAll();
+    }
+
     @GetMapping("/{mechanicId}")
     public MechanicResponse getById(@PathVariable UUID mechanicId) {
         return mechanicService.getById(mechanicId);

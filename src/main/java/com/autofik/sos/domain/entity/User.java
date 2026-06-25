@@ -23,7 +23,7 @@ public class User {
     @GeneratedValue
     @UuidGenerator
     @Column(name = "user_id", updatable = false, nullable = false)
-    private UUID id;
+    private UUID userId;
 
     @Column(nullable = false)
     private String name;
@@ -34,7 +34,7 @@ public class User {
     @Column(unique = true)
     private String email;
 
-    @Column(name = "hash_password", nullable = false)
+    @Column(name = "hash_password")
     private String hashPassword;
 
     @Column(name = "created_at", updatable = false)

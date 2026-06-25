@@ -34,7 +34,7 @@ public class Mechanic {
     @Column(unique = true, nullable = false)
     private String email;
 
-    @Column(name = "hash_password", nullable = false)
+    @Column(name = "hash_password")
     private String hashPassword;
 
     @Column(name = "is_available", nullable = false)

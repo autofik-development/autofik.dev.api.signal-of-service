@@ -183,6 +183,32 @@ The app starts on `http://localhost:8080` (configurable via `SERVER_PORT`).
 | `DB_USERNAME` | Database user |
 | `DB_PASSWORD` | Database password |
 | `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker address |
+| `GOOGLE_MAPS_API_KEY` | Google Maps API key — see [Google Maps Setup](#google-maps-setup) below. |
+| `S3_ENDPOINT` | Object storage endpoint for SOS media (photo/video uploads). Points at a self-hosted MinIO server, **not** a real AWS region — the app uses the AWS SDK v2 against MinIO's S3-compatible API. |
+| `S3_ACCESS_KEY` | Access key for the object storage above. |
+| `S3_SECRET_KEY` | Secret key for the object storage above. |
+| `S3_REGION` | Required by the AWS SDK's request signing (SigV4) even against MinIO, which ignores the actual value — **must be a non-empty string** (e.g. `us-east-1`) or the app fails to start. |
+| `S3_BUCKET_NAME` | Bucket name where SOS media objects are stored. |
+
+### Google Maps Setup
+
+Two Google Maps Platform services are used, both in `GoogleMapsServiceImpl`:
+
+| Service | Used by | Purpose |
+| :--- | :--- | :--- |
+| **Geocoding API** | `SosService.create()` | Reverse-geocodes the SOS request's GPS coordinates into a human-readable `locationAddress` |
+| **Distance Matrix API** | `BidService.create()` | Computes ETA/distance text between a mechanic's `currentLocation` and the SOS location, shown on each bid |
+
+Both calls **fail soft** — if the API key is missing, invalid, or the request errors out, `GoogleMapsServiceImpl` catches the exception, logs a `WARN`, and returns `null`. The request still succeeds; you just lose the address/distance enrichment on that field.
+
+**Where to get the key:**
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create (or pick) a project.
+2. Enable **billing** on that project — required even within the free tier; geocoding/distance calls return `REQUEST_DENIED` without it. If you hit *"You have reached the limit of projects on which you can enable billing"*, either reuse an existing billed project or disable billing on an old unused one first.
+3. In **APIs & Services → Library**, enable:
+   - **Geocoding API**
+   - **Distance Matrix API**
+4. In **APIs & Services → Credentials**, create an API key and paste it into `.env` as `GOOGLE_MAPS_API_KEY`.
 
 ### Build & Test
 
@@ -207,8 +233,9 @@ The app starts on `http://localhost:8080` (configurable via `SERVER_PORT`).
 | DTOs & MapStruct mappers | Complete |
 | JPA repositories | Complete |
 | Service layer (business logic) | Complete |
-| REST controllers | In progress |
-| Kafka producers/consumers | Pending |
-| WebSocket broadcasts | Pending |
+| REST controllers | Complete — User, Mechanic, SOS, Bid, Feedback (CRUD + list-all + status lifecycle). No `VehicleController` yet (`createSos` needs a manually-inserted vehicle row) and no `SpecializationController` (specialization data is seeded directly via SQL, by design — schema not yet stable) |
+| Kafka producers/consumers | Mostly complete — `SosEventProducer` covers SOS/bid/status/notification events. **Gap**: `MechanicLocationConsumer` listens on `mechanic.location.updated`, but nothing publishes to it yet — `MechanicServiceImpl.updateLocation()` only writes to Postgres. Needs `PATCH /api/mechanics/{id}/location` to know which `sosId` to broadcast to before this can be wired up (deferred to a future PR) |
+| WebSocket broadcasts | Partial — real-time pushes work for bid acceptance and SOS status approval (`SimpMessagingTemplate`, called directly from the service layer). The mechanic-location relay (`MechanicLocationConsumer` → `/topic/sos/{sosId}/location`) exists but is currently unreachable, since the Kafka gap above means it never fires |
+| SOS media (photo/video) | Partial — `SosMedia` entity + `MediaType` enum + relation to `SosRequest` exist; repository, DTOs, service, and controller not yet built |
 | JWT validation | Pending — token issued by SSO team, this service validates only |
 

@@ -39,7 +39,7 @@ class UserServiceImplTest {
     @BeforeEach
     void setUp() {
         user = User.builder()
-                .id(userId)
+                .userId(userId)
                 .name("Alice")
                 .email("alice@example.com")
                 .build();

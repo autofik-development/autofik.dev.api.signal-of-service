@@ -12,4 +12,6 @@ public interface BidService {
     List<BidSosResponse> getBySosRequest(UUID sosId);
     List<BidSosResponse> getByMechanic(UUID mechanicId);
     BidSosResponse updateStatus(UUID bidId, UpdateBidStatusRequest request);
+    BidSosResponse cancel(UUID bidId, UUID mechanicId);
+    List<BidSosResponse> getAll();
 }

@@ -25,6 +25,11 @@ public class BidController {
         return bidService.create(request);
     }
 
+    @GetMapping
+    public List<BidSosResponse> getAll() {
+        return bidService.getAll();
+    }
+
     @GetMapping("/sos/{sosId}")
     public List<BidSosResponse> getBySos(@PathVariable UUID sosId) {
         return bidService.getBySosRequest(sosId);
@@ -39,5 +44,10 @@ public class BidController {
     public BidSosResponse updateStatus(@PathVariable UUID bidId,
                                        @Valid @RequestBody UpdateBidStatusRequest request) {
         return bidService.updateStatus(bidId, request);
+    }
+
+    @PatchMapping("/{bidId}/cancel")
+    public BidSosResponse cancel(@PathVariable UUID bidId, @RequestParam UUID mechanicId) {
+        return bidService.cancel(bidId, mechanicId);
     }
 }
