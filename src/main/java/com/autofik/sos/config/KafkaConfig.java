@@ -3,11 +3,9 @@ package com.autofik.sos.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -20,7 +18,6 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 
-import java.util.HashMap;
 import java.util.Map;
 
 @Configuration
@@ -39,8 +36,11 @@ public class KafkaConfig {
     private static final int   PARTITION_COUNT    = 3;
     private static final short REPLICATION_FACTOR = 1;
 
-    @Value("${spring.kafka.bootstrap-servers}")
-    private String bootstrapServers;
+    private final KafkaProperties kafkaProperties;
+
+    public KafkaConfig(KafkaProperties kafkaProperties) {
+        this.kafkaProperties = kafkaProperties;
+    }
 
     // Spring Boot's auto-configured ObjectMapper (used by REST controllers) already has
     // JavaTimeModule registered. JsonSerializer/JsonDeserializer build their own internal
@@ -53,14 +53,9 @@ public class KafkaConfig {
 
     @Bean
     public ProducerFactory<String, Object> producerFactory() {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ProducerConfig.ACKS_CONFIG, "all");
-        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
-        props.put(ProducerConfig.RETRIES_CONFIG, 3);
+        Map<String, Object> props = kafkaProperties.buildProducerProperties();
 
         JsonSerializer<Object> valueSerializer = new JsonSerializer<>(kafkaObjectMapper());
-        valueSerializer.setAddTypeInfo(false);
         return new DefaultKafkaProducerFactory<>(props, new StringSerializer(), valueSerializer);
     }
 
@@ -114,20 +109,14 @@ public class KafkaConfig {
         return TopicBuilder.name(TOPIC_SOS_NOTIFICATION).partitions(PARTITION_COUNT).replicas(REPLICATION_FACTOR).build();
     }
 
-    @Value("${spring.kafka.consumer.group-id}")
-    private String consumerGroupId;
-
     @Bean
     public ConsumerFactory<String, Object> consumerFactory() {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, consumerGroupId);
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        Map<String, Object> props = kafkaProperties.buildConsumerProperties();
 
-        // No fixed target type here (matches the original class-reference config) — the actual
-        // type is inferred per-listener from the @KafkaListener method's parameter (e.g. MechanicLocationEvent).
+        // spring.kafka.consumer.properties.spring.json.* (trusted packages, default type) in
+        // application.yaml is applied to this instance via JsonDeserializer#configure, which Kafka
+        // invokes with the full props map even for pre-built deserializer instances.
         JsonDeserializer<Object> valueDeserializer = new JsonDeserializer<>(kafkaObjectMapper());
-        valueDeserializer.addTrustedPackages("com.autofik.sos.*");
         return new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), valueDeserializer);
     }
 
