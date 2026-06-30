@@ -21,5 +21,8 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
     // At most one ACCEPTED bid per SOS request — used to resolve the assigned mechanic.
     Optional<BidSos> findFirstBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
 
+    // Resolve the active SOS request for a mechanic — used to route location broadcasts.
+    Optional<BidSos> findFirstByMechanicMechanicIdAndStatus(UUID mechanicId, BidStatus status);
+
     boolean existsBySosRequestSosIdAndMechanicMechanicId(UUID sosId, UUID mechanicId);
 }

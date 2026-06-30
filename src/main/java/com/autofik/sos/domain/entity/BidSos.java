@@ -26,9 +26,6 @@ public class BidSos {
     @Column(name = "price", nullable = false, precision = 10, scale = 2)
     private BigDecimal price;
 
-    @Column(name = "note", columnDefinition = "TEXT")
-    private String note;
-
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
     @Builder.Default

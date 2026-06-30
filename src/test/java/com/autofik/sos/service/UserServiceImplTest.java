@@ -43,7 +43,7 @@ class UserServiceImplTest {
                 .name("Alice")
                 .email("alice@example.com")
                 .build();
-        userResponse = new UserResponse(userId, "Alice", null, "alice@example.com", null);
+        userResponse = new UserResponse(userId, "Alice", null, "alice@example.com", null, null);
     }
 
     @Test

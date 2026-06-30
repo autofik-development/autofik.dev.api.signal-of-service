@@ -9,6 +9,5 @@ import java.util.UUID;
 public record CreateBidRequest(
         @NotNull UUID mechanicId,
         @NotNull UUID sosId,
-        @NotNull @DecimalMin("0.01") BigDecimal price,
-        String note
+        @NotNull @DecimalMin("0.01") BigDecimal price
 ) {}

@@ -37,6 +37,9 @@ public class Mechanic {
     @Column(name = "hash_password")
     private String hashPassword;
 
+    @Column(name = "referrer_code", unique = true)
+    private String referrerCode;
+
     @Column(name = "is_available", nullable = false)
     @Builder.Default
     private Boolean isAvailable = true;

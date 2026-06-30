@@ -10,7 +10,6 @@ import java.util.UUID;
 public record BidSosResponse(
         UUID bidId,
         BigDecimal price,
-        String note,
         BidStatus status,
         Long estimatedDistanceM,
         Long estimatedDurationS,

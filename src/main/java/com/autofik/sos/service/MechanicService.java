@@ -13,5 +13,7 @@ public interface MechanicService {
 
     List<MechanicResponse> findAvailable(double lat, double lng, String problemType);
     MechanicResponse updateLocation(UUID mechanicId, double lat, double lng);
+    MechanicResponse updateLocation(UUID mechanicId, double lat, double lng, UUID sosId);
+    MechanicResponse setAvailability(UUID mechanicId, boolean available);
     List<MechanicResponse> getAll();
 }

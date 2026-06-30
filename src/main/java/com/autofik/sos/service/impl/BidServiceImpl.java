@@ -3,6 +3,7 @@ package com.autofik.sos.service.impl;
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
+import com.autofik.sos.domain.enums.BidSortFilter;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.event.BidAcceptedEvent;
@@ -27,7 +28,9 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -51,6 +54,10 @@ public class BidServiceImpl implements BidService {
         if (sosRequest.getStatus() != SosStatus.PENDING) {
             throw new IllegalStateException("Bids can only be placed on PENDING requests");
         }
+        if (sosRequest.getBiddingExpiresAt() != null &&
+                java.time.LocalDateTime.now().isAfter(sosRequest.getBiddingExpiresAt())) {
+            throw new IllegalStateException("Bidding window has closed for this SOS request");
+        }
         Mechanic mechanic = mechanicRepository.findById(request.mechanicId())
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
         if (!Boolean.TRUE.equals(mechanic.getIsAvailable())) {
@@ -62,7 +69,6 @@ public class BidServiceImpl implements BidService {
 
         BidSos.BidSosBuilder bidBuilder = BidSos.builder()
                 .price(request.price())
-                .note(request.note())
                 .sosRequest(sosRequest)
                 .mechanic(mechanic);
 
@@ -82,7 +88,7 @@ public class BidServiceImpl implements BidService {
 
         sosEventProducer.publishBidCreated(new BidCreatedEvent(
                 savedBid.getBidId(), sosRequest.getSosId(), mechanic.getMechanicId(),
-                savedBid.getPrice(), savedBid.getNote(),
+                savedBid.getPrice(),
                 savedBid.getEstimatedDistanceM(), savedBid.getEstimatedDurationS(),
                 savedBid.getEstimatedDistanceText(), savedBid.getEstimatedDurationText(),
                 savedBid.getBidAt()
@@ -97,8 +103,24 @@ public class BidServiceImpl implements BidService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<BidSosResponse> getBySosRequest(UUID sosId) {
-        return bidSosMapper.toResponseList(bidSosRepository.findBySosRequestSosId(sosId));
+    public List<BidSosResponse> getBySosRequest(UUID sosId, BidSortFilter sortBy) {
+        List<BidSosResponse> bids = bidSosMapper.toResponseList(bidSosRepository.findBySosRequestSosId(sosId));
+        if (sortBy == null) return bids;
+        return switch (sortBy) {
+            case NEAREST -> bids.stream()
+                    .sorted(Comparator.comparing(BidSosResponse::estimatedDistanceM,
+                            Comparator.nullsLast(Comparator.naturalOrder())))
+                    .toList();
+            case CHEAPEST -> bids.stream()
+                    .sorted(Comparator.comparing(BidSosResponse::price))
+                    .toList();
+            case TOP_RATED -> bids.stream()
+                    .sorted(Comparator.comparing(
+                            r -> r.mechanic() != null && r.mechanic().ratingAvg() != null
+                                    ? r.mechanic().ratingAvg() : BigDecimal.ZERO,
+                            Comparator.<BigDecimal>naturalOrder().reversed()))
+                    .toList();
+        };
     }
 
     @Override

@@ -5,6 +5,7 @@ import com.autofik.sos.dto.event.BidAcceptedEvent;
 import com.autofik.sos.dto.event.BidCancelledEvent;
 import com.autofik.sos.dto.event.BidCreatedEvent;
 import com.autofik.sos.dto.event.BidRejectedEvent;
+import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.event.SosCreatedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
@@ -40,6 +41,10 @@ public class SosEventProducer {
 
     public void publishStatusUpdated(SosStatusUpdatedEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_SOS_STATUS_UPDATED, event.sosId().toString(), event);
+    }
+
+    public void publishMechanicLocation(MechanicLocationEvent event) {
+        kafkaTemplate.send(KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED, event.sosId().toString(), event);
     }
 
     public void publishNotification(SosNotificationEvent event) {

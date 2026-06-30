@@ -25,7 +25,8 @@ User submits SOS
        ▼
 ┌─────────────────────────────────────────────────┐
 │           Mechanics receive SOS alert           │
-│   Each mechanic can submit a Bid (price + note) │
+│   Each mechanic submits a Bid (price)           │
+│   Sortable by: NEAREST · CHEAPEST · TOP_RATED   │
 └─────────────────────────────────────────────────┘
        │
        │  User reviews bids and accepts one
@@ -39,13 +40,15 @@ User submits SOS
 │                               │                 │
 │                            ARRIVED              │
 │                               │                 │
+│                 ┌─────────────┴──────────────┐  │
+│                 │  Mechanic proposes COMPLETE │  │
+│                 │  User approves / rejects    │  │
+│                 └─────────────┬──────────────┘  │
+│                               │                 │
 │                           COMPLETED             │
 │                                                 │
 │  Any non-terminal state ──► CANCELLED           │
 └─────────────────────────────────────────────────┘
-       │
-       │  Status changes are two-step:
-       │  Mechanic proposes → User approves
        │
        ▼
 ┌─────────────────────────────────────────────────┐
@@ -62,9 +65,9 @@ User submits SOS
 ```
 ┌──────────┐        ┌─────────────┐        ┌──────────┐
 │   User   │───────►│ SosRequest  │◄───────│ Vehicle  │
-└──────────┘  1:N   └─────────────┘  N:1   └──────────┘
-                           │
-              ┌────────────┼────────────┐
+│referrer_ │  1:N   └─────────────┘  N:1   └──────────┘
+│  code    │               │
+└──────────┘  ┌────────────┼────────────┐
               │            │            │
               ▼            ▼            ▼
          ┌────────┐  ┌──────────┐  ┌──────────┐
@@ -75,12 +78,12 @@ User submits SOS
               ▼
         ┌──────────┐     ┌──────────────────────┐
         │ Mechanic │────►│ MechanicSpecialization│
-        └──────────┘     └──────────────────────┘
-        (GPS Point,              │
-         H3 index,               ▼
-         isAvailable)    ┌──────────────┐
-                         │Specialization│
-                         └──────────────┘
+        │referrer_ │     └──────────────────────┘
+        │  code    │              │
+        └──────────┘              ▼
+                          ┌──────────────┐
+                          │Specialization│
+                          └──────────────┘
 ```
 
 ---
@@ -111,10 +114,33 @@ HTTP Request
 └─────────────────────────────────────┘
 
 Side channels:
-┌─────────────┐     ┌───────────────────┐
-│    Kafka    │     │  WebSocket/STOMP  │
-│  (events)   │     │  (real-time push) │
-└─────────────┘     └───────────────────┘
+┌─────────────┐     ┌───────────────────┐     ┌───────────────┐
+│    Kafka    │     │  WebSocket/STOMP  │     │   OneSignal   │
+│  (events)   │     │  (real-time push) │     │ (push notify) │
+└─────────────┘     └───────────────────┘     └───────────────┘
+```
+
+### Real-time Location Flow
+
+```
+Mechanic app
+  PATCH /api/mechanics/{id}/location?lat=&lng=
+       │
+       ▼
+MechanicServiceImpl
+  → saves currentLocation to Postgres
+  → resolves active SOS via ACCEPTED bid
+  → publishes MechanicLocationEvent to Kafka
+       │
+       ▼
+mechanic.location.updated (Kafka topic)
+       │
+       ▼
+MechanicLocationConsumer
+  → WebSocket /topic/sos/{sosId}/location
+       │
+       ▼
+Customer app — updates mechanic marker on Google Maps
 ```
 
 ---
@@ -130,8 +156,11 @@ Side channels:
 | Geo indexing | Uber H3 3.7.2 (resolution 7, k=4 ≈ 10 km) |
 | Messaging | Apache Kafka (Confluent 7.6.0) |
 | Real-time | WebSocket / STOMP |
+| Push notifications | OneSignal (onesignal-java-client 5.8.1) |
 | Mapping | MapStruct |
 | Security | Spring Security (BCrypt, stateless JWT — pending) |
+| Maps / Geocoding | Google Maps Platform (Geocoding API + Distance Matrix API) |
+| Media storage | AWS S3-compatible (MinIO) |
 
 ---
 
@@ -144,9 +173,24 @@ All topics are prefixed `sos.` and keyed by `sosId`:
 | `sos.created` | New SOS request submitted |
 | `sos.bid.created` | Mechanic places a bid |
 | `sos.bid.accepted` | User accepts a bid |
-| `sos.bid.rejected` | Bid auto-rejected |
+| `sos.bid.rejected` | Bid auto-rejected when another bid is accepted |
+| `sos.bid.cancelled` | Mechanic withdraws a pending bid |
 | `sos.status.updated` | SOS status advances |
-| `sos.dlq` | Dead-letter for failed events |
+| `sos.notification` | Push notification events — consumed by `NotificationConsumer`, delivered via OneSignal |
+| `mechanic.location.updated` | Mechanic GPS ping — consumed by `MechanicLocationConsumer`, relayed to WebSocket |
+| `sos.dlq` | Dead-letter queue for failed events |
+
+---
+
+## WebSocket Channels
+
+Clients connect via STOMP over `/ws`. App destination prefix: `/app`.
+
+| Channel | Type | Payload | Sent when |
+| :--- | :--- | :--- | :--- |
+| `/queue/sos-updates` | user-specific | `SosStatusUpdatedEvent` / `BidAcceptedEvent` | Status changes, bid accepted/rejected |
+| `/queue/sos-new-request` | user-specific | `SosNotificationEvent` | New SOS fans out to nearby mechanics |
+| `/topic/sos/{sosId}/location` | broadcast | `MechanicLocationEvent` | Mechanic GPS ping while on a job |
 
 ---
 
@@ -164,31 +208,34 @@ All topics are prefixed `sos.` and keyed by `sosId`:
 # 1. Copy environment file and fill in values
 cp .env.example .env
 
-# 2. Start PostgreSQL + Kafka
+# 2. Start PostgreSQL + Kafka (managed in the infra repo)
 docker compose up -d
 
 # 3. Run the application
 ./mvnw spring-boot:run
 ```
 
-The app starts on `http://localhost:8080` (configurable via `SERVER_PORT`).
+The app starts on `http://localhost:28080` (configurable via `SERVER_PORT`).
 
 ### Environment Variables
 
 | Variable | Description |
 | :--- | :--- |
 | `DB_HOST` | PostgreSQL host |
-| `DB_PORT` | PostgreSQL port (default 5432) |
+| `DB_PORT` | PostgreSQL port (default `5432`) |
 | `DB_NAME` | Database name |
 | `DB_USERNAME` | Database user |
 | `DB_PASSWORD` | Database password |
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker address |
-| `GOOGLE_MAPS_API_KEY` | Google Maps API key — see [Google Maps Setup](#google-maps-setup) below. |
-| `S3_ENDPOINT` | Object storage endpoint for SOS media (photo/video uploads). Points at a self-hosted MinIO server, **not** a real AWS region — the app uses the AWS SDK v2 against MinIO's S3-compatible API. |
-| `S3_ACCESS_KEY` | Access key for the object storage above. |
-| `S3_SECRET_KEY` | Secret key for the object storage above. |
-| `S3_REGION` | Required by the AWS SDK's request signing (SigV4) even against MinIO, which ignores the actual value — **must be a non-empty string** (e.g. `us-east-1`) or the app fails to start. |
-| `S3_BUCKET_NAME` | Bucket name where SOS media objects are stored. |
+| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker address (default `localhost:9092`) |
+| `GOOGLE_MAPS_API_KEY` | Google Maps API key — see [Google Maps Setup](#google-maps-setup) below |
+| `ONESIGNAL_APP_ID` | OneSignal app ID — found in OneSignal Dashboard → Settings → Keys & IDs |
+| `ONESIGNAL_API_KEY` | OneSignal REST API key — same location as above |
+| `S3_ENDPOINT` | Object storage endpoint for SOS media. Points at a self-hosted MinIO server (S3-compatible) |
+| `S3_ACCESS_KEY` | Access key for the object storage above |
+| `S3_SECRET_KEY` | Secret key for the object storage above |
+| `S3_REGION` | Required by AWS SDK SigV4 signing — must be a non-empty string (e.g. `us-east-1`) even against MinIO |
+| `S3_BUCKET_NAME` | Bucket name where SOS media objects are stored |
+| `SERVER_PORT` | HTTP port (default `28080`) |
 
 ### Google Maps Setup
 
@@ -196,19 +243,30 @@ Two Google Maps Platform services are used, both in `GoogleMapsServiceImpl`:
 
 | Service | Used by | Purpose |
 | :--- | :--- | :--- |
-| **Geocoding API** | `SosService.create()` | Reverse-geocodes the SOS request's GPS coordinates into a human-readable `locationAddress` |
-| **Distance Matrix API** | `BidService.create()` | Computes ETA/distance text between a mechanic's `currentLocation` and the SOS location, shown on each bid |
+| **Geocoding API** | `SosService.create()` | Reverse-geocodes the SOS GPS coordinates into a human-readable `locationAddress` |
+| **Distance Matrix API** | `BidService.create()` | Computes ETA and distance between a mechanic's `currentLocation` and the SOS location |
 
-Both calls **fail soft** — if the API key is missing, invalid, or the request errors out, `GoogleMapsServiceImpl` catches the exception, logs a `WARN`, and returns `null`. The request still succeeds; you just lose the address/distance enrichment on that field.
+Both calls **fail soft** — if the API key is missing or the request errors, the service catches, logs a `WARN`, and returns `null`. The request still succeeds; you just lose the address/distance enrichment.
 
 **Where to get the key:**
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create (or pick) a project.
-2. Enable **billing** on that project — required even within the free tier; geocoding/distance calls return `REQUEST_DENIED` without it. If you hit *"You have reached the limit of projects on which you can enable billing"*, either reuse an existing billed project or disable billing on an old unused one first.
-3. In **APIs & Services → Library**, enable:
-   - **Geocoding API**
-   - **Distance Matrix API**
+2. Enable **billing** — required even within the free tier.
+3. In **APIs & Services → Library**, enable **Geocoding API** and **Distance Matrix API**.
 4. In **APIs & Services → Credentials**, create an API key and paste it into `.env` as `GOOGLE_MAPS_API_KEY`.
+
+### OneSignal Setup
+
+OneSignal delivers push notifications to the mechanic and user mobile apps.
+
+The mobile app must call `OneSignal.login(userId)` with the user's UUID on login — this registers the device under that `external_id`, which is what this service uses to target push delivery.
+
+**Where to get the keys:**
+
+1. Create an app at [onesignal.com](https://onesignal.com).
+2. Go to **Settings → Keys & IDs**.
+3. Copy **App ID** → `ONESIGNAL_APP_ID`.
+4. Copy **REST API Key** → `ONESIGNAL_API_KEY`.
 
 ### Build & Test
 
@@ -221,6 +279,9 @@ Both calls **fail soft** — if the API key is missing, invalid, or the request 
 
 # Run a single test class
 ./mvnw test -Dtest=SosServiceImplTest
+
+# Run a single test method
+./mvnw test -Dtest=SosServiceImplTest#create_validRequest_buildsPointAndSaves
 ```
 
 ---
@@ -232,10 +293,12 @@ Both calls **fail soft** — if the API key is missing, invalid, or the request 
 | Domain entities | Complete |
 | DTOs & MapStruct mappers | Complete |
 | JPA repositories | Complete |
-| Service layer (business logic) | Complete |
-| REST controllers | Complete — User, Mechanic, SOS, Bid, Feedback (CRUD + list-all + status lifecycle). No `VehicleController` yet (`createSos` needs a manually-inserted vehicle row) and no `SpecializationController` (specialization data is seeded directly via SQL, by design — schema not yet stable) |
-| Kafka producers/consumers | Mostly complete — `SosEventProducer` covers SOS/bid/status/notification events. **Gap**: `MechanicLocationConsumer` listens on `mechanic.location.updated`, but nothing publishes to it yet — `MechanicServiceImpl.updateLocation()` only writes to Postgres. Needs `PATCH /api/mechanics/{id}/location` to know which `sosId` to broadcast to before this can be wired up (deferred to a future PR) |
-| WebSocket broadcasts | Partial — real-time pushes work for bid acceptance and SOS status approval (`SimpMessagingTemplate`, called directly from the service layer). The mechanic-location relay (`MechanicLocationConsumer` → `/topic/sos/{sosId}/location`) exists but is currently unreachable, since the Kafka gap above means it never fires |
-| SOS media (photo/video) | Partial — `SosMedia` entity + `MediaType` enum + relation to `SosRequest` exist; repository, DTOs, service, and controller not yet built |
-| JWT validation | Pending — token issued by SSO team, this service validates only |
-
+| Service layer | Complete — SOS, Bid, Mechanic, User, Feedback, SosMedia |
+| REST controllers | Complete — User, Mechanic, SOS, Bid, Feedback, SosMedia. No `VehicleController` (vehicle rows inserted manually) and no `SpecializationController` (seeded via SQL by design) |
+| Kafka producers | Complete — `SosEventProducer` covers SOS, bid, status, location, and notification events |
+| Kafka consumers | Complete — `MechanicLocationConsumer` relays GPS pings to WebSocket; `NotificationConsumer` delivers push via OneSignal |
+| Real-time location | Complete — `PATCH /api/mechanics/{id}/location` saves to Postgres, resolves active ACCEPTED bid, publishes `MechanicLocationEvent` to Kafka → WebSocket `/topic/sos/{sosId}/location` |
+| WebSocket broadcasts | Complete — bid acceptance, status changes, location streaming, new SOS fan-out to nearby mechanics |
+| Push notifications | Complete — OneSignal push for bid received, bid accepted/rejected/cancelled, status transitions, completion flow |
+| SOS media (photo/video) | Complete — upload, retrieve, delete via S3-compatible storage |
+| JWT validation | Pending — token issued by SSO service; this service validates only |

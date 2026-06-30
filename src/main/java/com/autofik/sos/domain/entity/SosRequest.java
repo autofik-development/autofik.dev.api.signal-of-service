@@ -48,10 +48,16 @@ public class SosRequest {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Column(name = "bidding_expires_at", updatable = false)
+    private LocalDateTime biddingExpiresAt;
+
+    private static final int BIDDING_WINDOW_SECONDS = 250;
+
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
+        biddingExpiresAt = createdAt.plusSeconds(BIDDING_WINDOW_SECONDS);
     }
 
     @PreUpdate

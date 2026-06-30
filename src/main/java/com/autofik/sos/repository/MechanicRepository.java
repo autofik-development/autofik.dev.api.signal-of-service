@@ -37,4 +37,17 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
             @Param("ids") List<UUID> ids,
             @Param("lat") double lat,
             @Param("lng") double lng);
+
+    // H3 coarse filter + specialization match in one query for SOS creation fan-out
+    @Query("""
+            SELECT DISTINCT m FROM Mechanic m
+            JOIN m.specializations ms
+            JOIN ms.specialization s
+            WHERE m.currentH3Index IN :cellIds
+              AND m.isAvailable = true
+              AND UPPER(s.name) = UPPER(:problemType)
+            """)
+    List<Mechanic> findByH3CellsAndSpecialization(
+            @Param("cellIds") List<String> cellIds,
+            @Param("problemType") String problemType);
 }

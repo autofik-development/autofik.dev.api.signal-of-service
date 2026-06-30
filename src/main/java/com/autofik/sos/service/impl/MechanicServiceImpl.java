@@ -1,9 +1,13 @@
 package com.autofik.sos.service.impl;
 
 import com.autofik.sos.domain.entity.Mechanic;
+import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.request.CreateMechanicRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.domain.enums.BidStatus;
+import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
+import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.service.MechanicService;
 import com.uber.h3core.H3Core;
@@ -16,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -37,7 +42,9 @@ public class MechanicServiceImpl implements MechanicService {
     }
 
     private final MechanicRepository mechanicRepository;
+    private final BidSosRepository bidSosRepository;
     private final MechanicMapper mechanicMapper;
+    private final SosEventProducer sosEventProducer;
 
     @Override
     @Transactional
@@ -97,6 +104,42 @@ public class MechanicServiceImpl implements MechanicService {
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
         mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
         mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
+        MechanicResponse response = mechanicMapper.toResponse(mechanicRepository.save(mechanic));
+
+        // Resolve the active SOS for this mechanic and broadcast the location update.
+        // No active ACCEPTED bid → mechanic is not on a job, skip publish.
+        bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED)
+                .ifPresent(bid -> sosEventProducer.publishMechanicLocation(
+                        new MechanicLocationEvent(
+                                bid.getSosRequest().getSosId(), mechanicId, lat, lng, LocalDateTime.now()
+                        )
+                ));
+        return response;
+    }
+
+    @Override
+    @Transactional
+    public MechanicResponse updateLocation(UUID mechanicId, double lat, double lng, UUID sosId) {
+        Mechanic mechanic = mechanicRepository.findById(mechanicId)
+                .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+        mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
+        mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
+        MechanicResponse response = mechanicMapper.toResponse(mechanicRepository.save(mechanic));
+
+        if (sosId != null) {
+            sosEventProducer.publishMechanicLocation(
+                    new MechanicLocationEvent(sosId, mechanicId, lat, lng, LocalDateTime.now())
+            );
+        }
+        return response;
+    }
+
+    @Override
+    @Transactional
+    public MechanicResponse setAvailability(UUID mechanicId, boolean available) {
+        Mechanic mechanic = mechanicRepository.findById(mechanicId)
+                .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+        mechanic.setIsAvailable(available);
         return mechanicMapper.toResponse(mechanicRepository.save(mechanic));
     }
 

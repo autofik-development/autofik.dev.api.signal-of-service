@@ -1,5 +1,6 @@
 package com.autofik.sos.controller;
 
+import com.autofik.sos.domain.enums.BidSortFilter;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
@@ -31,8 +32,9 @@ public class BidController {
     }
 
     @GetMapping("/sos/{sosId}")
-    public List<BidSosResponse> getBySos(@PathVariable UUID sosId) {
-        return bidService.getBySosRequest(sosId);
+    public List<BidSosResponse> getBySos(@PathVariable UUID sosId,
+                                          @RequestParam(required = false) BidSortFilter sortBy) {
+        return bidService.getBySosRequest(sosId, sortBy);
     }
 
     @GetMapping("/mechanic/{mechanicId}")

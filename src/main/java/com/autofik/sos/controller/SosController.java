@@ -48,6 +48,13 @@ public class SosController {
         return sosService.getByStatus(status);
     }
 
+    @PatchMapping("/{sosId}/status")
+    public SosRequestResponse updateStatus(@PathVariable UUID sosId,
+                                           @RequestParam UUID mechanicId,
+                                           @RequestParam SosStatus toStatus) {
+        return sosService.updateStatus(sosId, mechanicId, toStatus);
+    }
+
     @PostMapping("/propose-status")
     @ResponseStatus(HttpStatus.CREATED)
     public SosStatusHistoryResponse proposeStatus(@Valid @RequestBody ProposeStatusChangeRequest request) {

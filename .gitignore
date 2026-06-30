@@ -58,4 +58,6 @@ postman/
 
 SESSION_CHANGES.md
 SPRING_DATA_JPA_KEYWORDS.md
+BACKLOG.md
+test-ws.html
 api-tests.http

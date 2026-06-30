@@ -46,7 +46,14 @@ public class MechanicController {
     @PatchMapping("/{mechanicId}/location")
     public MechanicResponse updateLocation(@PathVariable UUID mechanicId,
                                            @RequestParam double lat,
-                                           @RequestParam double lng) {
-        return mechanicService.updateLocation(mechanicId, lat, lng);
+                                           @RequestParam double lng,
+                                           @RequestParam(required = false) UUID sosId) {
+        return mechanicService.updateLocation(mechanicId, lat, lng, sosId);
+    }
+
+    @PatchMapping("/{mechanicId}/availability")
+    public MechanicResponse setAvailability(@PathVariable UUID mechanicId,
+                                            @RequestParam boolean available) {
+        return mechanicService.setAvailability(mechanicId, available);
     }
 }

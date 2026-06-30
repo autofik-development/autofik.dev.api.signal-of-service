@@ -31,6 +31,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.scheduling.TaskScheduler;
 
 import java.util.List;
 import java.util.Optional;
@@ -39,6 +40,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -56,6 +59,7 @@ class SosServiceImplTest {
     @Mock GoogleMapsService googleMapsService;
     @Mock SosEventProducer sosEventProducer;
     @Mock SimpMessagingTemplate messagingTemplate;
+    @Mock TaskScheduler taskScheduler;
 
     @InjectMocks SosServiceImpl sosService;
 
@@ -84,7 +88,7 @@ class SosServiceImplTest {
                 .sosId(sosId).problemType("Flat Tire").status(SosStatus.PENDING)
                 .user(user).vehicle(vehicle).build();
         sosResponse = new SosRequestResponse(sosId, "Flat Tire", null, null, SosStatus.PENDING,
-                13.7, 100.5, null, null, null, null, null);
+                13.7, 100.5, null, null, null, null, null, null);
         historyResponse = new SosStatusHistoryResponse(historyId, SosStatus.ACCEPTED,
                 SosStatus.ON_THE_WAY, null, null, null, ApprovedStatus.PENDING_APPROVAL, null, null);
     }
@@ -110,7 +114,6 @@ class SosServiceImplTest {
         assertThat(saved.getLocation().getX()).isEqualTo(100.5018);
         assertThat(result).isEqualTo(sosResponse);
         verify(sosEventProducer).publishSosCreated(any(SosCreatedEvent.class));
-        verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
     }
 
     @Test
@@ -214,7 +217,7 @@ class SosServiceImplTest {
         BidSos acceptedBid = BidSos.builder().bidId(UUID.randomUUID()).status(BidStatus.ACCEPTED)
                 .sosRequest(pendingSos).mechanic(mechanic).build();
         MechanicResponse mechanicResponse = new MechanicResponse(
-                mechanicId, "Bob", "081", "bob@fix.com", true, null, null, null);
+                mechanicId, "Bob", "081", "bob@fix.com", true, null, null, null, null);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
         when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
@@ -248,11 +251,17 @@ class SosServiceImplTest {
 
     @Test
     void proposeStatusChange_validTransition_savesHistoryAndReturnsResponse() {
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.ACCEPTED);
-        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
+                .problemType("Flat Tire").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
-                .thenAnswer(inv -> inv.getArgument(0));
+                .thenAnswer(inv -> {
+                    SosStatusHistory h = inv.getArgument(0);
+                    h.setId(historyId);
+                    return h;
+                });
         when(sosStatusHistoryMapper.toResponse(any(SosStatusHistory.class))).thenReturn(historyResponse);
 
         SosStatusHistoryResponse result = sosService.proposeStatusChange(request);
@@ -260,8 +269,8 @@ class SosServiceImplTest {
         ArgumentCaptor<SosStatusHistory> captor = ArgumentCaptor.forClass(SosStatusHistory.class);
         verify(sosStatusHistoryRepository).save(captor.capture());
         SosStatusHistory saved = captor.getValue();
-        assertThat(saved.getFromStatus()).isEqualTo(SosStatus.PENDING);
-        assertThat(saved.getToStatus()).isEqualTo(SosStatus.ACCEPTED);
+        assertThat(saved.getFromStatus()).isEqualTo(SosStatus.ARRIVED);
+        assertThat(saved.getToStatus()).isEqualTo(SosStatus.COMPLETED);
         assertThat(saved.getApprovedStatus()).isEqualTo(ApprovedStatus.PENDING_APPROVAL);
         assertThat(result).isEqualTo(historyResponse);
     }
@@ -278,10 +287,7 @@ class SosServiceImplTest {
 
     @Test
     void proposeStatusChange_terminalStatus_throwsIllegalStateException() {
-        SosRequest completedSos = SosRequest.builder().sosId(sosId)
-                .problemType("X").status(SosStatus.COMPLETED).user(user).vehicle(vehicle).build();
         ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.CANCELLED);
-        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
 
         assertThatThrownBy(() -> sosService.proposeStatusChange(request))
                 .isInstanceOf(IllegalStateException.class);
@@ -289,8 +295,10 @@ class SosServiceImplTest {
 
     @Test
     void proposeStatusChange_mechanicNotFound_throwsEntityNotFoundException() {
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.ACCEPTED);
-        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
+                .problemType("X").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> sosService.proposeStatusChange(request))
@@ -372,7 +380,10 @@ class SosServiceImplTest {
         assertThat(acceptedSos.getStatus()).isEqualTo(SosStatus.ACCEPTED);
         verify(sosRequestRepository, never()).save(any());
         verify(sosEventProducer, never()).publishStatusUpdated(any());
-        verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
+        // REJECTED path notifies the mechanic via WebSocket that completion was rejected
+        verify(messagingTemplate).convertAndSendToUser(
+                eq(mechanicId.toString()), eq("/queue/sos-updates"), any());
+        verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
     }
 
     // ── cancel ────────────────────────────────────────────────────────────────

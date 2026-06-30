@@ -1,5 +1,6 @@
 package com.autofik.sos.config;
 
+import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -124,6 +125,23 @@ public class KafkaConfig {
     public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory() {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
+        return factory;
+    }
+
+    // Separate factory for sos.notification — the global factory defaults to MechanicLocationEvent.
+    // Spring Kafka 4.0+ forbids mixing programmatic deserializer config with spring.json.* properties
+    // in the same props map, so we strip those keys and configure the deserializer fully via code.
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, SosNotificationEvent> notificationListenerContainerFactory() {
+        Map<String, Object> props = kafkaProperties.buildConsumerProperties();
+        props.remove("spring.json.trusted.packages");
+        props.remove("spring.json.value.default.type");
+        JsonDeserializer<SosNotificationEvent> deserializer =
+                new JsonDeserializer<>(SosNotificationEvent.class, kafkaObjectMapper());
+        deserializer.addTrustedPackages("com.autofik.sos.*");
+        ConcurrentKafkaListenerContainerFactory<String, SosNotificationEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), deserializer));
         return factory;
     }
 }

@@ -15,6 +15,7 @@ public interface SosService {
     SosRequestResponse getById(UUID sosId);
     List<SosRequestResponse> getByUser(UUID userId);
     List<SosRequestResponse> getByStatus(SosStatus status);
+    SosRequestResponse updateStatus(UUID sosId, UUID mechanicId, SosStatus toStatus);
     SosStatusHistoryResponse proposeStatusChange(ProposeStatusChangeRequest request);
     SosRequestResponse approveStatusChange(ApproveStatusChangeRequest request);
     SosRequestResponse cancel(UUID sosId, UUID userId);
