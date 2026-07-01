@@ -9,13 +9,18 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-@Entity
-@Table(name = "feedback")
+/*
+ * Domain entity representing the Feedback/Review given after an SOS service is completed.
+ * Maps directly to the 'feedback' table in the database.
+*/
+@Entity  // Tells JPA this class represents a database table
+@Table(name = "feedback") // Sets the exact table name in the DB to 'feedback'
+// Hibernate Database Check: Ensures the database itself rejects any rating that is not between 1.0 and 5.0
 @Check(constraints = "rating >= 1.0 AND rating <= 5.0")
-@Getter @Setter
-@NoArgsConstructor @AllArgsConstructor
-@Builder
-@ToString
+@Getter @Setter // lombok Generate getters and setters for all columns
+@NoArgsConstructor @AllArgsConstructor // Lombok: Generates standard empty and full constructors
+@Builder // Lombok: Provides a clean way to instantiate a Feedback object
+@ToString // Lombok: Generates a toString method, but respects individual @ToString.Exclude tags below
 public class Feedback {
 
     @Id

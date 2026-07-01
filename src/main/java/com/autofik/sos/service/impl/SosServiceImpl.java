@@ -54,6 +54,8 @@ import java.util.UUID;
 @Slf4j
 public class SosServiceImpl implements SosService {
 
+    // State-machine guard: only transitions listed here are allowed.
+    // COMPLETED and EXPIRED are terminal states — they have no outgoing transitions.
     private static final Map<SosStatus, Set<SosStatus>> VALID_TRANSITIONS = Map.of(
             SosStatus.PENDING,    Set.of(SosStatus.ACCEPTED, SosStatus.CANCELLED),
             SosStatus.ACCEPTED,   Set.of(SosStatus.ON_THE_WAY, SosStatus.CANCELLED),
@@ -62,7 +64,9 @@ public class SosServiceImpl implements SosService {
     );
 
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory(new PrecisionModel(), 4326);
+    // Resolution 7 ≈ 5 km² per H3 cell — coarse enough for a fast index scan, fine enough to avoid too many false positives.
     private static final int H3_RESOLUTION = 7;
+    // kRing(4) covers the center cell + 4 rings of neighbors ≈ ~15 km radius at resolution 7.
     private static final int H3_RING_RADIUS = 4;
     private static final H3Core H3;
 
@@ -142,6 +146,8 @@ public class SosServiceImpl implements SosService {
         return toResponseListWithMechanic(sosRequestRepository.findByStatus(status));
     }
 
+    // Direct status update (mechanic-initiated, no user approval needed).
+    // Only ON_THE_WAY and ARRIVED flow through here; COMPLETED requires user approval via proposeStatusChange.
     @Override
     @Transactional
     public SosRequestResponse updateStatus(UUID sosId, UUID mechanicId, SosStatus toStatus) {
@@ -183,6 +189,8 @@ public class SosServiceImpl implements SosService {
         return toResponseWithMechanic(sos);
     }
 
+    // COMPLETED requires explicit user approval to prevent fraud (mechanic marking done before finishing).
+    // This records a PENDING_APPROVAL history entry and notifies the user; approveStatusChange() finalizes it.
     @Override
     @Transactional
     public SosStatusHistoryResponse proposeStatusChange(ProposeStatusChangeRequest request) {
@@ -338,6 +346,10 @@ public class SosServiceImpl implements SosService {
         }
     }
 
+    // Two-stage geo-search to notify relevant mechanics when a new SOS is created.
+    // Stage 1 (H3 index): fast B-tree scan to get candidates in nearby hex cells.
+    // Stage 2 (PostGIS): exact ST_DWithin check against each mechanic's service_radius_m.
+    // recipientId=null in the notification signals a fan-out (no specific OneSignal push).
     private void fanOutToNearbyMechanics(UUID sosId, double lat, double lng, String problemType) {
         String sosCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
         List<String> searchCells = H3.kRing(sosCell, H3_RING_RADIUS);
@@ -359,6 +371,8 @@ public class SosServiceImpl implements SosService {
         );
     }
 
+    // Uses TaskScheduler (not @Scheduled) because each SOS has its own unique expiry time.
+    // The lambda re-fetches the entity inside the transaction to avoid stale-state issues.
     private void scheduleBiddingExpiry(SosRequest sos) {
         if (sos.getBiddingExpiresAt() == null) return;
         UUID sosId = sos.getSosId();

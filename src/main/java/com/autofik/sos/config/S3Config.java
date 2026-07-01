@@ -12,6 +12,11 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.net.URI;
 
+/**
+ * Configures the AWS S3 client and presigner beans for media file storage.
+ * endpointOverride allows pointing to a local S3-compatible service (e.g., MinIO in dev)
+ * instead of the real AWS endpoint — swap to a real AWS bucket for production by changing .env only.
+ */
 @Configuration
 public class S3Config {
 
@@ -37,6 +42,7 @@ public class S3Config {
                 .endpointOverride(URI.create(endpoint))
                 .region(Region.of(region))
                 .credentialsProvider(credentials())
+                // forcePathStyle required for MinIO/LocalStack — real AWS uses virtual-hosted style by default
                 .forcePathStyle(true)
                 .build();
     }
@@ -47,6 +53,8 @@ public class S3Config {
                 .endpointOverride(URI.create(endpoint))
                 .region(Region.of(region))
                 .credentialsProvider(credentials())
+                // pathStyleAccessEnabled must match forcePathStyle on S3Client so presigned URLs
+                // resolve to the same endpoint format the client uses
                 .serviceConfiguration(S3Configuration.builder()
                         .pathStyleAccessEnabled(true)
                         .build())

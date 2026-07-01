@@ -28,6 +28,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class MechanicServiceImpl implements MechanicService {
 
+    // Resolution 7 ≈ 5 km² per cell; kRing(4) expands the search to ~15 km radius.
+    // Must match the constants in SosServiceImpl so both fan-out and availability queries use the same grid.
     private static final int H3_RESOLUTION = 7;
     private static final int H3_RING_RADIUS = 4;
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory(new PrecisionModel(), 4326);
@@ -71,6 +73,9 @@ public class MechanicServiceImpl implements MechanicService {
         return findAvailable(lat, lng, null);
     }
 
+    // Two-stage search to avoid expensive full-table PostGIS scans on every request.
+    // Stage 1: B-tree index scan on current_h3_index — filters by hex cells, O(cells).
+    // Stage 2: PostGIS ST_DWithin on the Stage 1 shortlist only — exact distance check.
     @Override
     @Transactional(readOnly = true)
     public List<MechanicResponse> findAvailable(double lat, double lng, String problemType) {
@@ -97,6 +102,8 @@ public class MechanicServiceImpl implements MechanicService {
         return mechanicMapper.toResponseList(result);
     }
 
+    // Called by the REST controller when no sosId is provided — resolves the active job automatically.
+    // No active ACCEPTED bid → mechanic is not on a job, location is saved but no event is published.
     @Override
     @Transactional
     public MechanicResponse updateLocation(UUID mechanicId, double lat, double lng) {
@@ -106,8 +113,6 @@ public class MechanicServiceImpl implements MechanicService {
         mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
         MechanicResponse response = mechanicMapper.toResponse(mechanicRepository.save(mechanic));
 
-        // Resolve the active SOS for this mechanic and broadcast the location update.
-        // No active ACCEPTED bid → mechanic is not on a job, skip publish.
         bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED)
                 .ifPresent(bid -> sosEventProducer.publishMechanicLocation(
                         new MechanicLocationEvent(
@@ -117,6 +122,8 @@ public class MechanicServiceImpl implements MechanicService {
         return response;
     }
 
+    // Overload used by the Kafka consumer or when the caller already knows the sosId,
+    // skipping the extra DB lookup to find the active bid.
     @Override
     @Transactional
     public MechanicResponse updateLocation(UUID mechanicId, double lat, double lng, UUID sosId) {

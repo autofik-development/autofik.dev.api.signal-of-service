@@ -13,7 +13,12 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
-@Component 
+/**
+ * Thin wrapper around KafkaTemplate that centralises topic routing for all SOS domain events.
+ * The sosId is always used as the Kafka message key so that all events for one SOS request
+ * are guaranteed to land on the same partition (and therefore arrive in order).
+ */
+@Component
 @RequiredArgsConstructor
 public class SosEventProducer {
 
