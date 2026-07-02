@@ -11,6 +11,11 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * REST Controller for submitting and retrieving post-service feedback and ratings.
+ * Base URL: /api/feedback
+ * Feedback can only be submitted after a SOS request reaches COMPLETED status.
+ */
 @RestController
 @RequestMapping("/api/feedback")
 @RequiredArgsConstructor
@@ -18,17 +23,22 @@ public class FeedbackController {
 
     private final FeedbackService feedbackService;
 
+    // POST /api/feedback — Driver submits a rating and optional comment after a completed job
+    // Returns 201 CREATED; also triggers a recalculation of the mechanic's average rating
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public FeedbackResponse create(@Valid @RequestBody CreateFeedbackRequest request) {
         return feedbackService.create(request);
     }
 
+    // GET /api/feedback/sos/{sosId} — Fetch the single feedback record tied to a completed SOS
     @GetMapping("/sos/{sosId}")
     public FeedbackResponse getBySos(@PathVariable UUID sosId) {
         return feedbackService.getBySosRequest(sosId);
     }
 
+    // GET /api/feedback/mechanic/{mechanicId} — Fetch all reviews ever written about a mechanic
+    // Used to display review history and compute reputation on the mechanic's profile page
     @GetMapping("/mechanic/{mechanicId}")
     public List<FeedbackResponse> getByMechanic(@PathVariable UUID mechanicId) {
         return feedbackService.getByMechanic(mechanicId);

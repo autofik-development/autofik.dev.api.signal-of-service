@@ -6,7 +6,10 @@ import com.autofik.sos.domain.entity.Specialization;
 import com.autofik.sos.domain.enums.ExperienceLevel;
 import com.autofik.sos.dto.request.CreateMechanicRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.domain.enums.BidStatus;
+import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
+import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.service.impl.MechanicServiceImpl;
 import jakarta.persistence.EntityNotFoundException;
@@ -37,7 +40,9 @@ class MechanicServiceImplTest {
     private static final double LNG = 100.5018;
 
     @Mock MechanicRepository mechanicRepository;
+    @Mock BidSosRepository bidSosRepository;
     @Mock MechanicMapper mechanicMapper;
+    @Mock SosEventProducer sosEventProducer;
 
     @InjectMocks MechanicServiceImpl mechanicService;
 
@@ -50,7 +55,7 @@ class MechanicServiceImplTest {
         mechanic = Mechanic.builder()
                 .mechanicId(mechanicId).name("Bob").phone("081").email("bob@fix.com")
                 .hashPassword("hashed").isAvailable(true).ratingAvg(BigDecimal.ZERO).build();
-        mechanicResponse = new MechanicResponse(mechanicId, "Bob", "081", "bob@fix.com", true, BigDecimal.ZERO, null, null);
+        mechanicResponse = new MechanicResponse(mechanicId, "Bob", "081", "bob@fix.com", true, BigDecimal.ZERO, null, null, null);
     }
 
     // ── create ────────────────────────────────────────────────────────────────
@@ -121,7 +126,7 @@ class MechanicServiceImplTest {
         Mechanic flatTireMechanic = buildMechanicWithSpecialization("Flat Tire");
         Mechanic engineMechanic   = buildMechanicWithSpecialization("Engine");
         MechanicResponse flatTireResponse = new MechanicResponse(
-                flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com", true, BigDecimal.ZERO, null, null);
+                flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com", true, BigDecimal.ZERO, null, null, null);
 
         when(mechanicRepository.findByH3Cells(anyList()))
                 .thenReturn(List.of(flatTireMechanic, engineMechanic));

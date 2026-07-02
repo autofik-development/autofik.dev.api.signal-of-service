@@ -37,6 +37,9 @@ public class User {
     @Column(name = "hash_password")
     private String hashPassword;
 
+    @Column(name = "referrer_code", unique = true)
+    private String referrerCode;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 

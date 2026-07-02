@@ -6,5 +6,6 @@ public enum SosStatus {
     ON_THE_WAY,
     ARRIVED,
     COMPLETED,
-    CANCELLED
+    CANCELLED,
+    EXPIRED
 }

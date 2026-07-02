@@ -11,5 +11,6 @@ public record MechanicResponse(
         Boolean isAvailable,
         BigDecimal ratingAvg,
         Double latitude,
-        Double longitude
+        Double longitude,
+        String referrerCode
 ) {}

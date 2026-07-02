@@ -16,6 +16,7 @@ public record SosRequestResponse(
         Double longitude,
         @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime createdAt,
         @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime updatedAt,
+        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime biddingExpiresAt,
         UserResponse user,
         VehicleResponse vehicle,
         MechanicResponse mechanic

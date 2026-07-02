@@ -86,14 +86,14 @@ class BidServiceImplTest {
                 .location(GEO.createPoint(new Coordinate(100.5018, 13.7563))).build();
         bid = BidSos.builder().bidId(bidId).price(BigDecimal.valueOf(500))
                 .sosRequest(pendingSos).mechanic(mechanic).build();
-        bidResponse = new BidSosResponse(bidId, BigDecimal.valueOf(500), null, BidStatus.PENDING, null, null, null, null, null, null, null);
+        bidResponse = new BidSosResponse(bidId, BigDecimal.valueOf(500), BidStatus.PENDING, null, null, null, null, null, null, null);
     }
 
     // ── create ────────────────────────────────────────────────────────────────
 
     @Test
     void create_validRequest_savesAndReturnsResponse() {
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), "Note");
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
@@ -108,7 +108,7 @@ class BidServiceImplTest {
 
     @Test
     void create_publishesBidCreatedEventWithRequestData() {
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), "Note");
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
@@ -129,7 +129,7 @@ class BidServiceImplTest {
     void create_sosNotPending_throwsIllegalStateException() {
         SosRequest acceptedSos = SosRequest.builder().sosId(sosId).problemType("X")
                 .status(SosStatus.ACCEPTED).user(user).vehicle(vehicle).build();
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN, null);
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(acceptedSos));
 
         assertThatThrownBy(() -> bidService.create(request))
@@ -141,7 +141,7 @@ class BidServiceImplTest {
     void create_mechanicNotAvailable_throwsIllegalStateException() {
         Mechanic unavailable = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
                 .email("b@fix.com").hashPassword("h").isAvailable(false).build();
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN, null);
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(unavailable));
 
@@ -152,7 +152,7 @@ class BidServiceImplTest {
 
     @Test
     void create_duplicateBid_throwsIllegalStateException() {
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN, null);
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(true);
@@ -172,7 +172,7 @@ class BidServiceImplTest {
         SosRequest sosWithLocation = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
                 .status(SosStatus.PENDING).user(user).vehicle(vehicle).location(sosLocation).build();
 
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), "On my way");
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosWithLocation));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanicWithLocation));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
@@ -202,7 +202,7 @@ class BidServiceImplTest {
         SosRequest sosWithLocation = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
                 .status(SosStatus.PENDING).user(user).vehicle(vehicle).location(sosLocation).build();
 
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), null);
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosWithLocation));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanicWithLocation));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
@@ -221,7 +221,7 @@ class BidServiceImplTest {
 
     @Test
     void create_mechanicHasNoCurrentLocation_distanceNotQueried() {
-        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500), null);
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
@@ -240,7 +240,7 @@ class BidServiceImplTest {
         when(bidSosRepository.findBySosRequestSosId(sosId)).thenReturn(List.of(bid));
         when(bidSosMapper.toResponseList(List.of(bid))).thenReturn(List.of(bidResponse));
 
-        assertThat(bidService.getBySosRequest(sosId)).containsExactly(bidResponse);
+        assertThat(bidService.getBySosRequest(sosId, null)).containsExactly(bidResponse);
     }
 
     @Test

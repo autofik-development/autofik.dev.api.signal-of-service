@@ -10,5 +10,6 @@ public record UserResponse(
         String name,
         String phone,
         String email,
+        String referrerCode,
         @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime createdAt
 ) {}

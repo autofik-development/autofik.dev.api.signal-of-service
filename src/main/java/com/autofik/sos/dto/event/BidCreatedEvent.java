@@ -9,7 +9,6 @@ public record BidCreatedEvent(
     UUID sosId,
     UUID mechanicId,
     BigDecimal price,
-    String note,
     Long estimatedDistanceM,
     Long estimatedDurationS,
     String estimatedDistanceText,
