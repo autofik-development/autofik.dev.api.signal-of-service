@@ -21,6 +21,7 @@ import java.util.UUID;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
+@ToString(onlyExplicitlyIncluded = true)
 public class MechanicRate {
 
     // Primary key, auto-generated as a UUID (not client-supplied, not updatable after creation)
@@ -28,24 +29,29 @@ public class MechanicRate {
     @GeneratedValue
     @UuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
+    @ToString.Include
     private UUID id;
 
     // The mechanic this aggregate rating belongs to (expected one row per mechanic)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "mechanic_profile_id", nullable = false)
+    @ToString.Exclude
     private Mechanic mechanic;
 
     // Average rating across all feedback for this mechanic, e.g. 4.75 (precision 3, scale 2)
     @Column(name = "rating_avg", precision = 3, scale = 2)
+    @ToString.Include
     private BigDecimal ratingAvg;
 
     // Total number of feedback entries factored into ratingAvg
     @Column(name = "rating_count", nullable = false)
     @Builder.Default
+    @ToString.Include
     private Integer ratingCount = 0;
     
     // When this aggregate row was first created for the mechanic
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
+    @ToString.Include
     private LocalDateTime createdAt;
 }
