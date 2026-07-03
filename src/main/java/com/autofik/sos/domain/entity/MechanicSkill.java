@@ -15,6 +15,7 @@ import java.util.UUID;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
+@ToString
 public class MechanicSkill {
 
     @Id
@@ -25,6 +26,7 @@ public class MechanicSkill {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "mechanic_profile_id", nullable = false)
+    @ToString.Exclude
     private Mechanic mechanic;
 
     // Postgres TEXT[] — allows multiple tags per skill entry (e.g. ["tire", "brake"]).
