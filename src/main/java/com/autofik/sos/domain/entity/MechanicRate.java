@@ -60,7 +60,7 @@ public class MechanicRate {
         public String toString() {
             return "MechanicRate.MechanicRateBuilder(id=" + this.id
                     + ", ratingAvg=" + this.ratingAvg
-                    + ", ratingCount=" + this.ratingCount
+                    + ", ratingCount=" + this.ratingCount$value
                     + ", createdAt=" + this.createdAt + ")";
         }
     }

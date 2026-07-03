@@ -15,13 +15,14 @@ import java.util.UUID;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @Builder
-@ToString
+@ToString(onlyExplicitlyIncluded = true)
 public class MechanicSkill {
 
     @Id
     @GeneratedValue
     @UuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
+    @ToString.Include
     private UUID id;
 
     @ManyToOne(fetch = FetchType.LAZY)
@@ -33,13 +34,16 @@ public class MechanicSkill {
     // Searched via unnest() in MechanicRepository.findByH3CellsAndSkillTag.
     @JdbcTypeCode(SqlTypes.ARRAY)
     @Column(name = "skill_tags", columnDefinition = "TEXT[]")
+    @ToString.Include
     private String[] skillTags;
 
     // Vehicle origin group the mechanic specializes in (e.g. "Asia", "Europe", "Americas").
     @Column(name = "vehicle_specialization")
+    @ToString.Include
     private String vehicleSpecialization;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
+    @ToString.Include
     private LocalDateTime createdAt;
 }

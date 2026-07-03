@@ -20,6 +20,7 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@ToString(onlyExplicitlyIncluded = true)
 public class Vehicle {
 
     // Primary key, auto-generated as a UUID (not client-supplied, not updatable after creation)
@@ -27,33 +28,40 @@ public class Vehicle {
     @GeneratedValue
     @UuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
+    @ToString.Include
     private UUID id;
 
     // Vehicle manufacturer, e.g. "Toyota", "Honda"
     @Column(name = "car_brand")
+    @ToString.Include
     private String carBrand;
 
     // Vehicle model, e.g. "Camry", "Civic"
     @Column(name = "car_model")
+    @ToString.Include
     private String carModel;
 
     // Stored as String to support flexible formats (e.g. "2023", "2022-2023").
     @Column(name = "car_model_year")
+    @ToString.Include
     private String carModelYear;
 
     // Used to match mechanics who specialize in specific engine/fuel types.
     @Enumerated(EnumType.STRING)
     @Column(name = "fuel_type")
+    @ToString.Include
     private FuelType fuelType;
 
     // Relations
     // Owner of this vehicle. Lazily fetched; every vehicle must belong to a user.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
+    @ToString.Exclude
     private User user;
 
     // All SOS (roadside assistance) requests ever made for this vehicle.
     // Inverse side of the relationship, owned by SosRequest.vehicle.
     @OneToMany(mappedBy = "vehicle", fetch = FetchType.LAZY)
+    @ToString.Exclude
     private List<SosRequest> sosRequests;
 }
