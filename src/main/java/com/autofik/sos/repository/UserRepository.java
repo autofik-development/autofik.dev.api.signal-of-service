@@ -6,14 +6,14 @@ import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 import java.util.UUID;
-/**
- * Data Access Object (DAO) interface for managing User profiles.
- * Used primarily for system authentication, login flows, and account verifications.
- */
+
 @Repository
 public interface UserRepository extends JpaRepository<User, UUID> {
-    // find user by email
-    Optional<User> findByEmail(String email);
-    // find user by phone
+
+    /**
+     * Use case : fetch a user by their phone number (e.g. for OTP login lookups)
+     * @param phone the user's phone number
+     * @return an Optional containing the User if found, or empty if no user exists with that phone number
+     */
     Optional<User> findByPhone(String phone);
 }

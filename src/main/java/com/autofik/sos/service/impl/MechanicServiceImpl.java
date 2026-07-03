@@ -1,8 +1,8 @@
 package com.autofik.sos.service.impl;
 
 import com.autofik.sos.domain.entity.Mechanic;
+import java.util.Arrays;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
-import com.autofik.sos.dto.request.CreateMechanicRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.kafka.producer.SosEventProducer;
@@ -49,18 +49,6 @@ public class MechanicServiceImpl implements MechanicService {
     private final SosEventProducer sosEventProducer;
 
     @Override
-    @Transactional
-    public MechanicResponse create(CreateMechanicRequest request) {
-        Mechanic mechanic = Mechanic.builder()
-                .name(request.name())
-                .phone(request.phone())
-                .email(request.email())
-                .baseLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
-                .build();
-        return mechanicMapper.toResponse(mechanicRepository.save(mechanic));
-    }
-
-    @Override
     @Transactional(readOnly = true)
     public MechanicResponse getById(UUID mechanicId) {
         return mechanicMapper.toResponse(mechanicRepository.findById(mechanicId)
@@ -94,14 +82,18 @@ public class MechanicServiceImpl implements MechanicService {
         List<Mechanic> result = (problemType == null || problemType.isBlank())
                 ? stage2
                 : stage2.stream()
-                        .filter(m -> m.getSpecializations().stream()
-                                .anyMatch(s -> s.getSpecialization().getName()
-                                        .equalsIgnoreCase(problemType)))
+                        .filter(m -> m.getSkills().stream()
+                                .anyMatch(s -> s.getSkillTags() != null &&
+                                        Arrays.stream(s.getSkillTags())
+                                                .anyMatch(tag -> tag.equalsIgnoreCase(problemType))))
                         .toList();
 
         return mechanicMapper.toResponseList(result);
     }
 
+    // current_location and current_h3_index are the ONLY Mechanic fields this service writes.
+    // All other profile fields (name, phone, skills, etc.) are owned by SSO — do not modify them here.
+    //
     // Called by the REST controller when no sosId is provided — resolves the active job automatically.
     // No active ACCEPTED bid → mechanic is not on a job, location is saved but no event is published.
     @Override
@@ -146,7 +138,7 @@ public class MechanicServiceImpl implements MechanicService {
     public MechanicResponse setAvailability(UUID mechanicId, boolean available) {
         Mechanic mechanic = mechanicRepository.findById(mechanicId)
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
-        mechanic.setIsAvailable(available);
+        mechanic.setAvailableStatus(available);
         return mechanicMapper.toResponse(mechanicRepository.save(mechanic));
     }
 

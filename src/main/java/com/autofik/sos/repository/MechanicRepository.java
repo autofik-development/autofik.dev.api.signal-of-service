@@ -12,45 +12,39 @@ import java.util.UUID;
 
 @Repository
 public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
-
-    // search by email
+    /**
+     * Use case : fetch a mechanic by their email address
+     * @param email the mechanic's email addres
+     * @return an Optional containing the Mechanic if found, or empty if no mechanic exists with that email
+     */
     Optional<Mechanic> findByEmail(String email);
 
-    // check do the email have already registered
-    boolean existsByEmail(String email);
-
-    // list all mechanic filter by status
-    List<Mechanic> findByIsAvailable(Boolean isAvailable);
+    /**
+     * Use case : fetch all mechanics matching a given availability status (e.g. all currently available mechanics for dispatch)
+     * @param availableStatus true to fetch available mechanics, false to fetch unavailable ones
+     * @return list of mechanics matching the given availability status
+     */
+    List<Mechanic> findByAvailableStatus(Boolean availableStatus);
 
     /**
-     * =========================================================================
      * GEOSPATIAL SEARCH - STAGE 1: Coarse Grid Filtering (Fast)
-     * =========================================================================
-     * Uber's H3 maps the world into a grid of hexagonal cells.
-     * This query performs a super-fast, standard database scan on a list of cell ID strings.
-     * It instantly eliminates 99% of mechanics who are too far away.
+     * Instant B-tree scan on H3 cell IDs — eliminates 99% of mechanics before PostGIS touches them.
      */
-    @Query("SELECT m FROM Mechanic m WHERE m.currentH3Index IN :cellIds AND m.isAvailable = true")
+    @Query("SELECT m FROM Mechanic m WHERE m.currentH3Index IN :cellIds AND m.availableStatus = true")
     List<Mechanic> findByH3Cells(@Param("cellIds") List<String> cellIds);
 
     /**
-     * =========================================================================
      * GEOSPATIAL SEARCH - STAGE 2: Precise Radius Calculation (Accurate)
-     * =========================================================================
-     * This uses PostGIS (a spatial extension for PostgreSQL) via a 'nativeQuery = true' (raw SQL).
-     * It takes the short-listed mechanic IDs from Stage 1 and calculates their EXACT distance
-     * to the user's current GPS location.
-     * * - ST_MakePoint(:lng, :lat): Creates a GPS point coordinate.
-     * - ST_SetSRID(..., 4326): Tells the database to use the standard global GPS coordinate system (WGS 84).
-     * - ST_DWithin(..., m.service_radius_m): Checks if the distance between the mechanic and user is less than or equal to the mechanic's max driving radius.
+     * PostGIS ST_DWithin exact distance check on the Stage 1 shortlist.
+     * service_radius_km is multiplied by 1000 to convert to meters for ST_DWithin.
      */
     @Query(value = """
             SELECT * FROM mechanic m
-            WHERE m.mechanic_id IN :ids
+            WHERE m.id IN :ids
               AND ST_DWithin(
                     m.current_location,
                     ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
-                    m.service_radius_m
+                    m.service_radius_km * 1000
                   )
             """, nativeQuery = true)
     List<Mechanic> filterByRadius(
@@ -59,21 +53,20 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
             @Param("lng") double lng);
 
     /**
-     * Advanced H3 Grid Filter + Mechanic Skill Match combined.
-     * Finds available mechanics who are not only nearby in the H3 cell grid, but who ALSO
-     * possess the exact skill needed (e.g., matching "Flat Tire" or "Engine Overheat" to their profile).
-     * * - JOIN m.specializations: Joins the bridging table.
-     * - UPPER(...) = UPPER(...): Makes the problem type search case-insensitive (e.g., "tire" matches "TIRE").
+     * H3 Grid Filter + Mechanic Skill Match combined.
+     * Uses unnest() to search inside the skill_tags TEXT[] array.
      */
-    @Query("""
-            SELECT DISTINCT m FROM Mechanic m
-            JOIN m.specializations ms
-            JOIN ms.specialization s
-            WHERE m.currentH3Index IN :cellIds
-              AND m.isAvailable = true
-              AND UPPER(s.name) = UPPER(:problemType)
-            """)
-    List<Mechanic> findByH3CellsAndSpecialization(
+    @Query(value = """
+            SELECT DISTINCT m.* FROM mechanic m
+            JOIN mechanic_skill ms ON ms.mechanic_profile_id = m.id
+            WHERE m.current_h3_index IN :cellIds
+              AND m.available_status = true
+              AND EXISTS (
+                  SELECT 1 FROM unnest(ms.skill_tags) tag
+                  WHERE UPPER(tag) = UPPER(:problemType)
+              )
+            """, nativeQuery = true)
+    List<Mechanic> findByH3CellsAndSkillTag(
             @Param("cellIds") List<String> cellIds,
             @Param("problemType") String problemType);
 }

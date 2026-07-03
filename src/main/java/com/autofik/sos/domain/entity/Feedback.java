@@ -23,15 +23,18 @@ import java.util.UUID;
 @ToString // Lombok: Generates a toString method, but respects individual @ToString.Exclude tags below
 public class Feedback {
 
+    // Primary key, auto-generated as a UUID (not client-supplied, not updatable after creation)
     @Id
     @GeneratedValue
     @UuidGenerator
     @Column(updatable = false, nullable = false)
     private UUID id;
 
+    // Optional free-text review left by the user; rating alone is sufficient to submit feedback
     @Column(columnDefinition = "TEXT")
     private String comment;
 
+    // Star rating from 1.0 to 5.0 (enforced at DB level via @Check above)
     @Column(nullable = false, precision = 2, scale = 1)
     private BigDecimal rating;
 
@@ -44,16 +47,19 @@ public class Feedback {
     }
 
     // Relations
+    // The user who submitted this feedback
     @ToString.Exclude
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    // The SOS request this feedback is for. One feedback per request (enforced via unique constraint).
     @ToString.Exclude
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "sos_id", nullable = false, unique = true)
     private SosRequest sosRequest;
 
+    // The mechanic being rated/reviewed
     @ToString.Exclude
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "mechanic_id", nullable = false)

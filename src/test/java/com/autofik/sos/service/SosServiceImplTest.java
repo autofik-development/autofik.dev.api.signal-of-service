@@ -80,10 +80,9 @@ class SosServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        user = User.builder().userId(userId).name("Alice").hashPassword("hash").build();
-        vehicle = Vehicle.builder().vehicleId(vehicleId).plateNumber("ABC123")
-                .brand("Toyota").model("Camry").year(2020).build();
-        mechanic = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081").email("bob@fix.com").hashPassword("h").build();
+        user = User.builder().userId(userId).name("Alice").build();
+        vehicle = Vehicle.builder().id(vehicleId).carBrand("Toyota").carModel("Camry").build();
+        mechanic = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com").build();
         pendingSos = SosRequest.builder()
                 .sosId(sosId).problemType("Flat Tire").status(SosStatus.PENDING)
                 .user(user).vehicle(vehicle).build();
@@ -217,7 +216,8 @@ class SosServiceImplTest {
         BidSos acceptedBid = BidSos.builder().bidId(UUID.randomUUID()).status(BidStatus.ACCEPTED)
                 .sosRequest(pendingSos).mechanic(mechanic).build();
         MechanicResponse mechanicResponse = new MechanicResponse(
-                mechanicId, "Bob", "081", "bob@fix.com", true, null, null, null, null);
+                mechanicId, null, "Bob", "081", "bob@fix.com",
+                null, null, null, null, null, null, null, true, null, null, null);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
         when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))

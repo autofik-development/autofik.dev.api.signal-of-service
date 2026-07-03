@@ -1,12 +1,12 @@
 package com.autofik.sos.domain.entity;
 
+import com.autofik.sos.domain.enums.ApprovalStatus;
+import com.autofik.sos.domain.enums.MechanicRole;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UuidGenerator;
 import org.locationtech.jts.geom.Point;
 
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -28,31 +28,39 @@ public class Mechanic {
     @Id
     @GeneratedValue
     @UuidGenerator
-    @Column(name = "mechanic_id", updatable = false, nullable = false)
+    @Column(name = "id", updatable = false, nullable = false)
     private UUID mechanicId;
 
-    @Column(nullable = false)
-    private String name;
+    // Links this mechanic profile to a platform user account (SSO).
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private User user;
 
-    @Column(nullable = false)
-    private String phone;
+    @Column(name = "full_name", length = 30, nullable = false)
+    private String fullName;
 
-    @Column(unique = true, nullable = false)
+    @Column(name = "phone_number", length = 20, nullable = false)
+    private String phoneNumber;
+
+    @Column(length = 30)
     private String email;
 
-    @Column(name = "hash_password")
-    private String hashPassword;
+    // under_garage = works at a fixed shop; freeland = mobile/independent.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "mechanic_role")
+    private MechanicRole mechanicRole;
 
-    @Column(name = "referrer_code", unique = true)
-    private String referrerCode;
+    @Column(name = "referral_code", unique = true)
+    private String referralCode;
 
-    @Column(name = "is_available", nullable = false)
+    // Identity document check (ID card, license) — done during onboarding.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "kyc_status", nullable = false)
     @Builder.Default
-    private Boolean isAvailable = true;
+    private ApprovalStatus kycStatus = ApprovalStatus.PENDING;
 
-    @Column(name = "rating_avg", precision = 3, scale = 2)
-    @Builder.Default
-    private BigDecimal ratingAvg = BigDecimal.ZERO;
+    @Column(columnDefinition = "TEXT")
+    private String address;
 
     // Registered home/base address; used as fallback when the mechanic has no active location ping.
     @Column(name = "base_location", columnDefinition = "geography(Point, 4326)")
@@ -67,33 +75,24 @@ public class Mechanic {
     @Column(name = "current_h3_index", length = 16)
     private String currentH3Index;
 
-    // How far (in meters) this mechanic is willing to travel — varies per person.
-    // Used by PostGIS ST_DWithin in the Stage 2 radius query.
-    @Column(name = "service_radius_m", nullable = false)
+    // Coverage area in km; multiplied by 1000 when passed to PostGIS ST_DWithin (which expects meters).
+    @Column(name = "service_radius_km", nullable = false)
     @Builder.Default
-    private Integer serviceRadiusM = 10000;
+    private Integer serviceRadiusKm = 10;
 
-    @Column(name = "created_at", updatable = false)
-    private LocalDateTime createdAt;
+    @Column(name = "available_status", nullable = false)
+    @Builder.Default
+    private Boolean availableStatus = true;
 
-    @Column(name = "updated_at")
-    private LocalDateTime updatedAt;
-
-    @PrePersist
-    protected void onCreate() {
-        createdAt = LocalDateTime.now();
-        updatedAt = LocalDateTime.now();
-    }
-
-    @PreUpdate
-    protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
-    }
+    // Admin verification of mechanic credentials/skills — separate from KYC.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "verification_status", nullable = false)
+    @Builder.Default
+    private ApprovalStatus verificationStatus = ApprovalStatus.PENDING;
 
     // Relations
-
     @OneToMany(mappedBy = "mechanic", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<MechanicSpecialization> specializations;
+    private List<MechanicSkill> skills;
 
     @OneToMany(mappedBy = "mechanic", fetch = FetchType.LAZY)
     private List<Feedback> feedbacks;
@@ -104,4 +103,3 @@ public class Mechanic {
     @OneToMany(mappedBy = "proposedBy", fetch = FetchType.LAZY)
     private List<SosStatusHistory> proposedHistories;
 }
-

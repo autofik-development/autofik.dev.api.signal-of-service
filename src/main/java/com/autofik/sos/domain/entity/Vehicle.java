@@ -1,5 +1,6 @@
 package com.autofik.sos.domain.entity;
 
+import com.autofik.sos.domain.enums.FuelType;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UuidGenerator;
@@ -7,6 +8,11 @@ import org.hibernate.annotations.UuidGenerator;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Represents a vehicle owned by a {@link User}.
+ * A vehicle can be linked to multiple {@link SosRequest}s over time,
+ * and its fuel type / model info is used to match suitable mechanics.
+ */
 @Entity
 @Table(name = "vehicle")
 @Getter
@@ -16,43 +22,38 @@ import java.util.UUID;
 @Builder
 public class Vehicle {
 
+    // Primary key, auto-generated as a UUID (not client-supplied, not updatable after creation)
     @Id
     @GeneratedValue
     @UuidGenerator
-    @Column(name = "vehicle_id", updatable = false, nullable = false)
-    private UUID vehicleId;
+    @Column(name = "id", updatable = false, nullable = false)
+    private UUID id;
 
-    @Column(name = "plate_number", unique = true, nullable = false)
-    private String plateNumber;
+    // Vehicle manufacturer, e.g. "Toyota", "Honda"
+    @Column(name = "car_brand")
+    private String carBrand;
 
-    @Column(nullable = false)
-    private String brand;
+    // Vehicle model, e.g. "Camry", "Civic"
+    @Column(name = "car_model")
+    private String carModel;
 
-    @Column(nullable = false)
-    private String model;
+    // Stored as String to support flexible formats (e.g. "2023", "2022-2023").
+    @Column(name = "car_model_year")
+    private String carModelYear;
 
-    @Column(nullable = false)
-    private Integer year;
-
-    @Column
-    private String type;
-
+    // Used to match mechanics who specialize in specific engine/fuel types.
+    @Enumerated(EnumType.STRING)
     @Column(name = "fuel_type")
-    private String fuelType;
-
-    @Column
-    private String color;
-
-    @Column(name = "is_default", nullable = false)
-    @Builder.Default
-    private Boolean isDefault = false;
+    private FuelType fuelType;
 
     // Relations
+    // Owner of this vehicle. Lazily fetched; every vehicle must belong to a user.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    // All SOS (roadside assistance) requests ever made for this vehicle.
+    // Inverse side of the relationship, owned by SosRequest.vehicle.
     @OneToMany(mappedBy = "vehicle", fetch = FetchType.LAZY)
     private List<SosRequest> sosRequests;
 }
-

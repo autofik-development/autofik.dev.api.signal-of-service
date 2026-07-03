@@ -2,6 +2,7 @@ package com.autofik.sos.service.impl;
 
 import com.autofik.sos.domain.entity.Feedback;
 import com.autofik.sos.domain.entity.Mechanic;
+import com.autofik.sos.domain.entity.MechanicRate;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.enums.SosStatus;
@@ -9,6 +10,7 @@ import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
 import com.autofik.sos.mapper.FeedbackMapper;
 import com.autofik.sos.repository.FeedbackRepository;
+import com.autofik.sos.repository.MechanicRateRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
@@ -32,6 +34,7 @@ public class FeedbackServiceImpl implements FeedbackService {
     private final SosRequestRepository sosRequestRepository;
     private final UserRepository userRepository;
     private final MechanicRepository mechanicRepository;
+    private final MechanicRateRepository mechanicRateRepository;
     private final FeedbackMapper feedbackMapper;
 
     /**
@@ -117,10 +120,14 @@ public class FeedbackServiceImpl implements FeedbackService {
                         RoundingMode.HALF_UP                  // Rounding: Enforce standard commercial rounding
                 );
 
-        // 5. CACHE STATE UPDATE: Update the mechanic's cached profile summary column
-        mechanic.setRatingAvg(avg);
+        MechanicRate rate = mechanicRateRepository.findByMechanic(mechanic)
+                .orElse(MechanicRate.builder().mechanic(mechanic).build());
+        rate.setRatingAvg(avg);
+        rate.setRatingCount(feedbacks.size());
+        mechanicRateRepository.save(rate);
 
-        // 6. DB FLUSH: Save the modified mechanic profile record back into the PostgreSQL database table
-        mechanicRepository.save(mechanic);
+        // TODO: publish avg_rate + rating_count back to SSO via Kafka after saving.
+        // Confirm topic name with SSO team before implementing.
+        // See SosEventProducer for the existing producer pattern to follow.
     }
 }

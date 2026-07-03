@@ -77,10 +77,10 @@ class BidServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        user = User.builder().userId(userId).name("Alice").hashPassword("h").build();
-        vehicle = Vehicle.builder().vehicleId(UUID.randomUUID()).plateNumber("XYZ").brand("Honda").model("Civic").year(2021).build();
-        mechanic = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081").email("bob@fix.com")
-                .hashPassword("h").isAvailable(true).build();
+        user = User.builder().userId(userId).name("Alice").build();
+        vehicle = Vehicle.builder().id(UUID.randomUUID()).carBrand("Honda").carModel("Civic").build();
+        mechanic = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081")
+                .email("bob@fix.com").availableStatus(true).build();
         pendingSos = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
                 .status(SosStatus.PENDING).user(user).vehicle(vehicle)
                 .location(GEO.createPoint(new Coordinate(100.5018, 13.7563))).build();
@@ -139,8 +139,8 @@ class BidServiceImplTest {
 
     @Test
     void create_mechanicNotAvailable_throwsIllegalStateException() {
-        Mechanic unavailable = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
-                .email("b@fix.com").hashPassword("h").isAvailable(false).build();
+        Mechanic unavailable = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081")
+                .email("b@fix.com").availableStatus(false).build();
         CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(unavailable));
@@ -166,8 +166,8 @@ class BidServiceImplTest {
     void create_mechanicHasCurrentLocation_enrichesBidWithDistanceInfo() {
         Point mechanicLocation = GEO.createPoint(new Coordinate(100.50, 13.75));
         Point sosLocation = GEO.createPoint(new Coordinate(100.55, 13.80));
-        Mechanic mechanicWithLocation = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
-                .email("bob@fix.com").hashPassword("h").isAvailable(true)
+        Mechanic mechanicWithLocation = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081")
+                .email("bob@fix.com").availableStatus(true)
                 .currentLocation(mechanicLocation).build();
         SosRequest sosWithLocation = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
                 .status(SosStatus.PENDING).user(user).vehicle(vehicle).location(sosLocation).build();
@@ -196,8 +196,8 @@ class BidServiceImplTest {
     void create_mechanicHasCurrentLocationButMapsReturnsNull_bidStillSaved() {
         Point mechanicLocation = GEO.createPoint(new Coordinate(100.50, 13.75));
         Point sosLocation = GEO.createPoint(new Coordinate(100.55, 13.80));
-        Mechanic mechanicWithLocation = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
-                .email("bob@fix.com").hashPassword("h").isAvailable(true)
+        Mechanic mechanicWithLocation = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081")
+                .email("bob@fix.com").availableStatus(true)
                 .currentLocation(mechanicLocation).build();
         SosRequest sosWithLocation = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
                 .status(SosStatus.PENDING).user(user).vehicle(vehicle).location(sosLocation).build();

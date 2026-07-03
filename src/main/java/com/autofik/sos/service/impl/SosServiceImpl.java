@@ -115,7 +115,7 @@ public class SosServiceImpl implements SosService {
         }
 
         sosEventProducer.publishSosCreated(new SosCreatedEvent(
-            sos.getSosId(), user.getUserId(), vehicle.getVehicleId(),
+            sos.getSosId(), user.getUserId(), vehicle.getId(),
             sos.getProblemType(), sos.getDescription(),
             request.latitude(), request.longitude(),
             sos.getLocationAddress(), sos.getCreatedAt()
@@ -354,7 +354,7 @@ public class SosServiceImpl implements SosService {
         String sosCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
         List<String> searchCells = H3.kRing(sosCell, H3_RING_RADIUS);
 
-        List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSpecialization(searchCells, problemType);
+        List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
         if (coarse.isEmpty()) return;
 
         List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();

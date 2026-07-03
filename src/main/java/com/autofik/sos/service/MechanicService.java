@@ -1,6 +1,5 @@
 package com.autofik.sos.service;
 
-import com.autofik.sos.dto.request.CreateMechanicRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 
 import java.util.List;
@@ -11,13 +10,6 @@ import java.util.UUID;
  * Manages accounts, active availability states, and real-time GPS location tracking.
  */
 public interface MechanicService {
-
-    /**
-     * Use case: Register a new mechanic account in the system.
-     * @param request Contains name, phone, email, and base GPS coordinates.
-     * @return The created mechanic profile.
-     */
-    MechanicResponse create(CreateMechanicRequest request);
 
     /**
      * Use case: Fetch a single mechanic's profile by their unique ID.
