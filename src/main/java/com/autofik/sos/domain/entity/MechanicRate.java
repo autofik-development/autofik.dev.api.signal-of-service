@@ -54,4 +54,14 @@ public class MechanicRate {
     @Column(name = "created_at", updatable = false)
     @ToString.Include
     private LocalDateTime createdAt;
+
+    public static class MechanicRateBuilder {
+        @Override
+        public String toString() {
+            return "MechanicRate.MechanicRateBuilder(id=" + this.id
+                    + ", ratingAvg=" + this.ratingAvg
+                    + ", ratingCount=" + this.ratingCount
+                    + ", createdAt=" + this.createdAt + ")";
+        }
+    }
 }
