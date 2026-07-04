@@ -10,7 +10,6 @@ import java.util.List;
 @Mapper(componentModel = "spring")
 public interface MechanicMapper {
 
-    @Mapping(target = "userId", source = "user.userId")
     @Mapping(target = "avgRate", ignore = true)
     @Mapping(target = "rateCount", ignore = true)
     // currentLocation is a JTS Point: X = longitude, Y = latitude (WGS-84)

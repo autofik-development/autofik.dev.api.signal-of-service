@@ -56,7 +56,7 @@ class MechanicServiceImplTest {
                 .mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com")
                 .availableStatus(true).build();
         mechanicResponse = new MechanicResponse(
-                mechanicId, null, "Bob", "081", "bob@fix.com",
+                mechanicId, "Bob", "081", "bob@fix.com",
                 null, null, ApprovalStatus.PENDING, null, 10,
                 BigDecimal.ZERO, 0, true, ApprovalStatus.PENDING, null, null);
     }
@@ -109,7 +109,7 @@ class MechanicServiceImplTest {
         Mechanic flatTireMechanic = buildMechanicWithSkill("Flat Tire");
         Mechanic engineMechanic   = buildMechanicWithSkill("Engine");
         MechanicResponse flatTireResponse = new MechanicResponse(
-                flatTireMechanic.getMechanicId(), null, "Bob", "081", "b@fix.com",
+                flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com",
                 null, null, ApprovalStatus.PENDING, null, 10,
                 BigDecimal.ZERO, 0, true, ApprovalStatus.PENDING, null, null);
 

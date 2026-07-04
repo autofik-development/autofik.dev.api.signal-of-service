@@ -1,5 +1,7 @@
 package com.autofik.sos.service;
 
+import com.autofik.sos.dto.request.CreateMechanicRequest;
+import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 
 import java.util.List;
@@ -10,6 +12,13 @@ import java.util.UUID;
  * Manages accounts, active availability states, and real-time GPS location tracking.
  */
 public interface MechanicService {
+
+    /**
+     * Use case: Register a new mechanic account in the system.
+     * @param request Contains name, phone, email, and base GPS coordinates.
+     * @return The created mechanic profile.
+     */
+    MechanicResponse create(CreateMechanicRequest request);
 
     /**
      * Use case: Fetch a single mechanic's profile by their unique ID.
@@ -56,6 +65,15 @@ public interface MechanicService {
      * @return Updated mechanic profile.
      */
     MechanicResponse updateLocation(UUID mechanicId, double lat, double lng, UUID sosId);
+
+    /**
+     * Use case: On-demand read of a mechanic's current position (e.g. initial screen load,
+     * before the next WebSocket push arrives). Reads the live Redis cache first; falls back
+     * to the last durable Postgres snapshot if Redis has nothing for this mechanic.
+     * @param mechanicId Identifies the target mechanic.
+     * @return The mechanic's most recently known position.
+     */
+    MechanicLocationResponse getCurrentLocation(UUID mechanicId);
 
     /**
      * Use case: Toggle a mechanic's duty status (online/offline).

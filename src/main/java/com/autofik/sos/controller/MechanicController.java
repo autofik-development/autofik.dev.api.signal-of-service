@@ -1,19 +1,20 @@
 package com.autofik.sos.controller;
 
+import com.autofik.sos.dto.request.CreateMechanicRequest;
+import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.service.MechanicService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.UUID;
 
 /**
- * REST Controller for mechanic availability and real-time GPS tracking.
+ * REST Controller for mechanic account management, availability, and real-time GPS tracking.
  * Base URL: /api/mechanics
- *
- * Mechanic profiles (name, phone, skills, etc.) are owned by the SSO team — no create endpoint here.
- * This service only writes two operational fields: current_location and current_h3_index (via updateLocation).
  */
 @RestController
 @RequestMapping("/api/mechanics")
@@ -21,6 +22,14 @@ import java.util.UUID;
 public class MechanicController {
 
     private final MechanicService mechanicService;
+
+    // POST /api/mechanics — Register a new mechanic account
+    // Returns 201 CREATED with the created mechanic profile
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public MechanicResponse create(@Valid @RequestBody CreateMechanicRequest request) {
+        return mechanicService.create(request);
+    }
 
     // GET /api/mechanics — Admin: list all mechanic accounts
     @GetMapping
@@ -55,6 +64,15 @@ public class MechanicController {
                                            @RequestParam double lng,
                                            @RequestParam(required = false) UUID sosId) {
         return mechanicService.updateLocation(mechanicId, lat, lng, sosId);
+    }
+
+    // GET /api/mechanics/{mechanicId}/location — On-demand read of a mechanic's current position
+    // Reads Redis first (fresh every ping), falls back to the last Postgres snapshot.
+    // Continuous updates during an active job still arrive via WebSocket — use this only for
+    // initial screen load or reconnect, not for polling.
+    @GetMapping("/{mechanicId}/location")
+    public MechanicLocationResponse getCurrentLocation(@PathVariable UUID mechanicId) {
+        return mechanicService.getCurrentLocation(mechanicId);
     }
 
     // PATCH /api/mechanics/{mechanicId}/availability?available= — Toggle mechanic online/offline

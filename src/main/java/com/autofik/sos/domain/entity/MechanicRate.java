@@ -3,6 +3,7 @@ package com.autofik.sos.domain.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.annotations.UuidGenerator;
 
 import java.math.BigDecimal;
@@ -32,9 +33,9 @@ public class MechanicRate {
     @ToString.Include
     private UUID id;
 
-    // The mechanic this aggregate rating belongs to (expected one row per mechanic)
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "mechanic_profile_id", nullable = false)
+    // One rate row per mechanic — unique enforced at DB level
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "mechanic_profile_id", nullable = false, unique = true)
     @ToString.Exclude
     private Mechanic mechanic;
 
@@ -49,11 +50,16 @@ public class MechanicRate {
     @ToString.Include
     private Integer ratingCount = 0;
     
-    // When this aggregate row was first created for the mechanic
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     @ToString.Include
     private LocalDateTime createdAt;
+
+    // Updated on every feedback recalculation — lets you see how stale the cached aggregate is
+    @UpdateTimestamp
+    @Column(name = "updated_at")
+    @ToString.Include
+    private LocalDateTime updatedAt;
 
     public static class MechanicRateBuilder {
         @Override

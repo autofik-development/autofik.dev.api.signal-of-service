@@ -8,7 +8,6 @@ import java.util.UUID;
 
 public record MechanicResponse(
         UUID mechanicId,
-        UUID userId,
         String fullName,
         String phoneNumber,
         String email,

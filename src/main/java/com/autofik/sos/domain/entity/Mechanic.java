@@ -33,12 +33,6 @@ public class Mechanic {
     @ToString.Include
     private UUID mechanicId;
 
-    // Links this mechanic profile to a platform user account (SSO).
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
-    @ToString.Exclude
-    private User user;
-
     @Column(name = "full_name", length = 30, nullable = false)
     @ToString.Include
     private String fullName;
@@ -105,6 +99,10 @@ public class Mechanic {
     private ApprovalStatus verificationStatus = ApprovalStatus.PENDING;
 
     // Relations
+    @OneToOne(mappedBy = "mechanic", cascade = CascadeType.ALL)
+    @ToString.Exclude
+    private MechanicRate rate;
+
     @OneToMany(mappedBy = "mechanic", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     @ToString.Exclude
     private List<MechanicSkill> skills;
@@ -121,3 +119,4 @@ public class Mechanic {
     @ToString.Exclude
     private List<SosStatusHistory> proposedHistories;
 }
+
