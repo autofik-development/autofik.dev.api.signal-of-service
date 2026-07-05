@@ -25,15 +25,18 @@ import org.locationtech.jts.geom.Point;
 @ToString(exclude = {"user", "vehicle", "bids", "statusHistory", "feedback", "media"})
 public class SosRequest {
 
+    // Primary key, auto-generated as a UUID (not client-supplied, not updatable after creation)
     @Id
     @GeneratedValue
     @UuidGenerator
     @Column(name = "sos_id", updatable = false, nullable = false)
     private UUID sosId;
 
+    // Category of the roadside issue, e.g. "flat tire", "battery", "engine failure"
     @Column(name = "problem_type", nullable = false)
     private String problemType;
 
+    // Free-text details the user provides about the problem
     @Column(columnDefinition = "TEXT")
     private String description;
 
@@ -79,24 +82,29 @@ public class SosRequest {
     }
 
     // --- Relations ---
-
+    // The user who submitted this SOS request
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    // The vehicle involved in this request, used to match mechanics by fuel/engine type
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "vehicle_id", nullable = false)
     private Vehicle vehicle;
 
+    // All bids submitted by mechanics for this request. Deleting the request cascades to its bids.
     @OneToMany(mappedBy = "sosRequest", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<BidSos> bids;
 
+    // Full audit trail of status transitions (proposed by mechanic, approved by user) for this request
     @OneToMany(mappedBy = "sosRequest", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<SosStatusHistory> statusHistory;
 
+    // The user's post-completion feedback for this request, if submitted (1:1)
     @OneToOne(mappedBy = "sosRequest", cascade = CascadeType.ALL)
     private Feedback feedback;
 
+    // Photos/videos attached to this request (e.g. of the vehicle issue)
     @OneToMany(mappedBy = "sosRequest", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<SosMedia> media;
 }

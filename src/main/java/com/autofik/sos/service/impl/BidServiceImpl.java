@@ -72,7 +72,7 @@ public class BidServiceImpl implements BidService {
         // 4. SAFETY CHECK: Verify the mechanic profile exists and is currently online/on-duty
         Mechanic mechanic = mechanicRepository.findById(request.mechanicId())
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
-        if (!Boolean.TRUE.equals(mechanic.getIsAvailable())) {
+        if (!Boolean.TRUE.equals(mechanic.getAvailableStatus())) {
             throw new IllegalStateException("Mechanic is not available: " + request.mechanicId());
         }
 
@@ -144,9 +144,9 @@ public class BidServiceImpl implements BidService {
                     .toList();
             case TOP_RATED -> bids.stream()
                     .sorted(Comparator.comparing(
-                            r -> r.mechanic() != null && r.mechanic().ratingAvg() != null
-                                    ? r.mechanic().ratingAvg() : BigDecimal.ZERO,
-                            Comparator.<BigDecimal>naturalOrder().reversed())) // Highest star rating first (reversed order)
+                            r -> r.mechanic() != null && r.mechanic().avgRate() != null
+                                    ? r.mechanic().avgRate() : BigDecimal.ZERO,
+                            Comparator.<BigDecimal>naturalOrder().reversed()))
                     .toList();
         };
     }

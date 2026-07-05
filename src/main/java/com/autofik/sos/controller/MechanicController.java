@@ -1,6 +1,7 @@
 package com.autofik.sos.controller;
 
 import com.autofik.sos.dto.request.CreateMechanicRequest;
+import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.service.MechanicService;
 import jakarta.validation.Valid;
@@ -63,6 +64,15 @@ public class MechanicController {
                                            @RequestParam double lng,
                                            @RequestParam(required = false) UUID sosId) {
         return mechanicService.updateLocation(mechanicId, lat, lng, sosId);
+    }
+
+    // GET /api/mechanics/{mechanicId}/location — On-demand read of a mechanic's current position
+    // Reads Redis first (fresh every ping), falls back to the last Postgres snapshot.
+    // Continuous updates during an active job still arrive via WebSocket — use this only for
+    // initial screen load or reconnect, not for polling.
+    @GetMapping("/{mechanicId}/location")
+    public MechanicLocationResponse getCurrentLocation(@PathVariable UUID mechanicId) {
+        return mechanicService.getCurrentLocation(mechanicId);
     }
 
     // PATCH /api/mechanics/{mechanicId}/availability?available= — Toggle mechanic online/offline

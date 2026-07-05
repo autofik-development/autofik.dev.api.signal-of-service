@@ -1,15 +1,13 @@
 package com.autofik.sos.dto.response;
 
+import com.autofik.sos.domain.enums.FuelType;
+
 import java.util.UUID;
 
 public record VehicleResponse(
-        UUID vehicleId,
-        String plateNumber,
-        String brand,
-        String model,
-        Integer year,
-        String type,
-        String fuelType,
-        String color,
-        Boolean isDefault
+        UUID id,
+        String carBrand,
+        String carModel,
+        String carModelYear,
+        FuelType fuelType
 ) {}

@@ -1,41 +1,26 @@
 package com.autofik.sos.service;
 
-import com.autofik.sos.dto.request.CreateUserRequest;
 import com.autofik.sos.dto.response.UserResponse;
 
 import java.util.List;
 import java.util.UUID;
 
 /**
- * Service Interface defining the business use cases for managing driver User accounts.
- * Handles profile creation and lookups. Authentication is delegated to the SSO team.
+ * Service for read operations on {@link com.autofik.sos.domain.entity.User}.
+ * Exposes user data as {@link UserResponse} DTOs for API consumption.
  */
 public interface UserService {
 
     /**
-     * Use case: Register a new driver account.
-     * @param request Contains name, phone, and email.
-     * @return The created user profile.
-     */
-    UserResponse create(CreateUserRequest request);
-
-    /**
-     * Use case: Fetch a user profile by their unique internal ID.
-     * @param userId Identifies the target user.
-     * @return The matching user profile.
+     * Use case : fetch a single user's details by their ID
+     * @param userId the ID of the user to fetch
+     * @return the user's details as a UserResponse
      */
     UserResponse getById(UUID userId);
 
     /**
-     * Use case: Look up a user by their email address (e.g., during SSO token validation).
-     * @param email The email to search for.
-     * @return The matching user profile.
-     */
-    UserResponse getByEmail(String email);
-
-    /**
-     * Use case: Admin dashboard — retrieve all registered user accounts.
-     * @return Full list of all user records.
+     * Use case : fetch all users in the system
+     * @return list of all users as UserResponse
      */
     List<UserResponse> getAll();
 }

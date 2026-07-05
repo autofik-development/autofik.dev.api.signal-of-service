@@ -1,10 +1,10 @@
 package com.autofik.sos.service;
 
 import com.autofik.sos.domain.entity.Mechanic;
-import com.autofik.sos.domain.entity.MechanicSpecialization;
-import com.autofik.sos.domain.entity.Specialization;
-import com.autofik.sos.domain.enums.ExperienceLevel;
-import com.autofik.sos.dto.request.CreateMechanicRequest;
+import com.autofik.sos.domain.entity.MechanicSkill;
+import com.autofik.sos.domain.enums.ApprovalStatus;
+import com.autofik.sos.domain.enums.MechanicRole;
+import java.util.Arrays;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.kafka.producer.SosEventProducer;
@@ -35,7 +35,6 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class MechanicServiceImplTest {
 
-    // Bangkok coordinates used as realistic test values
     private static final double LAT = 13.7563;
     private static final double LNG = 100.5018;
 
@@ -47,35 +46,19 @@ class MechanicServiceImplTest {
     @InjectMocks MechanicServiceImpl mechanicService;
 
     private final UUID mechanicId = UUID.randomUUID();
+    private final UUID userId = UUID.randomUUID();
     private Mechanic mechanic;
     private MechanicResponse mechanicResponse;
 
     @BeforeEach
     void setUp() {
         mechanic = Mechanic.builder()
-                .mechanicId(mechanicId).name("Bob").phone("081").email("bob@fix.com")
-                .hashPassword("hashed").isAvailable(true).ratingAvg(BigDecimal.ZERO).build();
-        mechanicResponse = new MechanicResponse(mechanicId, "Bob", "081", "bob@fix.com", true, BigDecimal.ZERO, null, null, null);
-    }
-
-    // ── create ────────────────────────────────────────────────────────────────
-
-    @Test
-    void create_setsBaseLocationOnly_leavesCurrentLocationUnset() {
-        CreateMechanicRequest request = new CreateMechanicRequest("Bob", "081", "bob@fix.com", LAT, LNG);
-        when(mechanicRepository.save(any(Mechanic.class))).thenReturn(mechanic);
-        when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
-
-        mechanicService.create(request);
-
-        ArgumentCaptor<Mechanic> captor = ArgumentCaptor.forClass(Mechanic.class);
-        verify(mechanicRepository).save(captor.capture());
-        Mechanic saved = captor.getValue();
-        assertThat(saved.getBaseLocation()).isNotNull();
-        assertThat(saved.getBaseLocation().getY()).isEqualTo(LAT);
-        assertThat(saved.getBaseLocation().getX()).isEqualTo(LNG);
-        assertThat(saved.getCurrentLocation()).isNull();
-        assertThat(saved.getCurrentH3Index()).isNull();
+                .mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com")
+                .availableStatus(true).build();
+        mechanicResponse = new MechanicResponse(
+                mechanicId, "Bob", "081", "bob@fix.com",
+                null, null, ApprovalStatus.PENDING, null, 10,
+                BigDecimal.ZERO, 0, true, ApprovalStatus.PENDING, null, null);
     }
 
     // ── getById ───────────────────────────────────────────────────────────────
@@ -123,10 +106,12 @@ class MechanicServiceImplTest {
 
     @Test
     void findAvailable_withProblemType_filtersOutNonMatchingSpecializations() {
-        Mechanic flatTireMechanic = buildMechanicWithSpecialization("Flat Tire");
-        Mechanic engineMechanic   = buildMechanicWithSpecialization("Engine");
+        Mechanic flatTireMechanic = buildMechanicWithSkill("Flat Tire");
+        Mechanic engineMechanic   = buildMechanicWithSkill("Engine");
         MechanicResponse flatTireResponse = new MechanicResponse(
-                flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com", true, BigDecimal.ZERO, null, null, null);
+                flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com",
+                null, null, ApprovalStatus.PENDING, null, 10,
+                BigDecimal.ZERO, 0, true, ApprovalStatus.PENDING, null, null);
 
         when(mechanicRepository.findByH3Cells(anyList()))
                 .thenReturn(List.of(flatTireMechanic, engineMechanic));
@@ -142,7 +127,7 @@ class MechanicServiceImplTest {
 
     @Test
     void findAvailable_withProblemType_noSpecializationMatch_returnsEmpty() {
-        Mechanic engineMechanic = buildMechanicWithSpecialization("Engine");
+        Mechanic engineMechanic = buildMechanicWithSkill("Engine");
         when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(engineMechanic));
         when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(List.of(engineMechanic));
         when(mechanicMapper.toResponseList(List.of())).thenReturn(List.of());
@@ -154,7 +139,7 @@ class MechanicServiceImplTest {
 
     @Test
     void findAvailable_nullProblemType_skipsSpecializationFilter() {
-        mechanic.setSpecializations(List.of());
+        mechanic.setSkills(List.of());
         when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(mechanic));
         when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(List.of(mechanic));
         when(mechanicMapper.toResponseList(List.of(mechanic))).thenReturn(List.of(mechanicResponse));
@@ -190,14 +175,16 @@ class MechanicServiceImplTest {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    private Mechanic buildMechanicWithSpecialization(String specializationName) {
+    private Mechanic buildMechanicWithSkill(String skillName) {
         Mechanic m = Mechanic.builder()
-                .mechanicId(UUID.randomUUID()).name("Tech").phone("082").email(UUID.randomUUID() + "@fix.com")
-                .hashPassword("h").isAvailable(true).ratingAvg(BigDecimal.ZERO).build();
-        Specialization spec = Specialization.builder()
-                .spcaId(UUID.randomUUID()).name(specializationName).build();
-        MechanicSpecialization ms = new MechanicSpecialization(m, spec, 2, ExperienceLevel.MID);
-        m.setSpecializations(List.of(ms));
+                .mechanicId(UUID.randomUUID()).fullName("Tech").phoneNumber("082")
+                .email(UUID.randomUUID() + "@fix.com")
+                .availableStatus(true).build();
+        MechanicSkill skill = MechanicSkill.builder()
+                .id(UUID.randomUUID())
+                .skillTags(new String[]{skillName})
+                .mechanic(m).build();
+        m.setSkills(List.of(skill));
         return m;
     }
 }

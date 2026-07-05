@@ -65,8 +65,8 @@ class SosMediaServiceImplTest {
         ReflectionTestUtils.setField(sosMediaService, "bucket", "test-bucket");
 
         sosRequest = SosRequest.builder().sosId(sosId).build();
-        user = User.builder().userId(userId).name("Alice").hashPassword("h").build();
-        mechanic = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081").email("bob@fix.com").hashPassword("h").build();
+        user = User.builder().userId(userId).name("Alice").build();
+        mechanic = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com").build();
 
         file = mock(MultipartFile.class);
         lenient().when(file.getContentType()).thenReturn("image/jpeg");

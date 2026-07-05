@@ -2,6 +2,7 @@ package com.autofik.sos.service;
 
 import com.autofik.sos.domain.entity.Feedback;
 import com.autofik.sos.domain.entity.Mechanic;
+import com.autofik.sos.domain.entity.MechanicRate;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.entity.Vehicle;
@@ -10,6 +11,7 @@ import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
 import com.autofik.sos.mapper.FeedbackMapper;
 import com.autofik.sos.repository.FeedbackRepository;
+import com.autofik.sos.repository.MechanicRateRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
@@ -41,6 +43,7 @@ class FeedbackServiceImplTest {
     @Mock SosRequestRepository sosRequestRepository;
     @Mock UserRepository userRepository;
     @Mock MechanicRepository mechanicRepository;
+    @Mock MechanicRateRepository mechanicRateRepository;
     @Mock FeedbackMapper feedbackMapper;
 
     @InjectMocks FeedbackServiceImpl feedbackService;
@@ -58,11 +61,10 @@ class FeedbackServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        user = User.builder().userId(userId).name("Alice").hashPassword("h").build();
-        mechanic = Mechanic.builder().mechanicId(mechanicId).name("Bob").phone("081")
-                .email("bob@fix.com").hashPassword("h").ratingAvg(BigDecimal.ZERO).build();
-        Vehicle vehicle = Vehicle.builder().vehicleId(UUID.randomUUID()).plateNumber("ABC")
-                .brand("Toyota").model("Camry").year(2020).build();
+        user = User.builder().userId(userId).name("Alice").build();
+        mechanic = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081")
+                .email("bob@fix.com").build();
+        Vehicle vehicle = Vehicle.builder().id(UUID.randomUUID()).carBrand("Toyota").carModel("Camry").build();
         completedSos = SosRequest.builder().sosId(sosId).problemType("Flat Tire")
                 .status(SosStatus.COMPLETED).user(user).vehicle(vehicle).build();
         feedback = Feedback.builder().id(feedbackId).rating(BigDecimal.valueOf(4.5))
@@ -86,14 +88,15 @@ class FeedbackServiceImplTest {
         // Two feedbacks → average = (4.5 + 3.5) / 2 = 4.0
         when(feedbackRepository.findByMechanicMechanicId(mechanicId))
                 .thenReturn(List.of(feedback, secondFeedback));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(mechanicRateRepository.findByMechanic(mechanic)).thenReturn(Optional.empty());
         when(feedbackMapper.toResponse(feedback)).thenReturn(feedbackResponse);
 
         FeedbackResponse result = feedbackService.create(request);
 
         assertThat(result).isEqualTo(feedbackResponse);
-        assertThat(mechanic.getRatingAvg()).isEqualByComparingTo(BigDecimal.valueOf(4.0));
-        verify(mechanicRepository).save(mechanic);
+        ArgumentCaptor<MechanicRate> captor = ArgumentCaptor.forClass(MechanicRate.class);
+        verify(mechanicRateRepository).save(captor.capture());
+        assertThat(captor.getValue().getRatingAvg()).isEqualByComparingTo(BigDecimal.valueOf(4.0));
     }
 
     @Test
@@ -105,7 +108,7 @@ class FeedbackServiceImplTest {
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(feedbackRepository.save(any(Feedback.class))).thenReturn(feedback);
         when(feedbackRepository.findByMechanicMechanicId(mechanicId)).thenReturn(List.of(feedback));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(mechanicRateRepository.findByMechanic(mechanic)).thenReturn(Optional.empty());
         when(feedbackMapper.toResponse(feedback)).thenReturn(feedbackResponse);
 
         feedbackService.create(request);
@@ -124,8 +127,7 @@ class FeedbackServiceImplTest {
     void create_sosNotCompleted_throwsIllegalStateException() {
         SosRequest pendingSos = SosRequest.builder().sosId(sosId).problemType("X")
                 .status(SosStatus.PENDING).user(user).vehicle(
-                        Vehicle.builder().vehicleId(UUID.randomUUID()).plateNumber("X")
-                                .brand("X").model("X").year(2020).build()).build();
+                        Vehicle.builder().id(UUID.randomUUID()).build()).build();
         CreateFeedbackRequest request = new CreateFeedbackRequest(
                 userId, mechanicId, sosId, BigDecimal.valueOf(4.0), null);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
