@@ -216,7 +216,7 @@ class SosServiceImplTest {
         BidSos acceptedBid = BidSos.builder().bidId(UUID.randomUUID()).status(BidStatus.ACCEPTED)
                 .sosRequest(pendingSos).mechanic(mechanic).build();
         MechanicResponse mechanicResponse = new MechanicResponse(
-                mechanicId, null, "Bob", "081", "bob@fix.com",
+                mechanicId, "Bob", "081", "bob@fix.com",
                 null, null, null, null, null, null, null, true, null, null, null);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);

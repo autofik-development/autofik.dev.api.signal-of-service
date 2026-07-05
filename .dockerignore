@@ -14,9 +14,11 @@ Thumbs.db
 .vscode/
 
 # Build tools and wrappers (Ignore if building inside the container via Multi-stage builds)
-.mvn/
-mvnw
-mvnw.cmd
+#.mvn/
+#mvnw
+#mvnw.cmd
+
+# Build tools and wrappers (Ignore if building inside the container via Multi-stage builds)
 .gradle/
 gradlew
 gradlew.cmd
