@@ -1,6 +1,6 @@
 package com.autofik.sos.dto.response;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 /**
  * On-demand read of a mechanic's current position — used for initial screen load only.
@@ -9,11 +9,11 @@ import java.time.LocalDateTime;
  *
  * @param latitude  current latitude
  * @param longitude current longitude
- * @param asOf      when this position was last known (Redis read time, or the Postgres
- *                  snapshot's updatedAt when falling back)
+ * @param asOf      UTC instant this position was last known (Redis read time, or Postgres
+ *                  snapshot time when falling back); serialized as ISO-8601
  */
 public record MechanicLocationResponse(
         double latitude,
         double longitude,
-        LocalDateTime asOf
+        Instant asOf
 ) {}

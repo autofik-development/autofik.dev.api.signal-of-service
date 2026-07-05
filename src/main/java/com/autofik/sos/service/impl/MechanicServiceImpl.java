@@ -27,9 +27,11 @@ import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -67,6 +69,7 @@ public class MechanicServiceImpl implements MechanicService {
     private final MechanicMapper mechanicMapper;
     private final SosEventProducer sosEventProducer;
     private final StringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -127,6 +130,11 @@ public class MechanicServiceImpl implements MechanicService {
                                                 .anyMatch(tag -> tag.equalsIgnoreCase(problemType))))
                         .toList();
 
+        if (problemType != null && !problemType.isBlank() && result.isEmpty() && !candidates.isEmpty()) {
+            log.debug("problemType '{}' matched no mechanic skill tags; {} nearby candidate(s) excluded",
+                    problemType, candidates.size());
+        }
+
         return mechanicMapper.toResponseList(result);
     }
 
@@ -164,13 +172,8 @@ public class MechanicServiceImpl implements MechanicService {
     @Transactional
     public MechanicResponse updateLocation(UUID mechanicId, double lat, double lng) {
         MechanicResponse response = writeLocation(mechanicId, lat, lng);
-
         bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED)
-                .ifPresent(bid -> sosEventProducer.publishMechanicLocation(
-                        new MechanicLocationEvent(
-                                bid.getSosRequest().getSosId(), mechanicId, lat, lng, LocalDateTime.now()
-                        )
-                ));
+                .ifPresent(bid -> publishLocation(bid.getSosRequest().getSosId(), mechanicId, lat, lng));
         return response;
     }
 
@@ -180,37 +183,49 @@ public class MechanicServiceImpl implements MechanicService {
     @Transactional
     public MechanicResponse updateLocation(UUID mechanicId, double lat, double lng, UUID sosId) {
         MechanicResponse response = writeLocation(mechanicId, lat, lng);
-
         if (sosId != null) {
-            sosEventProducer.publishMechanicLocation(
-                    new MechanicLocationEvent(sosId, mechanicId, lat, lng, LocalDateTime.now())
-            );
+            publishLocation(sosId, mechanicId, lat, lng);
         }
         return response;
     }
 
-    // Redis is written on every ping — cheap, in-memory, and what findAvailable()/getCurrentLocation()
-    // actually read from. Postgres is only written once per PG_SYNC_INTERVAL per mechanic (via the
-    // Redis SET NX EX below acting as the throttle), so it stays a durability snapshot rather than
-    // taking the full write load of every GPS ping.
+    // Redis Pub/Sub primary — listener relays to WebSocket immediately.
+    // Kafka fallback activates automatically on any Redis exception; MechanicLocationConsumer handles delivery.
+    private void publishLocation(UUID sosId, UUID mechanicId, double lat, double lng) {
+        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, lat, lng, LocalDateTime.now());
+        try {
+            redisTemplate.convertAndSend(
+                    "mechanic:loc:" + sosId,
+                    objectMapper.writeValueAsString(event)
+            );
+        } catch (Exception e) {
+            log.warn("Redis pub/sub failed for SOS {}, falling back to Kafka: {}", sosId, e.getMessage());
+            sosEventProducer.publishMechanicLocation(event);
+        }
+    }
+
+    // Redis is written on every ping. Postgres is throttled to once per PG_SYNC_INTERVAL via SET NX EX.
+    // When Redis is down the throttle key is unavailable, so every ping falls through to Postgres —
+    // keeping the durability snapshot current during an outage.
     private MechanicResponse writeLocation(UUID mechanicId, double lat, double lng) {
-        redisTemplate.opsForGeo().add(MECHANIC_GEO_KEY, new Point(lng, lat), mechanicId.toString());
-        redisTemplate.opsForZSet().add(LASTSEEN_KEY, mechanicId.toString(), System.currentTimeMillis());
+        boolean shouldPersist;
+        try {
+            redisTemplate.opsForGeo().add(MECHANIC_GEO_KEY, new Point(lng, lat), mechanicId.toString());
+            redisTemplate.opsForZSet().add(LASTSEEN_KEY, mechanicId.toString(), System.currentTimeMillis());
+            Boolean throttle = redisTemplate.opsForValue()
+                    .setIfAbsent(PG_SYNC_KEY_PREFIX + mechanicId, "1", PG_SYNC_INTERVAL);
+            shouldPersist = Boolean.TRUE.equals(throttle);
+        } catch (Exception e) {
+            log.warn("Redis unavailable for mechanic {}, writing to Postgres on every ping: {}", mechanicId, e.getMessage());
+            shouldPersist = true;
+        }
 
-        Boolean shouldPersist = redisTemplate.opsForValue()
-                .setIfAbsent(PG_SYNC_KEY_PREFIX + mechanicId, "1", PG_SYNC_INTERVAL);
-
-        Mechanic mechanic;
-        if (Boolean.TRUE.equals(shouldPersist)) {
-            mechanic = mechanicRepository.findById(mechanicId)
-                    .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+        Mechanic mechanic = mechanicRepository.findById(mechanicId)
+                .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+        if (shouldPersist) {
             mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
             mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
             mechanic = mechanicRepository.save(mechanic);
-        } else {
-            // Not this ping's turn to hit Postgres — fetch as-is just to build the response.
-            mechanic = mechanicRepository.findById(mechanicId)
-                    .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
         }
         return mechanicMapper.toResponse(mechanic);
     }
@@ -226,7 +241,7 @@ public class MechanicServiceImpl implements MechanicService {
             List<Point> points = redisTemplate.opsForGeo().position(MECHANIC_GEO_KEY, mechanicId.toString());
             if (points != null && !points.isEmpty() && points.get(0) != null) {
                 Point point = points.get(0);
-                return new MechanicLocationResponse(point.getY(), point.getX(), LocalDateTime.now());
+                return new MechanicLocationResponse(point.getY(), point.getX(), Instant.now());
             }
         } catch (Exception e) {
             log.warn("Redis lookup failed for mechanic {}, falling back to Postgres: {}", mechanicId, e.getMessage());
@@ -238,7 +253,7 @@ public class MechanicServiceImpl implements MechanicService {
         if (currentLocation == null) {
             throw new EntityNotFoundException("No location available for mechanic: " + mechanicId);
         }
-        return new MechanicLocationResponse(currentLocation.getY(), currentLocation.getX(), LocalDateTime.now());
+        return new MechanicLocationResponse(currentLocation.getY(), currentLocation.getX(), Instant.now());
     }
 
     @Override

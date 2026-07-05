@@ -5,8 +5,11 @@ import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.service.MechanicService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -19,6 +22,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/mechanics")
 @RequiredArgsConstructor
+@Validated
 public class MechanicController {
 
     private final MechanicService mechanicService;
@@ -47,9 +51,10 @@ public class MechanicController {
     // problemType is optional: omit to search all specializations, provide to filter (e.g., "flat_tire")
     // Uses two-stage H3 + PostGIS geo-search under the hood
     @GetMapping("/available")
-    public List<MechanicResponse> findAvailable(@RequestParam double lat,
-                                                @RequestParam double lng,
-                                                @RequestParam(required = false) String problemType) {
+    public List<MechanicResponse> findAvailable(
+            @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
+            @RequestParam @DecimalMin("102.34") @DecimalMax("107.63") double lng,
+            @RequestParam(required = false) String problemType) {
         return problemType != null
                 ? mechanicService.findAvailable(lat, lng, problemType)
                 : mechanicService.findAvailable(lat, lng);
@@ -59,10 +64,11 @@ public class MechanicController {
     // sosId is optional: if provided skips the active-bid DB lookup for better performance
     // Called frequently by the mobile app while a mechanic is on an active job
     @PatchMapping("/{mechanicId}/location")
-    public MechanicResponse updateLocation(@PathVariable UUID mechanicId,
-                                           @RequestParam double lat,
-                                           @RequestParam double lng,
-                                           @RequestParam(required = false) UUID sosId) {
+    public MechanicResponse updateLocation(
+            @PathVariable UUID mechanicId,
+            @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
+            @RequestParam @DecimalMin("102.34") @DecimalMax("107.63") double lng,
+            @RequestParam(required = false) UUID sosId) {
         return mechanicService.updateLocation(mechanicId, lat, lng, sosId);
     }
 
