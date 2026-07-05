@@ -1,0 +1,33 @@
+# Git and system files
+.git
+.gitignore
+*.md
+.DS_Store
+Thumbs.db
+
+# IDE and editor settings
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+
+# Build tools and wrappers (Ignore if building inside the container via Multi-stage builds)
+.mvn/
+mvnw
+mvnw.cmd
+.gradle/
+gradlew
+gradlew.cmd
+
+# Build outputs (Ignore if using multi-stage builds to avoid local artifacts overriding container builds)
+target/
+build/
+out/
+
+# Logs and runtime files
+*.log
+logs/
+.elasticbeanstalk/
+.dockerignore
