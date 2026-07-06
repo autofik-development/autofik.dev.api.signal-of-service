@@ -53,6 +53,33 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
             @Param("lng") double lng);
 
     /**
+     * Batch-fetch mechanics by ID with skills eagerly loaded in a single JOIN FETCH query.
+     * Use this instead of findAllById when the skill list will be accessed (e.g. problemType filter),
+     * to avoid an N+1 lazy-load per mechanic.
+     */
+    @Query("SELECT DISTINCT m FROM Mechanic m LEFT JOIN FETCH m.skills WHERE m.mechanicId IN :ids AND m.availableStatus = true")
+    List<Mechanic> findByIdsWithSkills(@Param("ids") List<UUID> ids);
+
+    /**
+     * Stage 2 with user broadcast radius cap.
+     * Uses LEAST() so both the user's broadcast limit and the mechanic's own service radius are respected.
+     */
+    @Query(value = """
+            SELECT * FROM mechanic m
+            WHERE m.id IN :ids
+              AND ST_DWithin(
+                    m.current_location,
+                    ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
+                    LEAST(m.service_radius_km * 1000, :broadcastRadiusM)
+                  )
+            """, nativeQuery = true)
+    List<Mechanic> filterByRadiusAndBroadcast(
+            @Param("ids") List<UUID> ids,
+            @Param("lat") double lat,
+            @Param("lng") double lng,
+            @Param("broadcastRadiusM") double broadcastRadiusM);
+
+    /**
      * H3 Grid Filter + Mechanic Skill Match combined.
      * Uses unnest() to search inside the skill_tags TEXT[] array.
      */

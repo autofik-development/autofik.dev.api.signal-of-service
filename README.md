@@ -13,14 +13,16 @@ User submits SOS
 ┌─────────────────────────────────────────────────┐
 │              SOS Request (PENDING)              │
 │  problem type · GPS location · vehicle          │
+│  broadcastRadiusKm (5–30 km, default 15 km)     │
 └─────────────────────────────────────────────────┘
        │
        │  System finds nearby available mechanics
-       │  using 3-stage geo-search:
+       │  using 2-stage geo-search:
        │
-       │  Stage 1 ── H3 hex index (coarse, ~10 km)
+       │  Stage 1 ── H3 hex index (coarse, adaptive kRing)
        │  Stage 2 ── PostGIS exact radius filter
-       │  Stage 3 ── Specialization match (in-memory)
+       │             (LEAST of mechanic service radius
+       │              and SOS broadcastRadiusKm)
        │
        ▼
 ┌─────────────────────────────────────────────────┐
@@ -116,8 +118,13 @@ HTTP Request
 Side channels:
 ┌─────────────┐     ┌───────────────────┐     ┌───────────────┐
 │    Kafka    │     │  WebSocket/STOMP  │     │   OneSignal   │
-│  (events)   │     │  (real-time push) │     │ (push notify) │
+│  (events)  │     │  (real-time push) │     │ (push notify) │
 └─────────────┘     └───────────────────┘     └───────────────┘
+
+Real-time hot path:
+┌─────────────┐
+│    Redis    │  GEO index · pub/sub relay · GPS throttle · rate limiting
+└─────────────┘
 ```
 
 ### Real-time Location Flow
@@ -127,20 +134,35 @@ Mechanic app
   PATCH /api/mechanics/{id}/location?lat=&lng=
        │
        ▼
-MechanicServiceImpl
-  → saves currentLocation to Postgres
-  → resolves active SOS via ACCEPTED bid
-  → publishes MechanicLocationEvent to Kafka
+MechanicServiceImpl.writeLocation()
+  → Redis GEOADD  mechanics:geo  (every ping — live GEO index)
+  → Redis ZADD    mechanics:lastseen  (for staleness eviction)
+  → Redis SET NX EX  mechanic:pg-sync:{id}  (throttle key, 10 s TTL)
+  → if throttle key was new → save to Postgres (snapshot, max 1×/10 s)
        │
        ▼
-mechanic.location.updated (Kafka topic)
+MechanicServiceImpl.publishLocation()
+  → Redis PUBLISH  mechanic:loc:{sosId}  (primary — sub-millisecond)
+  → on Redis failure → Kafka mechanic.location.updated  (fallback)
+       │
+       ├── Redis subscriber → WebSocket /topic/sos/{sosId}/location
+       └── MechanicLocationConsumer (Kafka fallback) → same WebSocket channel
+
+Customer app — updates mechanic marker on Google Maps in real time
+```
+
+### Availability Search Flow
+
+```
+GET /api/mechanics/available?lat=&lng=&problemType=
        │
        ▼
-MechanicLocationConsumer
-  → WebSocket /topic/sos/{sosId}/location
-       │
-       ▼
-Customer app — updates mechanic marker on Google Maps
+MechanicServiceImpl.findAvailable()
+  Primary:  Redis GEOSEARCH mechanics:geo radius 15 km
+              → fetch mechanic rows by IDs (Postgres)
+              → in-memory skill filter
+  Fallback: H3 kRing(4) B-tree scan → PostGIS ST_DWithin exact filter
+              (activates automatically when Redis is unavailable)
 ```
 
 ---
@@ -153,7 +175,8 @@ Customer app — updates mechanic marker on Google Maps
 | Framework | Spring Boot 4.0.6 |
 | Database | PostgreSQL 16 + PostGIS 3.4 |
 | ORM | Spring Data JPA + Hibernate Spatial |
-| Geo indexing | Uber H3 3.7.2 (resolution 7, k=4 ≈ 10 km) |
+| Geo indexing | Uber H3 3.7.2 (resolution 7; availability search k=4, SOS fan-out adaptive kRing) |
+| Cache / geo index | Redis (GEO index, pub/sub relay, GPS write throttle, rate limiting) |
 | Messaging | Apache Kafka (Confluent 7.6.0) |
 | Real-time | WebSocket / STOMP |
 | Push notifications | OneSignal (onesignal-java-client 5.8.1) |
@@ -177,7 +200,7 @@ All topics are prefixed `sos.` and keyed by `sosId`:
 | `sos.bid.cancelled` | Mechanic withdraws a pending bid |
 | `sos.status.updated` | SOS status advances |
 | `sos.notification` | Push notification events — consumed by `NotificationConsumer`, delivered via OneSignal |
-| `mechanic.location.updated` | Mechanic GPS ping — consumed by `MechanicLocationConsumer`, relayed to WebSocket |
+| `mechanic.location.updated` | Mechanic GPS ping — Kafka fallback when Redis pub/sub is unavailable; consumed by `MechanicLocationConsumer`, relayed to WebSocket |
 | `sos.dlq` | Dead-letter queue for failed events |
 
 ---
@@ -191,6 +214,30 @@ Clients connect via STOMP over `/ws`. App destination prefix: `/app`.
 | `/queue/sos-updates` | user-specific | `SosStatusUpdatedEvent` / `BidAcceptedEvent` | Status changes, bid accepted/rejected |
 | `/queue/sos-new-request` | user-specific | `SosNotificationEvent` | New SOS fans out to nearby mechanics |
 | `/topic/sos/{sosId}/location` | broadcast | `MechanicLocationEvent` | Mechanic GPS ping while on a job |
+
+---
+
+## Input Validation
+
+All GPS coordinates are restricted to **Cambodia only** (WGS-84 bounding box):
+
+| Parameter | Min | Max |
+| :--- | :--- | :--- |
+| `latitude` | 10.41 | 14.69 |
+| `longitude` | 102.5 | 107.63 |
+
+Applies to both the Create SOS and Create Mechanic endpoints.
+
+**`broadcastRadiusKm`** on Create SOS: optional integer, 5–30 km. Defaults to 15 km internally when omitted.
+
+---
+
+## Rate Limiting & Guards
+
+| Guard | Behaviour |
+| :--- | :--- |
+| Active SOS check | A user cannot submit a new SOS while one is already in `PENDING`, `ACCEPTED`, `ON_THE_WAY`, or `ARRIVED` state. Returns **409 Conflict**. |
+| Create cooldown | After any SOS creation (including cancelled ones), the same user must wait **60 seconds** before creating another. Enforced via a Redis `SET NX EX` key. Returns **429 Too Many Requests**. |
 
 ---
 
@@ -208,7 +255,7 @@ Clients connect via STOMP over `/ws`. App destination prefix: `/app`.
 # 1. Copy environment file and fill in values
 cp .env.example .env
 
-# 2. Start PostgreSQL + Kafka (managed in the infra repo)
+# 2. Start PostgreSQL + Kafka + Redis (managed in the infra repo)
 docker compose up -d
 
 # 3. Run the application
@@ -227,6 +274,8 @@ The app starts on `http://localhost:28080` (configurable via `SERVER_PORT`).
 | `DB_USERNAME` | Database user |
 | `DB_PASSWORD` | Database password |
 | `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker address (default `localhost:9092`) |
+| `REDIS_HOST` | Redis host (default `localhost`) |
+| `REDIS_PORT` | Redis port (default `6379`) |
 | `GOOGLE_MAPS_API_KEY` | Google Maps API key — see [Google Maps Setup](#google-maps-setup) below |
 | `ONESIGNAL_APP_ID` | OneSignal app ID — found in OneSignal Dashboard → Settings → Keys & IDs |
 | `ONESIGNAL_API_KEY` | OneSignal REST API key — same location as above |
@@ -297,8 +346,10 @@ The mobile app must call `OneSignal.login(userId)` with the user's UUID on login
 | REST controllers | Complete — User, Mechanic, SOS, Bid, Feedback, SosMedia. No `VehicleController` (vehicle rows inserted manually) and no `SpecializationController` (seeded via SQL by design) |
 | Kafka producers | Complete — `SosEventProducer` covers SOS, bid, status, location, and notification events |
 | Kafka consumers | Complete — `MechanicLocationConsumer` relays GPS pings to WebSocket; `NotificationConsumer` delivers push via OneSignal |
-| Real-time location | Complete — `PATCH /api/mechanics/{id}/location` saves to Postgres, resolves active ACCEPTED bid, publishes `MechanicLocationEvent` to Kafka → WebSocket `/topic/sos/{sosId}/location` |
+| Real-time location | Complete — Redis GEO index is the primary store; Postgres synced at most once per 10 s. Location events published via Redis pub/sub (primary) with Kafka fallback. `GET /api/mechanics/{id}/location` reads Redis first, falls back to Postgres snapshot |
+| Availability search | Complete — Redis GEOSEARCH primary (sub-millisecond); H3 + PostGIS two-stage fallback when Redis is unavailable |
 | WebSocket broadcasts | Complete — bid acceptance, status changes, location streaming, new SOS fan-out to nearby mechanics |
 | Push notifications | Complete — OneSignal push for bid received, bid accepted/rejected/cancelled, status transitions, completion flow |
 | SOS media (photo/video) | Complete — upload, retrieve, delete via S3-compatible storage |
+| Input validation | Complete — Cambodia bounding box on all lat/lng inputs; `broadcastRadiusKm` 5–30 km; rate limiting (60 s cooldown + active SOS guard) |
 | JWT validation | Pending — token issued by SSO service; this service validates only |

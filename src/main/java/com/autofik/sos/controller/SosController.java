@@ -9,10 +9,13 @@ import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import com.autofik.sos.service.SosService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -20,9 +23,10 @@ import java.util.UUID;
  * Base URL: /api/sos
  * Handles creation, status progression, two-step COMPLETED approval, and cancellation.
  */
-@RestController // Marks this as a REST API controller — all methods return JSON by default
-@RequestMapping("/api/sos") // All endpoints in this class share this base URL prefix
+@RestController
+@RequestMapping("/api/sos")
 @RequiredArgsConstructor
+@Validated
 public class SosController {
 
     private final SosService sosService;
@@ -37,8 +41,8 @@ public class SosController {
 
     // GET /api/sos — Admin: retrieve all SOS tickets in the system
     @GetMapping
-    public List<SosRequestResponse> getAll() {
-        return sosService.getAll();
+    public Page<SosRequestResponse> getAll(@PageableDefault(size = 20) Pageable pageable) {
+        return sosService.getAll(pageable);
     }
 
     // GET /api/sos/{sosId} — Fetch a single SOS ticket by its unique ID
@@ -49,14 +53,16 @@ public class SosController {
 
     // GET /api/sos/user/{userId} — Fetch a driver's full SOS history
     @GetMapping("/user/{userId}")
-    public List<SosRequestResponse> getByUser(@PathVariable UUID userId) {
-        return sosService.getByUser(userId);
+    public Page<SosRequestResponse> getByUser(@PathVariable UUID userId,
+                                              @PageableDefault(size = 20) Pageable pageable) {
+        return sosService.getByUser(userId, pageable);
     }
 
     // GET /api/sos/status/{status} — Filter tickets by current state (e.g., PENDING, COMPLETED)
     @GetMapping("/status/{status}")
-    public List<SosRequestResponse> getByStatus(@PathVariable SosStatus status) {
-        return sosService.getByStatus(status);
+    public Page<SosRequestResponse> getByStatus(@PathVariable SosStatus status,
+                                                @PageableDefault(size = 20) Pageable pageable) {
+        return sosService.getByStatus(status, pageable);
     }
 
     // PATCH /api/sos/{sosId}/status — Mechanic directly sets ON_THE_WAY or ARRIVED (no approval needed)

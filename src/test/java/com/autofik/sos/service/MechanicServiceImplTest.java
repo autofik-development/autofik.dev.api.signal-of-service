@@ -1,12 +1,14 @@
 package com.autofik.sos.service;
 
+import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.MechanicSkill;
+import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.enums.ApprovalStatus;
-import com.autofik.sos.domain.enums.MechanicRole;
-import java.util.Arrays;
-import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.domain.enums.BidStatus;
+import com.autofik.sos.dto.event.MechanicLocationEvent;
+import com.autofik.sos.dto.response.MechanicLocationResponse;
+import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.repository.BidSosRepository;
@@ -16,12 +18,27 @@ import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.PrecisionModel;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.GeoResult;
+import org.springframework.data.geo.GeoResults;
+import org.springframework.data.geo.Metrics;
+import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.core.GeoOperations;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.ZSetOperations;
+import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,29 +46,48 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
+@SuppressWarnings("unchecked")
 class MechanicServiceImplTest {
 
     private static final double LAT = 13.7563;
     private static final double LNG = 100.5018;
+    private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
 
     @Mock MechanicRepository mechanicRepository;
     @Mock BidSosRepository bidSosRepository;
     @Mock MechanicMapper mechanicMapper;
     @Mock SosEventProducer sosEventProducer;
+    @Mock StringRedisTemplate redisTemplate;
+    @Mock ObjectMapper objectMapper;
 
     @InjectMocks MechanicServiceImpl mechanicService;
 
+    private GeoOperations<String, String> geoOps;
+    private ZSetOperations<String, String> zSetOps;
+    private ValueOperations<String, String> valueOps;
+
     private final UUID mechanicId = UUID.randomUUID();
-    private final UUID userId = UUID.randomUUID();
+    private final UUID sosId = UUID.randomUUID();
     private Mechanic mechanic;
     private MechanicResponse mechanicResponse;
 
     @BeforeEach
     void setUp() {
+        geoOps = mock(GeoOperations.class);
+        zSetOps = mock(ZSetOperations.class);
+        valueOps = mock(ValueOperations.class);
+
+        lenient().when(redisTemplate.opsForGeo()).thenReturn(geoOps);
+        lenient().when(redisTemplate.opsForZSet()).thenReturn(zSetOps);
+        lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        // Default: Postgres sync on every ping (throttle allows write)
+        lenient().when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+        // Default: Redis geo search fails → forces Postgres fallback in findAvailable
+        lenient().when(geoOps.radius(anyString(), any())).thenThrow(new RuntimeException("Redis unavailable"));
+
         mechanic = Mechanic.builder()
                 .mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com")
                 .availableStatus(true).build();
@@ -80,21 +116,31 @@ class MechanicServiceImplTest {
                 .hasMessageContaining(mechanicId.toString());
     }
 
-    // ── findAvailable ─────────────────────────────────────────────────────────
+    // ── findAvailable — Redis primary path ────────────────────────────────────
 
     @Test
-    void findAvailable_stage1Empty_returnsEmptyListWithoutCallingStage2() {
-        when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of());
+    void findAvailable_redisPath_returnsNearbyAvailableMechanics() {
+        doReturn(makeGeoResults(mechanicId)).when(geoOps).radius(anyString(), any());
+        when(mechanicRepository.findAllById(anyList())).thenReturn(List.of(mechanic));
+        when(mechanicMapper.toResponseList(List.of(mechanic))).thenReturn(List.of(mechanicResponse));
 
         List<MechanicResponse> result = mechanicService.findAvailable(LAT, LNG);
 
-        assertThat(result).isEmpty();
-        verify(mechanicRepository).findByH3Cells(anyList());
-        verify(mechanicRepository, org.mockito.Mockito.never()).filterByRadius(anyList(), anyDouble(), anyDouble());
+        assertThat(result).containsExactly(mechanicResponse);
+        verify(mechanicRepository, never()).findByH3Cells(any());
     }
 
     @Test
-    void findAvailable_stage2ReturnsCandidates_returnsMappedList() {
+    void findAvailable_redisReturnsNull_returnsEmpty() {
+        doReturn(null).when(geoOps).radius(anyString(), any());
+        when(mechanicMapper.toResponseList(List.of())).thenReturn(List.of());
+
+        assertThat(mechanicService.findAvailable(LAT, LNG)).isEmpty();
+    }
+
+    @Test
+    void findAvailable_redisUnavailable_fallsBackToPostgis() {
+        // geoOps.radius() already throws by default from @BeforeEach
         when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(mechanic));
         when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(List.of(mechanic));
         when(mechanicMapper.toResponseList(List.of(mechanic))).thenReturn(List.of(mechanicResponse));
@@ -102,23 +148,23 @@ class MechanicServiceImplTest {
         List<MechanicResponse> result = mechanicService.findAvailable(LAT, LNG);
 
         assertThat(result).containsExactly(mechanicResponse);
+        verify(mechanicRepository).findByH3Cells(anyList());
     }
 
     @Test
-    void findAvailable_withProblemType_filtersOutNonMatchingSpecializations() {
+    void findAvailable_withProblemType_redisPath_filtersSkills() {
         Mechanic flatTireMechanic = buildMechanicWithSkill("Flat Tire");
-        Mechanic engineMechanic   = buildMechanicWithSkill("Engine");
+        Mechanic engineMechanic = buildMechanicWithSkill("Engine");
         MechanicResponse flatTireResponse = new MechanicResponse(
                 flatTireMechanic.getMechanicId(), "Bob", "081", "b@fix.com",
                 null, null, ApprovalStatus.PENDING, null, 10,
                 BigDecimal.ZERO, 0, true, ApprovalStatus.PENDING, null, null);
 
-        when(mechanicRepository.findByH3Cells(anyList()))
-                .thenReturn(List.of(flatTireMechanic, engineMechanic));
-        when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG)))
-                .thenReturn(List.of(flatTireMechanic, engineMechanic));
-        when(mechanicMapper.toResponseList(List.of(flatTireMechanic)))
-                .thenReturn(List.of(flatTireResponse));
+        doReturn(makeGeoResults(flatTireMechanic.getMechanicId(), engineMechanic.getMechanicId()))
+                .when(geoOps).radius(anyString(), any());
+        // needsSkills=true → code uses findByIdsWithSkills (JOIN FETCH), not findAllById
+        when(mechanicRepository.findByIdsWithSkills(anyList())).thenReturn(List.of(flatTireMechanic, engineMechanic));
+        when(mechanicMapper.toResponseList(List.of(flatTireMechanic))).thenReturn(List.of(flatTireResponse));
 
         List<MechanicResponse> result = mechanicService.findAvailable(LAT, LNG, "Flat Tire");
 
@@ -126,54 +172,224 @@ class MechanicServiceImplTest {
     }
 
     @Test
-    void findAvailable_withProblemType_noSpecializationMatch_returnsEmpty() {
-        Mechanic engineMechanic = buildMechanicWithSkill("Engine");
-        when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(engineMechanic));
-        when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(List.of(engineMechanic));
+    void findAvailable_redisPath_unavailableMechanicExcluded() {
+        Mechanic unavailable = Mechanic.builder()
+                .mechanicId(UUID.randomUUID()).availableStatus(false).build();
+        doReturn(makeGeoResults(unavailable.getMechanicId())).when(geoOps).radius(anyString(), any());
+        when(mechanicRepository.findAllById(anyList())).thenReturn(List.of(unavailable));
         when(mechanicMapper.toResponseList(List.of())).thenReturn(List.of());
 
-        List<MechanicResponse> result = mechanicService.findAvailable(LAT, LNG, "Flat Tire");
+        assertThat(mechanicService.findAvailable(LAT, LNG)).isEmpty();
+    }
 
-        assertThat(result).isEmpty();
+    // ── findAvailable — Postgres fallback path ────────────────────────────────
+
+    @Test
+    void findAvailable_postgresStage1Empty_returnsEmptyWithoutStage2() {
+        when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of());
+
+        assertThat(mechanicService.findAvailable(LAT, LNG)).isEmpty();
+        verify(mechanicRepository, never()).filterByRadius(any(), anyDouble(), anyDouble());
     }
 
     @Test
-    void findAvailable_nullProblemType_skipsSpecializationFilter() {
-        mechanic.setSkills(List.of());
+    void findAvailable_postgresStage2ReturnsCandidates_returnsMappedList() {
         when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(mechanic));
         when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(List.of(mechanic));
         when(mechanicMapper.toResponseList(List.of(mechanic))).thenReturn(List.of(mechanicResponse));
 
-        assertThat(mechanicService.findAvailable(LAT, LNG, null)).containsExactly(mechanicResponse);
+        assertThat(mechanicService.findAvailable(LAT, LNG)).containsExactly(mechanicResponse);
     }
 
     // ── updateLocation ────────────────────────────────────────────────────────
 
     @Test
-    void updateLocation_updatesLocationAndH3Index() {
-        double newLat = 13.8000, newLng = 100.6000;
+    void updateLocation_redisThrottled_writesOnlyToRedisNotPostgres() {
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
+        when(mechanicRepository.existsById(mechanicId)).thenReturn(true);
+        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.empty());
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG);
+
+        verify(geoOps).add(anyString(), any(Point.class), eq(mechanicId.toString()));
+        verify(mechanicRepository, never()).findById(any());
+        verify(mechanicRepository, never()).save(any());
+    }
+
+    @Test
+    void updateLocation_postgresSync_updatesLocationAndH3Index() {
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-        when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
+        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.empty());
 
-        mechanicService.updateLocation(mechanicId, newLat, newLng);
+        mechanicService.updateLocation(mechanicId, LAT, LNG);
 
         assertThat(mechanic.getCurrentLocation()).isNotNull();
-        assertThat(mechanic.getCurrentLocation().getY()).isEqualTo(newLat);
-        assertThat(mechanic.getCurrentLocation().getX()).isEqualTo(newLng);
+        assertThat(mechanic.getCurrentLocation().getY()).isEqualTo(LAT);
+        assertThat(mechanic.getCurrentLocation().getX()).isEqualTo(LNG);
         assertThat(mechanic.getCurrentH3Index()).isNotBlank();
         verify(mechanicRepository).save(mechanic);
     }
 
     @Test
-    void updateLocation_notFound_throwsEntityNotFoundException() {
+    void updateLocation_redisUnavailable_fallsThroughToPostgres() {
+        when(redisTemplate.opsForGeo()).thenThrow(new RuntimeException("Redis down"));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.empty());
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG);
+
+        verify(mechanicRepository).save(mechanic);
+    }
+
+    @Test
+    void updateLocation_mechanicNotFound_persistPath_throws() {
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> mechanicService.updateLocation(mechanicId, LAT, LNG))
                 .isInstanceOf(EntityNotFoundException.class);
     }
 
+    @Test
+    void updateLocation_mechanicNotFound_cacheOnlyPath_throws() {
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
+        when(mechanicRepository.existsById(mechanicId)).thenReturn(false);
+
+        assertThatThrownBy(() -> mechanicService.updateLocation(mechanicId, LAT, LNG))
+                .isInstanceOf(EntityNotFoundException.class);
+    }
+
+    @Test
+    void updateLocation_withSosId_publishesLocationViaRedisPubSub() throws Exception {
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG, sosId);
+
+        verify(redisTemplate).convertAndSend(eq("mechanic:loc:" + sosId), anyString());
+        verify(sosEventProducer, never()).publishMechanicLocation(any());
+    }
+
+    @Test
+    void updateLocation_withSosId_redisPubSubFails_fallsBackToKafka() throws Exception {
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        doThrow(new RuntimeException("pub/sub down")).when(redisTemplate).convertAndSend(anyString(), anyString());
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG, sosId);
+
+        ArgumentCaptor<MechanicLocationEvent> captor = ArgumentCaptor.forClass(MechanicLocationEvent.class);
+        verify(sosEventProducer).publishMechanicLocation(captor.capture());
+        assertThat(captor.getValue().sosId()).isEqualTo(sosId);
+        assertThat(captor.getValue().mechanicId()).isEqualTo(mechanicId);
+        assertThat(captor.getValue().latitude()).isEqualTo(LAT);
+        assertThat(captor.getValue().longitude()).isEqualTo(LNG);
+    }
+
+    @Test
+    void updateLocation_withoutSosId_activeBidFound_publishesLocation() throws Exception {
+        SosRequest sosRequest = mock(SosRequest.class);
+        when(sosRequest.getSosId()).thenReturn(sosId);
+        BidSos activeBid = mock(BidSos.class);
+        when(activeBid.getSosRequest()).thenReturn(sosRequest);
+
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.of(activeBid));
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG);
+
+        verify(redisTemplate).convertAndSend(eq("mechanic:loc:" + sosId), anyString());
+    }
+
+    @Test
+    void updateLocation_withoutSosId_noActiveBid_doesNotPublish() {
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.empty());
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG);
+
+        verify(redisTemplate, never()).convertAndSend(anyString(), any());
+        verify(sosEventProducer, never()).publishMechanicLocation(any());
+    }
+
+    // ── getCurrentLocation ────────────────────────────────────────────────────
+
+    @Test
+    void getCurrentLocation_redisHit_returnsLocationWithoutDbCall() {
+        when(geoOps.position(anyString(), anyString())).thenReturn(List.of(new Point(LNG, LAT)));
+
+        MechanicLocationResponse result = mechanicService.getCurrentLocation(mechanicId);
+
+        assertThat(result.latitude()).isEqualTo(LAT);
+        assertThat(result.longitude()).isEqualTo(LNG);
+        assertThat(result.asOf()).isNotNull();
+        verify(mechanicRepository, never()).findById(any());
+    }
+
+    @Test
+    void getCurrentLocation_redisReturnsEmpty_fallsBackToPostgres() {
+        when(geoOps.position(anyString(), anyString())).thenReturn(List.of());
+        mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(LNG, LAT)));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+
+        MechanicLocationResponse result = mechanicService.getCurrentLocation(mechanicId);
+
+        assertThat(result.latitude()).isEqualTo(LAT);
+        assertThat(result.longitude()).isEqualTo(LNG);
+    }
+
+    @Test
+    void getCurrentLocation_redisFails_fallsBackToPostgres() {
+        when(geoOps.position(anyString(), anyString())).thenThrow(new RuntimeException("Redis down"));
+        mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(LNG, LAT)));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+
+        MechanicLocationResponse result = mechanicService.getCurrentLocation(mechanicId);
+
+        assertThat(result.latitude()).isEqualTo(LAT);
+    }
+
+    @Test
+    void getCurrentLocation_postgresHasNoLocation_throwsEntityNotFoundException() {
+        when(geoOps.position(anyString(), anyString())).thenReturn(List.of());
+        mechanic.setCurrentLocation(null);
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+
+        assertThatThrownBy(() -> mechanicService.getCurrentLocation(mechanicId))
+                .isInstanceOf(EntityNotFoundException.class)
+                .hasMessageContaining(mechanicId.toString());
+    }
+
+    @Test
+    void getCurrentLocation_mechanicNotFound_throwsEntityNotFoundException() {
+        when(geoOps.position(anyString(), anyString())).thenReturn(List.of());
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> mechanicService.getCurrentLocation(mechanicId))
+                .isInstanceOf(EntityNotFoundException.class);
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    private GeoResults<RedisGeoCommands.GeoLocation<String>> makeGeoResults(UUID... ids) {
+        List<GeoResult<RedisGeoCommands.GeoLocation<String>>> list = java.util.Arrays.stream(ids)
+                .map(id -> new GeoResult<>(
+                        new RedisGeoCommands.GeoLocation<>(id.toString(), null),
+                        new Distance(1.0, Metrics.KILOMETERS)))
+                .toList();
+        return new GeoResults<>(list);
+    }
 
     private Mechanic buildMechanicWithSkill(String skillName) {
         Mechanic m = Mechanic.builder()

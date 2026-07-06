@@ -12,5 +12,5 @@ public record SosMediaResponse(
         String contentType,
         Long sizeBytes,
         String url,
-        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime uploadedAt
+        @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime uploadedAt
 ) {}

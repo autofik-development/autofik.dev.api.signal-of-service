@@ -33,6 +33,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.math.BigDecimal;
@@ -245,10 +249,13 @@ class BidServiceImplTest {
 
     @Test
     void getByMechanic_delegatesAndReturnsMappedList() {
-        when(bidSosRepository.findByMechanicMechanicId(mechanicId)).thenReturn(List.of(bid));
-        when(bidSosMapper.toResponseList(List.of(bid))).thenReturn(List.of(bidResponse));
+        Pageable pageable = PageRequest.of(0, 20);
+        when(bidSosRepository.findByMechanicMechanicId(mechanicId, pageable))
+                .thenReturn(new PageImpl<>(List.of(bid)));
+        when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
 
-        assertThat(bidService.getByMechanic(mechanicId)).containsExactly(bidResponse);
+        Page<BidSosResponse> result = bidService.getByMechanic(mechanicId, pageable);
+        assertThat(result.getContent()).containsExactly(bidResponse);
     }
 
     // ── updateStatus ──────────────────────────────────────────────────────────

@@ -18,6 +18,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.geo.Circle;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResults;
@@ -32,7 +34,6 @@ import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -96,7 +97,7 @@ public class MechanicServiceImpl implements MechanicService {
     @Override
     @Transactional(readOnly = true)
     public List<MechanicResponse> findAvailable(double lat, double lng) {
-        return findAvailable(lat, lng, null);
+        return findAvailable(lat, lng, (String) null);
     }
 
     // Primary path: Redis GEOSEARCH against the live location cache — one in-memory call,
@@ -105,32 +106,36 @@ public class MechanicServiceImpl implements MechanicService {
     @Override
     @Transactional(readOnly = true)
     public List<MechanicResponse> findAvailable(double lat, double lng, String problemType) {
+        boolean needsSkills = problemType != null && !problemType.isBlank();
         List<Mechanic> candidates;
         try {
             List<UUID> candidateIds = findNearbyMechanicIdsViaRedis(lat, lng);
-            // findByH3Cells (the Postgres fallback below) filters isAvailable=true in the query
-            // itself — GEOSEARCH has no equivalent, so it must be applied here explicitly.
-            candidates = candidateIds.isEmpty()
-                    ? List.of()
-                    : mechanicRepository.findAllById(candidateIds).stream()
-                            .filter(Mechanic::getAvailableStatus)
-                            .toList();
+            if (candidateIds.isEmpty()) {
+                candidates = List.of();
+            } else if (needsSkills) {
+                // JOIN FETCH: skills + availableStatus filter in one query — avoids N+1 lazy-load per mechanic
+                candidates = mechanicRepository.findByIdsWithSkills(candidateIds);
+            } else {
+                candidates = mechanicRepository.findAllById(candidateIds).stream()
+                        .filter(Mechanic::getAvailableStatus)
+                        .toList();
+            }
         } catch (Exception e) {
             log.warn("Redis geo search failed, falling back to Postgres H3/PostGIS search: {}", e.getMessage());
-            candidates = findAvailableViaPostgis(lat, lng);
+            candidates = findAvailableViaPostgis(lat, lng, needsSkills);
         }
 
-        // In-memory skill filter — checks if any skill entry has a tag matching the Medusa problem-type key
-        List<Mechanic> result = (problemType == null || problemType.isBlank())
-                ? candidates
-                : candidates.stream()
+        // In-memory skill filter — tags already loaded eagerly above when needsSkills=true
+        List<Mechanic> result = needsSkills
+                ? candidates.stream()
                         .filter(m -> m.getSkills() != null && m.getSkills().stream()
                                 .anyMatch(s -> s.getSkillTags() != null &&
                                         java.util.Arrays.stream(s.getSkillTags())
                                                 .anyMatch(tag -> tag.equalsIgnoreCase(problemType))))
-                        .toList();
+                        .toList()
+                : candidates;
 
-        if (problemType != null && !problemType.isBlank() && result.isEmpty() && !candidates.isEmpty()) {
+        if (needsSkills && result.isEmpty() && !candidates.isEmpty()) {
             log.debug("problemType '{}' matched no mechanic skill tags; {} nearby candidate(s) excluded",
                     problemType, candidates.size());
         }
@@ -153,7 +158,9 @@ public class MechanicServiceImpl implements MechanicService {
     // Legacy two-stage H3 + PostGIS search — kept only as the Redis-unavailable fallback.
     // Stage 1: B-tree index scan on current_h3_index — filters by hex cells, O(cells).
     // Stage 2: PostGIS ST_DWithin on the Stage 1 shortlist only — exact distance check.
-    private List<Mechanic> findAvailableViaPostgis(double lat, double lng) {
+    // When fetchSkills=true a third query JOIN FETCHes skills for the final result set,
+    // trading one extra round-trip for eliminating the N+1 lazy-load in the skill filter.
+    private List<Mechanic> findAvailableViaPostgis(double lat, double lng, boolean fetchSkills) {
         String centerCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
         List<String> searchCells = H3.kRing(centerCell, H3_RING_RADIUS);
 
@@ -163,36 +170,40 @@ public class MechanicServiceImpl implements MechanicService {
         }
 
         List<UUID> candidateIds = stage1.stream().map(Mechanic::getMechanicId).toList();
-        return mechanicRepository.filterByRadius(candidateIds, lat, lng);
+        List<Mechanic> stage2 = mechanicRepository.filterByRadius(candidateIds, lat, lng);
+        if (!fetchSkills || stage2.isEmpty()) {
+            return stage2;
+        }
+
+        List<UUID> finalIds = stage2.stream().map(Mechanic::getMechanicId).toList();
+        return mechanicRepository.findByIdsWithSkills(finalIds);
     }
 
     // Called by the REST controller when no sosId is provided — resolves the active job automatically.
     // No active ACCEPTED bid → mechanic is not on a job, location is saved but no event is published.
     @Override
     @Transactional
-    public MechanicResponse updateLocation(UUID mechanicId, double lat, double lng) {
-        MechanicResponse response = writeLocation(mechanicId, lat, lng);
+    public void updateLocation(UUID mechanicId, double lat, double lng) {
+        writeLocation(mechanicId, lat, lng);
         bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED)
                 .ifPresent(bid -> publishLocation(bid.getSosRequest().getSosId(), mechanicId, lat, lng));
-        return response;
     }
 
     // Overload used by the Kafka consumer or when the caller already knows the sosId,
     // skipping the extra DB lookup to find the active bid.
     @Override
     @Transactional
-    public MechanicResponse updateLocation(UUID mechanicId, double lat, double lng, UUID sosId) {
-        MechanicResponse response = writeLocation(mechanicId, lat, lng);
+    public void updateLocation(UUID mechanicId, double lat, double lng, UUID sosId) {
+        writeLocation(mechanicId, lat, lng);
         if (sosId != null) {
             publishLocation(sosId, mechanicId, lat, lng);
         }
-        return response;
     }
 
     // Redis Pub/Sub primary — listener relays to WebSocket immediately.
     // Kafka fallback activates automatically on any Redis exception; MechanicLocationConsumer handles delivery.
     private void publishLocation(UUID sosId, UUID mechanicId, double lat, double lng) {
-        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, lat, lng, LocalDateTime.now());
+        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, lat, lng, Instant.now());
         try {
             redisTemplate.convertAndSend(
                     "mechanic:loc:" + sosId,
@@ -207,7 +218,7 @@ public class MechanicServiceImpl implements MechanicService {
     // Redis is written on every ping. Postgres is throttled to once per PG_SYNC_INTERVAL via SET NX EX.
     // When Redis is down the throttle key is unavailable, so every ping falls through to Postgres —
     // keeping the durability snapshot current during an outage.
-    private MechanicResponse writeLocation(UUID mechanicId, double lat, double lng) {
+    private void writeLocation(UUID mechanicId, double lat, double lng) {
         boolean shouldPersist;
         try {
             redisTemplate.opsForGeo().add(MECHANIC_GEO_KEY, new Point(lng, lat), mechanicId.toString());
@@ -220,14 +231,15 @@ public class MechanicServiceImpl implements MechanicService {
             shouldPersist = true;
         }
 
-        Mechanic mechanic = mechanicRepository.findById(mechanicId)
-                .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
         if (shouldPersist) {
+            Mechanic mechanic = mechanicRepository.findById(mechanicId)
+                    .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
             mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
             mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
-            mechanic = mechanicRepository.save(mechanic);
+            mechanicRepository.save(mechanic);
+        } else if (!mechanicRepository.existsById(mechanicId)) {
+            throw new EntityNotFoundException("Mechanic not found: " + mechanicId);
         }
-        return mechanicMapper.toResponse(mechanic);
     }
 
     // On-demand read for initial screen load — reads the live Redis cache first (freshest,
@@ -267,7 +279,7 @@ public class MechanicServiceImpl implements MechanicService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<MechanicResponse> getAll() {
-        return mechanicMapper.toResponseList(mechanicRepository.findAll());
+    public Page<MechanicResponse> getAll(Pageable pageable) {
+        return mechanicRepository.findAll(pageable).map(mechanicMapper::toResponse);
     }
 }

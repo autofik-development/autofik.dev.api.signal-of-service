@@ -11,9 +11,9 @@ public record SosStatusHistoryResponse(
         UUID id,
         SosStatus fromStatus,
         SosStatus toStatus,
-        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime changeAt,
-        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime proposedAt,
-        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime approveAt,
+        @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime changeAt,
+        @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime proposedAt,
+        @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime approveAt,
         ApprovedStatus approvedStatus,
         MechanicResponse proposedBy,
         UserResponse approvedBy

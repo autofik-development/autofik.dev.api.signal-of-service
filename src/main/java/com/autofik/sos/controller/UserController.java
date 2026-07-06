@@ -3,9 +3,11 @@ package com.autofik.sos.controller;
 import com.autofik.sos.dto.response.UserResponse;
 import com.autofik.sos.service.UserService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.UUID;
 
 // READ-ONLY. User profiles are created and managed by the SSO team.
@@ -18,8 +20,8 @@ public class UserController {
     private final UserService userService;
 
     @GetMapping
-    public List<UserResponse> getAll() {
-        return userService.getAll();
+    public Page<UserResponse> getAll(@PageableDefault(size = 20) Pageable pageable) {
+        return userService.getAll(pageable);
     }
 
     @GetMapping("/{userId}")

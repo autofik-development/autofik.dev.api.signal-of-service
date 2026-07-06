@@ -7,11 +7,15 @@ import com.autofik.sos.dto.response.BidSosResponse;
 import com.autofik.sos.service.BidService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.UUID;
+
 
 /**
  * REST Controller for managing mechanic bids on SOS requests.
@@ -35,8 +39,8 @@ public class BidController {
 
     // GET /api/bids — Admin: retrieve all bids across all SOS requests
     @GetMapping
-    public List<BidSosResponse> getAll() {
-        return bidService.getAll();
+    public Page<BidSosResponse> getAll(@PageableDefault(size = 20) Pageable pageable) {
+        return bidService.getAll(pageable);
     }
 
     // GET /api/bids/sos/{sosId}?sortBy= — Driver views all bids on their active SOS
@@ -49,8 +53,9 @@ public class BidController {
 
     // GET /api/bids/mechanic/{mechanicId} — Mechanic views their own full bid history
     @GetMapping("/mechanic/{mechanicId}")
-    public List<BidSosResponse> getByMechanic(@PathVariable UUID mechanicId) {
-        return bidService.getByMechanic(mechanicId);
+    public Page<BidSosResponse> getByMechanic(@PathVariable UUID mechanicId,
+                                               @PageableDefault(size = 20) Pageable pageable) {
+        return bidService.getByMechanic(mechanicId, pageable);
     }
 
     // PATCH /api/bids/{bidId}/status — Driver accepts or rejects a specific bid

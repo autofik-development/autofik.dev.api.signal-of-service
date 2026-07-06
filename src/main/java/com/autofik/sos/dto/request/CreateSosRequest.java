@@ -1,5 +1,9 @@
 package com.autofik.sos.dto.request;
 
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
@@ -9,7 +13,8 @@ public record CreateSosRequest(
         @NotNull UUID userId,
         @NotBlank String problemType,
         String description,
-        @NotNull Double latitude,
-        @NotNull Double longitude,
-        @NotNull UUID vehicleId
+        @NotNull @DecimalMin("10.41") @DecimalMax("14.69") Double latitude,
+        @NotNull @DecimalMin("102.5") @DecimalMax("107.63") Double longitude,
+        @NotNull UUID vehicleId,
+        @Min(5) @Max(30) Integer broadcastRadiusKm
 ) {}

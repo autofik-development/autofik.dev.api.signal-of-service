@@ -41,6 +41,13 @@ public class GlobalExceptionHandler {
         return errors;
     }
 
+    @ExceptionHandler(TooManyRequestsException.class)
+    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
+    public ErrorResponse handleRateLimit(TooManyRequestsException ex) {
+        return new ErrorResponse(HttpStatus.TOO_MANY_REQUESTS.value(), "Too Many Requests",
+                ex.getMessage(), LocalDateTime.now());
+    }
+
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public ErrorResponse handleGeneral(Exception ex) {

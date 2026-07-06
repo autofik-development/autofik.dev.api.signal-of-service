@@ -8,6 +8,9 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -35,10 +38,10 @@ public class MechanicController {
         return mechanicService.create(request);
     }
 
-    // GET /api/mechanics — Admin: list all mechanic accounts
+    // GET /api/mechanics?page=0&size=20&sort=fullName,asc — Admin: list all mechanic accounts
     @GetMapping
-    public List<MechanicResponse> getAll() {
-        return mechanicService.getAll();
+    public Page<MechanicResponse> getAll(@PageableDefault(size = 20) Pageable pageable) {
+        return mechanicService.getAll(pageable);
     }
 
     // GET /api/mechanics/{mechanicId} — Fetch a single mechanic profile by ID
@@ -53,7 +56,7 @@ public class MechanicController {
     @GetMapping("/available")
     public List<MechanicResponse> findAvailable(
             @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
-            @RequestParam @DecimalMin("102.34") @DecimalMax("107.63") double lng,
+            @RequestParam @DecimalMin("102.5") @DecimalMax("107.63") double lng,
             @RequestParam(required = false) String problemType) {
         return problemType != null
                 ? mechanicService.findAvailable(lat, lng, problemType)
@@ -64,12 +67,13 @@ public class MechanicController {
     // sosId is optional: if provided skips the active-bid DB lookup for better performance
     // Called frequently by the mobile app while a mechanic is on an active job
     @PatchMapping("/{mechanicId}/location")
-    public MechanicResponse updateLocation(
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void updateLocation(
             @PathVariable UUID mechanicId,
             @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
-            @RequestParam @DecimalMin("102.34") @DecimalMax("107.63") double lng,
+            @RequestParam @DecimalMin("102.5") @DecimalMax("107.63") double lng,
             @RequestParam(required = false) UUID sosId) {
-        return mechanicService.updateLocation(mechanicId, lat, lng, sosId);
+        mechanicService.updateLocation(mechanicId, lat, lng, sosId);
     }
 
     // GET /api/mechanics/{mechanicId}/location — On-demand read of a mechanic's current position

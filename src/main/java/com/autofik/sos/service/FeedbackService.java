@@ -3,7 +3,9 @@ package com.autofik.sos.service;
 import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
 
-import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.util.UUID;
 /**
  * Service Interface defining the business use cases for handling customer Feedback and Ratings.
@@ -32,5 +34,5 @@ public interface FeedbackService {
      * @param mechanicId identify specified mechanic
      * @return list of review wirtten about the mechanic
      */
-    List<FeedbackResponse> getByMechanic(UUID mechanicId);
+    Page<FeedbackResponse> getByMechanic(UUID mechanicId, Pageable pageable);
 }

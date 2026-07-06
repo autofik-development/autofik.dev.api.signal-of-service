@@ -7,7 +7,9 @@ import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 
-import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.util.UUID;
 /**
  * Core Service Interface defining the business use cases for the Emergency SOS module.
@@ -34,14 +36,14 @@ public interface SosService {
      * @param userId identify specified user
      * @return list of sos records create by this user
      */
-    List<SosRequestResponse> getByUser(UUID userId);
+    Page<SosRequestResponse> getByUser(UUID userId, Pageable pageable);
 
     /**
      * Use case: filter sos by their current state
      * @param status The target state to look up (e.g., PENDING, ACTIVE, COMPLETED)
      * @return list of sos records currently matching
      */
-    List<SosRequestResponse> getByStatus(SosStatus status);
+    Page<SosRequestResponse> getByStatus(SosStatus status, Pageable pageable);
 
     /**
      * Use case : update the operation status of a sos request
@@ -79,5 +81,5 @@ public interface SosService {
      * Mainly used for administrative management panels and analytical metrics.
      * * @return A master list of all SOS records.
      */
-    List<SosRequestResponse> getAll();
+    Page<SosRequestResponse> getAll(Pageable pageable);
 }
