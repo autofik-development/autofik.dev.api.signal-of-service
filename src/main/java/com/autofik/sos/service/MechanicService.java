@@ -3,6 +3,8 @@ package com.autofik.sos.service;
 import com.autofik.sos.dto.request.CreateMechanicRequest;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 import java.util.List;
 import java.util.UUID;
@@ -28,22 +30,14 @@ public interface MechanicService {
     MechanicResponse getById(UUID mechanicId);
 
     /**
-     * Use case: Find all available mechanics near a GPS location (no specialization filter).
-     * Uses a two-stage H3 + PostGIS search — see MechanicServiceImpl for details.
-     * @param lat Latitude of the search center point.
-     * @param lng Longitude of the search center point.
-     * @return List of nearby available mechanics.
+     * Use case: Find available mechanics near a GPS location.
+     * Three-stage search: H3 adaptive kRing → PostGIS ST_DWithin → optional skill filter.
+     * @param lat        Latitude of the search center.
+     * @param lng        Longitude of the search center.
+     * @param problemType Optional breakdown category filter (e.g. "flat_tire"). Pass null to skip.
+     * @param radiusKm   Search radius in km (5–30). Controls the H3 kRing depth.
      */
-    List<MechanicResponse> findAvailable(double lat, double lng);
-
-    /**
-     * Use case: Find available mechanics near a location who can handle a specific problem type.
-     * @param lat Latitude of the search center point.
-     * @param lng Longitude of the search center point.
-     * @param problemType The breakdown category to filter by (e.g., "flat_tire", "engine").
-     * @return List of nearby available mechanics with matching specialization.
-     */
-    List<MechanicResponse> findAvailable(double lat, double lng, String problemType);
+    List<MechanicResponse> findAvailable(double lat, double lng, String problemType, int radiusKm);
 
     /**
      * Use case: Update a mechanic's real-time GPS position (auto-resolves the active SOS from DB).
@@ -51,9 +45,8 @@ public interface MechanicService {
      * @param mechanicId Identifies the mechanic sending the ping.
      * @param lat New latitude.
      * @param lng New longitude.
-     * @return Updated mechanic profile.
      */
-    MechanicResponse updateLocation(UUID mechanicId, double lat, double lng);
+    void updateLocation(UUID mechanicId, double lat, double lng);
 
     /**
      * Use case: Update a mechanic's GPS position for a known active SOS (skips the bid lookup).
@@ -62,9 +55,8 @@ public interface MechanicService {
      * @param lat New latitude.
      * @param lng New longitude.
      * @param sosId The active SOS request this location update belongs to.
-     * @return Updated mechanic profile.
      */
-    MechanicResponse updateLocation(UUID mechanicId, double lat, double lng, UUID sosId);
+    void updateLocation(UUID mechanicId, double lat, double lng, UUID sosId);
 
     /**
      * Use case: On-demand read of a mechanic's current position (e.g. initial screen load,
@@ -85,8 +77,9 @@ public interface MechanicService {
     MechanicResponse setAvailability(UUID mechanicId, boolean available);
 
     /**
-     * Use case: Admin dashboard — retrieve all mechanic accounts.
-     * @return Full list of all mechanic records.
+     * Use case: Admin dashboard — retrieve all mechanic accounts (paginated).
+     * @param pageable page number, size, and sort criteria.
+     * @return Page of mechanic records.
      */
-    List<MechanicResponse> getAll();
+    Page<MechanicResponse> getAll(Pageable pageable);
 }

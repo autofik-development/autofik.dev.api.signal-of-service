@@ -5,6 +5,9 @@ import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.util.List;
 import java.util.UUID;
 /**
@@ -32,7 +35,7 @@ public interface BidService {
      * @param mechanicId identify specified mechanic
      * @return A list of bids this specified mechanic has submitted over time
      */
-    List<BidSosResponse> getByMechanic(UUID mechanicId);
+    Page<BidSosResponse> getByMechanic(UUID mechanicId, Pageable pageable);
 
     /**
      * Use case: A driver acc or rejects a mechanic's bid
@@ -54,5 +57,5 @@ public interface BidService {
      * Use Case: Admin dashboard control
      * @return list all bid record
      */
-    List<BidSosResponse> getAll();
+    Page<BidSosResponse> getAll(Pageable pageable);
 }

@@ -66,6 +66,11 @@ public class SosRequest {
     @Column(name = "bidding_expires_at", updatable = false)
     private LocalDateTime biddingExpiresAt;
 
+    // Optional user-defined cap on how far to broadcast this SOS. null = no limit (mechanic's
+    // service_radius_km is the only constraint). Max enforced at the DTO layer (50 km).
+    @Column(name = "broadcast_radius_km")
+    private Integer broadcastRadiusKm;
+
     // 250 seconds (~4 min) for mechanics to respond before the request expires automatically.
     private static final int BIDDING_WINDOW_SECONDS = 250;
 

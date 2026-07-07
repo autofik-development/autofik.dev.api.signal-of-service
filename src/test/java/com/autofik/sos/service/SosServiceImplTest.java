@@ -13,6 +13,7 @@ import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import com.autofik.sos.dto.event.SosCreatedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
+import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.mapper.SosMapper;
@@ -20,7 +21,6 @@ import com.autofik.sos.mapper.SosStatusHistoryMapper;
 import com.autofik.sos.repository.*;
 import com.autofik.sos.service.impl.SosServiceImpl;
 import jakarta.persistence.EntityNotFoundException;
-import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.PrecisionModel;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,18 +30,23 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.TaskScheduler;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -60,6 +65,8 @@ class SosServiceImplTest {
     @Mock SosEventProducer sosEventProducer;
     @Mock SimpMessagingTemplate messagingTemplate;
     @Mock TaskScheduler taskScheduler;
+    @Mock StringRedisTemplate redisTemplate;
+    @Mock ValueOperations<String, String> valueOps;
 
     @InjectMocks SosServiceImpl sosService;
 
@@ -86,17 +93,28 @@ class SosServiceImplTest {
         pendingSos = SosRequest.builder()
                 .sosId(sosId).problemType("Flat Tire").status(SosStatus.PENDING)
                 .user(user).vehicle(vehicle).build();
+        // Record field order: sosId, problemType, description, locationAddress, status,
+        //                     latitude, longitude, broadcastRadiusKm,
+        //                     createdAt, updatedAt, biddingExpiresAt, user, vehicle, mechanic
         sosResponse = new SosRequestResponse(sosId, "Flat Tire", null, null, SosStatus.PENDING,
-                13.7, 100.5, null, null, null, null, null, null);
+                13.7, 100.5, null, null, null, null, null, null, null);
         historyResponse = new SosStatusHistoryResponse(historyId, SosStatus.ACCEPTED,
                 SosStatus.ON_THE_WAY, null, null, null, ApprovedStatus.PENDING_APPROVAL, null, null);
+    }
+
+    // Stubs the two guards that run at the top of create() before any repo/service calls.
+    private void stubCreateGuards() {
+        when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
     }
 
     // ── create ────────────────────────────────────────────────────────────────
 
     @Test
     void create_validRequest_buildsPointAndSaves() {
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId);
+        stubCreateGuards();
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
@@ -117,10 +135,10 @@ class SosServiceImplTest {
 
     @Test
     void create_publishesSosCreatedEventWithRequestData() {
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", "desc", 13.7563, 100.5018, vehicleId);
+        stubCreateGuards();
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", "desc", 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
-        // Mimics Hibernate's @UuidGenerator, which sets the generated id on the entity in place during save()
         when(sosRequestRepository.save(any(SosRequest.class))).thenAnswer(inv -> {
             SosRequest arg = inv.getArgument(0);
             arg.setSosId(sosId);
@@ -144,7 +162,8 @@ class SosServiceImplTest {
 
     @Test
     void create_userNotFound_throwsEntityNotFoundException() {
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId);
+        stubCreateGuards();
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> sosService.create(request))
@@ -154,7 +173,8 @@ class SosServiceImplTest {
 
     @Test
     void create_mapsReturnsAddress_setsLocationAddressAndSavesTwice() {
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId);
+        stubCreateGuards();
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
@@ -170,7 +190,8 @@ class SosServiceImplTest {
 
     @Test
     void create_mapsReturnsNull_sosStillSavedWithoutAddress() {
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId);
+        stubCreateGuards();
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
@@ -184,13 +205,42 @@ class SosServiceImplTest {
 
     @Test
     void create_vehicleNotFound_throwsEntityNotFoundException() {
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId);
+        stubCreateGuards();
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> sosService.create(request))
                 .isInstanceOf(EntityNotFoundException.class)
                 .hasMessageContaining(vehicleId.toString());
+    }
+
+    // ── create guards ─────────────────────────────────────────────────────────
+
+    @Test
+    void create_userHasActiveSos_throwsIllegalStateException() {
+        when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(true);
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
+
+        assertThatThrownBy(() -> sosService.create(request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("active SOS request");
+
+        verify(userRepository, never()).findById(any());
+    }
+
+    @Test
+    void create_withinCooldown_throwsTooManyRequestsException() {
+        when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
+        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
+
+        assertThatThrownBy(() -> sosService.create(request))
+                .isInstanceOf(TooManyRequestsException.class)
+                .hasMessageContaining("60 seconds");
+
+        verify(userRepository, never()).findById(any());
     }
 
     // ── getById ───────────────────────────────────────────────────────────────
@@ -216,7 +266,7 @@ class SosServiceImplTest {
         BidSos acceptedBid = BidSos.builder().bidId(UUID.randomUUID()).status(BidStatus.ACCEPTED)
                 .sosRequest(pendingSos).mechanic(mechanic).build();
         MechanicResponse mechanicResponse = new MechanicResponse(
-                mechanicId, null, "Bob", "081", "bob@fix.com",
+                mechanicId, "Bob", "081", "bob@fix.com",
                 null, null, null, null, null, null, null, true, null, null, null);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
@@ -233,18 +283,30 @@ class SosServiceImplTest {
 
     @Test
     void getByUser_delegatesToRepositoryAndMapsResult() {
-        when(sosRequestRepository.findByUserUserId(userId)).thenReturn(List.of(pendingSos));
+        Pageable pageable = PageRequest.of(0, 20);
+        when(sosRequestRepository.findByUserUserId(userId, pageable))
+                .thenReturn(new PageImpl<>(List.of(pendingSos)));
+        when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.empty());
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
-        assertThat(sosService.getByUser(userId)).containsExactly(sosResponse);
+        Page<SosRequestResponse> result = sosService.getByUser(userId, pageable);
+
+        assertThat(result.getContent()).containsExactly(sosResponse);
     }
 
     @Test
     void getByStatus_delegatesToRepositoryAndMapsResult() {
-        when(sosRequestRepository.findByStatus(SosStatus.PENDING)).thenReturn(List.of(pendingSos));
+        Pageable pageable = PageRequest.of(0, 20);
+        when(sosRequestRepository.findByStatus(SosStatus.PENDING, pageable))
+                .thenReturn(new PageImpl<>(List.of(pendingSos)));
+        when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.empty());
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
-        assertThat(sosService.getByStatus(SosStatus.PENDING)).containsExactly(sosResponse);
+        Page<SosRequestResponse> result = sosService.getByStatus(SosStatus.PENDING, pageable);
+
+        assertThat(result.getContent()).containsExactly(sosResponse);
     }
 
     // ── proposeStatusChange ───────────────────────────────────────────────────
@@ -253,7 +315,7 @@ class SosServiceImplTest {
     void proposeStatusChange_validTransition_savesHistoryAndReturnsResponse() {
         SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
                 .problemType("Flat Tire").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
@@ -264,7 +326,7 @@ class SosServiceImplTest {
                 });
         when(sosStatusHistoryMapper.toResponse(any(SosStatusHistory.class))).thenReturn(historyResponse);
 
-        SosStatusHistoryResponse result = sosService.proposeStatusChange(request);
+        SosStatusHistoryResponse result = sosService.proposeStatusChange(sosId, request);
 
         ArgumentCaptor<SosStatusHistory> captor = ArgumentCaptor.forClass(SosStatusHistory.class);
         verify(sosStatusHistoryRepository).save(captor.capture());
@@ -277,19 +339,19 @@ class SosServiceImplTest {
 
     @Test
     void proposeStatusChange_invalidTransition_throwsIllegalStateException() {
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
 
-        assertThatThrownBy(() -> sosService.proposeStatusChange(request))
+        assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("PENDING");
     }
 
     @Test
     void proposeStatusChange_terminalStatus_throwsIllegalStateException() {
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.CANCELLED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.CANCELLED);
 
-        assertThatThrownBy(() -> sosService.proposeStatusChange(request))
+        assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -297,11 +359,11 @@ class SosServiceImplTest {
     void proposeStatusChange_mechanicNotFound_throwsEntityNotFoundException() {
         SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
                 .problemType("X").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> sosService.proposeStatusChange(request))
+        assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
                 .isInstanceOf(EntityNotFoundException.class);
     }
 
@@ -380,7 +442,6 @@ class SosServiceImplTest {
         assertThat(acceptedSos.getStatus()).isEqualTo(SosStatus.ACCEPTED);
         verify(sosRequestRepository, never()).save(any());
         verify(sosEventProducer, never()).publishStatusUpdated(any());
-        // REJECTED path notifies the mechanic via WebSocket that completion was rejected
         verify(messagingTemplate).convertAndSendToUser(
                 eq(mechanicId.toString()), eq("/queue/sos-updates"), any());
         verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));

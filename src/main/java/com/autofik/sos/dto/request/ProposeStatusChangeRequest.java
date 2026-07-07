@@ -7,6 +7,5 @@ import java.util.UUID;
 
 public record ProposeStatusChangeRequest(
         @NotNull UUID mechanicId,
-        @NotNull UUID sosId,
         @NotNull SosStatus toStatus
 ) {}

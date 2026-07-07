@@ -2,6 +2,8 @@ package com.autofik.sos.repository;
 
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.enums.BidStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -24,6 +26,7 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
      * SQL Equivalent: SELECT * FROM bid_sos WHERE mechanic_id = ?
      */
     List<BidSos> findByMechanicMechanicId(UUID mechanicId);
+    Page<BidSos> findByMechanicMechanicId(UUID mechanicId, Pageable pageable);
 
     /**
      * Finds a list of bids for a specific SOS request filtered by their status (e.g., all PENDING bids).

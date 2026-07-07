@@ -24,34 +24,74 @@ public class SosEventProducer {
 
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
+    /**
+     * Publishes an event indicating a new SOS request has been created.
+     *
+     * @param event the event payload containing details of the created SOS
+     */
     public void publishSosCreated(SosCreatedEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_SOS_CREATED, event.sosId().toString(), event);
     }
 
+    /**
+     * Publishes an event indicating a mechanic has submitted a bid for an SOS request.
+     *
+     * @param event the event payload containing bid creation details
+     */
     public void publishBidCreated(BidCreatedEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_CREATED, event.sosId().toString(), event);
     }
 
+    /**
+     * Publishes an event indicating a bid has been accepted by the user.
+     *
+     * @param event the event payload containing the accepted bid details
+     */
     public void publishBidAccepted(BidAcceptedEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_ACCEPTED, event.sosId().toString(), event);
     }
 
+    /**
+     * Publishes an event indicating a bid has been rejected.
+     *
+     * @param event the event payload containing the rejected bid details
+     */
     public void publishBidRejected(BidRejectedEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_REJECTED, event.sosId().toString(), event);
     }
 
+    /**
+     * Publishes an event indicating a bid has been cancelled by the mechanic.
+     *
+     * @param event the event payload containing the cancelled bid details
+     */
     public void publishBidCancelled(BidCancelledEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_CANCELLED, event.sosId().toString(), event);
     }
 
+    /**
+     * Publishes an event indicating the lifecycle status of an SOS request has changed.
+     *
+     * @param event the event payload containing the updated status details
+     */
     public void publishStatusUpdated(SosStatusUpdatedEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_SOS_STATUS_UPDATED, event.sosId().toString(), event);
     }
 
+    /**
+     * Publishes real-time location updates of the assigned mechanic for an SOS request.
+     *
+     * @param event the event payload containing the mechanic's current coordinates
+     */
     public void publishMechanicLocation(MechanicLocationEvent event) {
         kafkaTemplate.send(KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED, event.sosId().toString(), event);
     }
 
+    /**
+     * Publishes general SOS system notifications destined for users or mechanics.
+     *
+     * @param event the event payload containing notification message details
+     */
     public void publishNotification(SosNotificationEvent event) {
         // recipientId is null for fan-out notifications (e.g. SOS_CREATED, resolved externally
         // by the notification-service) — null key just means round-robin partitioning for those.

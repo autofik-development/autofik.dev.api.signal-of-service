@@ -2,7 +2,9 @@ package com.autofik.sos.service;
 
 import com.autofik.sos.dto.response.UserResponse;
 
-import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.util.UUID;
 
 /**
@@ -22,5 +24,5 @@ public interface UserService {
      * Use case : fetch all users in the system
      * @return list of all users as UserResponse
      */
-    List<UserResponse> getAll();
+    Page<UserResponse> getAll(Pageable pageable);
 }

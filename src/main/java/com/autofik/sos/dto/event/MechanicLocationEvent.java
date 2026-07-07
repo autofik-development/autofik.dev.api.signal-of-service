@@ -1,6 +1,6 @@
 package com.autofik.sos.dto.event;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.UUID;
 
 public record MechanicLocationEvent(
@@ -8,5 +8,5 @@ public record MechanicLocationEvent(
         UUID mechanicId,
         double latitude,
         double longitude,
-        LocalDateTime timestamp
+        Instant timestamp
 ) {}

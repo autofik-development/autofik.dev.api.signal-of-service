@@ -27,6 +27,7 @@ import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.repository.VehicleRepository;
 import com.autofik.sos.service.GoogleMapsService;
+import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.service.SosService;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
@@ -35,13 +36,18 @@ import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.io.IOException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -64,10 +70,20 @@ public class SosServiceImpl implements SosService {
     );
 
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory(new PrecisionModel(), 4326);
-    // Resolution 7 ≈ 5 km² per H3 cell — coarse enough for a fast index scan, fine enough to avoid too many false positives.
+    // Resolution 7 ≈ 5 km² per H3 cell — fixed by what is stored in current_h3_index on Mechanic.
+    // Changing this would require a schema + data migration; kRing radius is the adaptive variable instead.
     private static final int H3_RESOLUTION = 7;
-    // kRing(4) covers the center cell + 4 rings of neighbors ≈ ~15 km radius at resolution 7.
-    private static final int H3_RING_RADIUS = 4;
+    // Center-to-center distance between adjacent resolution-7 cells ≈ edge * sqrt(3) ≈ 2.114 km.
+    // Used to convert a km radius into the minimum kRing radius that covers it.
+    private static final double H3_R7_CENTER_TO_CENTER_KM = 2.114;
+    // Default broadcast radius used for fan-out when the SOS request has no user-defined limit.
+    private static final int DEFAULT_BROADCAST_KM = 15;
+
+    private static final String SOS_COOLDOWN_KEY_PREFIX = "sos:cooldown:";
+    private static final Duration SOS_COOLDOWN = Duration.ofSeconds(60);
+    private static final List<SosStatus> ACTIVE_STATUSES = List.of(
+            SosStatus.PENDING, SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED
+    );
     private static final H3Core H3;
 
     static {
@@ -91,10 +107,21 @@ public class SosServiceImpl implements SosService {
     private final SosEventProducer sosEventProducer;
     private final SimpMessagingTemplate messagingTemplate;
     private final TaskScheduler taskScheduler;
+    private final StringRedisTemplate redisTemplate;
 
     @Override
     @Transactional
     public SosRequestResponse create(CreateSosRequest request) {
+        if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
+            throw new IllegalStateException("You already have an active SOS request");
+        }
+
+        Boolean allowed = redisTemplate.opsForValue()
+                .setIfAbsent(SOS_COOLDOWN_KEY_PREFIX + request.userId(), "1", SOS_COOLDOWN);
+        if (!Boolean.TRUE.equals(allowed)) {
+            throw new TooManyRequestsException("Please wait 60 seconds before submitting another SOS request");
+        }
+
         User user = userRepository.findById(request.userId())
                 .orElseThrow(() -> new EntityNotFoundException("User not found: " + request.userId()));
         Vehicle vehicle = vehicleRepository.findById(request.vehicleId())
@@ -103,6 +130,7 @@ public class SosServiceImpl implements SosService {
                 .problemType(request.problemType())
                 .description(request.description())
                 .location(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
+                .broadcastRadiusKm(request.broadcastRadiusKm())
                 .user(user)
                 .vehicle(vehicle)
                 .build();
@@ -121,7 +149,8 @@ public class SosServiceImpl implements SosService {
             sos.getLocationAddress(), sos.getCreatedAt()
         ));
 
-        fanOutToNearbyMechanics(sos.getSosId(), request.latitude(), request.longitude(), request.problemType());
+        fanOutToNearbyMechanics(sos.getSosId(), request.latitude(), request.longitude(),
+                request.problemType(), request.broadcastRadiusKm());
 
         scheduleBiddingExpiry(sos);
 
@@ -136,14 +165,14 @@ public class SosServiceImpl implements SosService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<SosRequestResponse> getByUser(UUID userId) {
-        return toResponseListWithMechanic(sosRequestRepository.findByUserUserId(userId));
+    public Page<SosRequestResponse> getByUser(UUID userId, Pageable pageable) {
+        return toPageWithMechanic(sosRequestRepository.findByUserUserId(userId, pageable));
     }
 
     @Override
     @Transactional(readOnly = true)
-    public List<SosRequestResponse> getByStatus(SosStatus status) {
-        return toResponseListWithMechanic(sosRequestRepository.findByStatus(status));
+    public Page<SosRequestResponse> getByStatus(SosStatus status, Pageable pageable) {
+        return toPageWithMechanic(sosRequestRepository.findByStatus(status, pageable));
     }
 
     // Direct status update (mechanic-initiated, no user approval needed).
@@ -153,7 +182,7 @@ public class SosServiceImpl implements SosService {
     public SosRequestResponse updateStatus(UUID sosId, UUID mechanicId, SosStatus toStatus) {
         if (toStatus != SosStatus.ON_THE_WAY && toStatus != SosStatus.ARRIVED) {
             throw new IllegalStateException(
-                "Only ON_THE_WAY and ARRIVED can be set directly. Use /propose-status for COMPLETED.");
+                "Only ON_THE_WAY and ARRIVED can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
         }
         SosRequest sos = findSosOrThrow(sosId);
         validateTransition(sos.getStatus(), toStatus);
@@ -193,12 +222,12 @@ public class SosServiceImpl implements SosService {
     // This records a PENDING_APPROVAL history entry and notifies the user; approveStatusChange() finalizes it.
     @Override
     @Transactional
-    public SosStatusHistoryResponse proposeStatusChange(ProposeStatusChangeRequest request) {
+    public SosStatusHistoryResponse proposeStatusChange(UUID sosId, ProposeStatusChangeRequest request) {
         if (request.toStatus() != SosStatus.COMPLETED) {
             throw new IllegalStateException(
-                "Only COMPLETED requires customer approval. Use PATCH /sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
+                "Only COMPLETED requires customer approval. Use PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
         }
-        SosRequest sos = findSosOrThrow(request.sosId());
+        SosRequest sos = findSosOrThrow(sosId);
         validateTransition(sos.getStatus(), request.toStatus());
         Mechanic mechanic = mechanicRepository.findById(request.mechanicId())
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
@@ -311,8 +340,8 @@ public class SosServiceImpl implements SosService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<SosRequestResponse> getAll() {
-        return toResponseListWithMechanic(sosRequestRepository.findAll());
+    public Page<SosRequestResponse> getAll(Pageable pageable) {
+        return toPageWithMechanic(sosRequestRepository.findAll(pageable));
     }
 
     // SosRequest has no direct mechanic relation — the assigned mechanic is resolved
@@ -325,13 +354,18 @@ public class SosServiceImpl implements SosService {
                 .orElse(null);
         return new SosRequestResponse(
                 base.sosId(), base.problemType(), base.description(), base.locationAddress(),
-                base.status(), base.latitude(), base.longitude(), base.createdAt(), base.updatedAt(),
+                base.status(), base.latitude(), base.longitude(), base.broadcastRadiusKm(),
+                base.createdAt(), base.updatedAt(),
                 base.biddingExpiresAt(), base.user(), base.vehicle(), mechanic
         );
     }
 
     private List<SosRequestResponse> toResponseListWithMechanic(List<SosRequest> sosList) {
         return sosList.stream().map(this::toResponseWithMechanic).toList();
+    }
+
+    private Page<SosRequestResponse> toPageWithMechanic(Page<SosRequest> page) {
+        return page.map(this::toResponseWithMechanic);
     }
 
     private SosRequest findSosOrThrow(UUID sosId) {
@@ -350,15 +384,19 @@ public class SosServiceImpl implements SosService {
     // Stage 1 (H3 index): fast B-tree scan to get candidates in nearby hex cells.
     // Stage 2 (PostGIS): exact ST_DWithin check against each mechanic's service_radius_m.
     // recipientId=null in the notification signals a fan-out (no specific OneSignal push).
-    private void fanOutToNearbyMechanics(UUID sosId, double lat, double lng, String problemType) {
+    private void fanOutToNearbyMechanics(UUID sosId, double lat, double lng,
+                                         String problemType, Integer broadcastRadiusKm) {
+        int effectiveRadiusKm = broadcastRadiusKm != null ? broadcastRadiusKm : DEFAULT_BROADCAST_KM;
         String sosCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
-        List<String> searchCells = H3.kRing(sosCell, H3_RING_RADIUS);
+        List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
 
         List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
         if (coarse.isEmpty()) return;
 
         List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-        List<Mechanic> matched = mechanicRepository.filterByRadius(ids, lat, lng);
+        List<Mechanic> matched = broadcastRadiusKm != null
+                ? mechanicRepository.filterByRadiusAndBroadcast(ids, lat, lng, broadcastRadiusKm * 1000.0)
+                : mechanicRepository.filterByRadius(ids, lat, lng);
 
         SosNotificationEvent notification = new SosNotificationEvent(
                 "SOS_CREATED", null, "MECHANIC", sosId,
@@ -369,6 +407,12 @@ public class SosServiceImpl implements SosService {
                         m.getMechanicId().toString(), "/queue/sos-new-request", notification
                 )
         );
+    }
+
+    // Converts a km radius into the minimum kRing depth that fully covers it at resolution 7.
+    // +1 ring of buffer accounts for partial hex overlap at the boundary.
+    private static int ringRadiusFor(int radiusKm) {
+        return (int) Math.ceil(radiusKm / H3_R7_CENTER_TO_CENTER_KM) + 1;
     }
 
     // Uses TaskScheduler (not @Scheduled) because each SOS has its own unique expiry time.

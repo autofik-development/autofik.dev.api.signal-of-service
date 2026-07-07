@@ -10,7 +10,7 @@ public record FeedbackResponse(
         UUID id,
         String comment,
         BigDecimal rating,
-        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime createdAt,
+        @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime createdAt,
         UserResponse user,
         MechanicResponse mechanic
 ) {}

@@ -1,6 +1,8 @@
 package com.autofik.sos.repository;
 
 import com.autofik.sos.domain.entity.Feedback;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -20,6 +22,7 @@ public interface FeedbackRepository extends JpaRepository<Feedback, UUID> {
      * SQL Equivalent: SELECT * FROM feedback WHERE mechanic_id = ?
      */
     List<Feedback> findByMechanicMechanicId(UUID mechanicId);
+    Page<Feedback> findByMechanicMechanicId(UUID mechanicId, Pageable pageable);
 
     /**
      * Finds the specific feedback left for a unique emergency SOS request.

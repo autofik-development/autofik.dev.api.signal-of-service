@@ -16,7 +16,7 @@ import java.util.UUID;
  * Supports photo and video uploads (max 50 MB). Files are stored in S3 and served via presigned URLs.
  */
 @RestController
-@RequestMapping("/api/sos/{sosId}/media")
+@RequestMapping("/api/v1/sos/{sosId}/media")
 @RequiredArgsConstructor
 public class SosMediaController {
 
@@ -31,6 +31,9 @@ public class SosMediaController {
                                     @RequestParam MultipartFile file,
                                     @RequestParam(required = false) UUID userId,
                                     @RequestParam(required = false) UUID mechanicId) {
+        if ((userId == null) == (mechanicId == null)) {
+            throw new IllegalArgumentException("Exactly one of userId or mechanicId must be provided");
+        }
         return sosMediaService.upload(sosId, file, userId, mechanicId);
     }
 

@@ -15,7 +15,7 @@ public record BidSosResponse(
         Long estimatedDurationS,
         String estimatedDistanceText,
         String estimatedDurationText,
-        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime bidAt,
-        @JsonFormat(pattern = "MMM d yyyy, h:mm a", locale = "en") LocalDateTime respondedAt,
+        @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime bidAt,
+        @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime respondedAt,
         MechanicResponse mechanic
 ) {}

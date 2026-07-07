@@ -5,10 +5,12 @@ import com.autofik.sos.dto.response.FeedbackResponse;
 import com.autofik.sos.service.FeedbackService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -17,7 +19,7 @@ import java.util.UUID;
  * Feedback can only be submitted after a SOS request reaches COMPLETED status.
  */
 @RestController
-@RequestMapping("/api/feedback")
+@RequestMapping("/api/v1/feedback")
 @RequiredArgsConstructor
 public class FeedbackController {
 
@@ -40,7 +42,8 @@ public class FeedbackController {
     // GET /api/feedback/mechanic/{mechanicId} — Fetch all reviews ever written about a mechanic
     // Used to display review history and compute reputation on the mechanic's profile page
     @GetMapping("/mechanic/{mechanicId}")
-    public List<FeedbackResponse> getByMechanic(@PathVariable UUID mechanicId) {
-        return feedbackService.getByMechanic(mechanicId);
+    public Page<FeedbackResponse> getByMechanic(@PathVariable UUID mechanicId,
+                                                 @PageableDefault(size = 20) Pageable pageable) {
+        return feedbackService.getByMechanic(mechanicId, pageable);
     }
 }

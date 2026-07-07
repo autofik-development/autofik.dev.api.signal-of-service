@@ -28,6 +28,9 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Comparator;
@@ -153,8 +156,9 @@ public class BidServiceImpl implements BidService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<BidSosResponse> getByMechanic(UUID mechanicId) {
-        return bidSosMapper.toResponseList(bidSosRepository.findByMechanicMechanicId(mechanicId));
+    public Page<BidSosResponse> getByMechanic(UUID mechanicId, Pageable pageable) {
+        return bidSosRepository.findByMechanicMechanicId(mechanicId, pageable)
+                .map(bidSosMapper::toResponse);
     }
 
     /**
@@ -271,8 +275,8 @@ public class BidServiceImpl implements BidService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<BidSosResponse> getAll() {
-        return bidSosMapper.toResponseList(bidSosRepository.findAll());
+    public Page<BidSosResponse> getAll(Pageable pageable) {
+        return bidSosRepository.findAll(pageable).map(bidSosMapper::toResponse);
     }
 
     // When the user accepts one bid, all other PENDING bids on the same SOS must be

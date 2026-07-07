@@ -20,6 +20,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
@@ -93,8 +96,9 @@ public class FeedbackServiceImpl implements FeedbackService {
      */
     @Override
     @Transactional(readOnly = true)
-    public List<FeedbackResponse> getByMechanic(UUID mechanicId) {
-        return feedbackMapper.toResponseList(feedbackRepository.findByMechanicMechanicId(mechanicId));
+    public Page<FeedbackResponse> getByMechanic(UUID mechanicId, Pageable pageable) {
+        return feedbackRepository.findByMechanicMechanicId(mechanicId, pageable)
+                .map(feedbackMapper::toResponse);
     }
 
     /**
