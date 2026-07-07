@@ -74,10 +74,9 @@ public class SosController {
         return sosService.proposeStatusChange(sosId, request);
     }
 
-    // PATCH /api/v1/sos/{sosId}/completion — Driver approves or rejects the mechanic's COMPLETED proposal
-    @PatchMapping("/{sosId}/completion")
-    public SosRequestResponse approveCompletion(@PathVariable UUID sosId,
-                                                @Valid @RequestBody ApproveStatusChangeRequest request) {
+    // PATCH /api/v1/sos/completion — Driver approves or rejects the mechanic's COMPLETED proposal
+    @PatchMapping("/completion")
+    public SosRequestResponse approveCompletion(@Valid @RequestBody ApproveStatusChangeRequest request) {
         return sosService.approveStatusChange(request);
     }
 
