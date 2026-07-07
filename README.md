@@ -158,12 +158,15 @@ GET /api/mechanics/available?lat=&lng=&problemType=
        │
        ▼
 MechanicServiceImpl.findAvailable()
-  Primary:  Redis GEOSEARCH mechanics:geo radius 15 km
-              → fetch mechanic rows by IDs (Postgres)
-              → in-memory skill filter
-  Fallback: H3 kRing(4) B-tree scan → PostGIS ST_DWithin exact filter
-              (activates automatically when Redis is unavailable)
+  Stage 1 — H3 kRing(4) B-tree index scan
+              filters by current_h3_index, eliminates most of the table
+  Stage 2 — PostGIS ST_DWithin exact filter
+              respects each mechanic's service_radius_km
+  Stage 3 — in-memory skill tag filter (only when problemType is provided)
+              uses JOIN FETCH to avoid N+1 on skill tags
 ```
+
+`current_location` in Postgres is the source of truth. Redis is not involved in availability search.
 
 ---
 

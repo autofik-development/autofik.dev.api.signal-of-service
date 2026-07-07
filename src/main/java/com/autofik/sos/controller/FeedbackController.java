@@ -19,7 +19,7 @@ import java.util.UUID;
  * Feedback can only be submitted after a SOS request reaches COMPLETED status.
  */
 @RestController
-@RequestMapping("/api/feedback")
+@RequestMapping("/api/v1/feedback")
 @RequiredArgsConstructor
 public class FeedbackController {
 

@@ -59,7 +59,7 @@ public interface SosService {
      * @param request contain the sosId mechanicId and proposed status
      * @return A status history log showing that change request is awaiting user confirmation
      */
-    SosStatusHistoryResponse proposeStatusChange(ProposeStatusChangeRequest request);
+    SosStatusHistoryResponse proposeStatusChange(UUID sosId, ProposeStatusChangeRequest request);
 
     /**
      * Use case : user confirmation to approve the machanic's status proposal

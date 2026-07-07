@@ -7,6 +7,8 @@ import com.autofik.sos.service.MechanicService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -23,7 +25,7 @@ import java.util.UUID;
  * Base URL: /api/mechanics
  */
 @RestController
-@RequestMapping("/api/mechanics")
+@RequestMapping("/api/v1/mechanics")
 @RequiredArgsConstructor
 @Validated
 public class MechanicController {
@@ -50,17 +52,16 @@ public class MechanicController {
         return mechanicService.getById(mechanicId);
     }
 
-    // GET /api/mechanics/available?lat=&lng=&problemType= — Find nearby available mechanics
+    // GET /api/mechanics/available?lat=&lng=&problemType=&radiusKm= — Find nearby available mechanics
+    // radiusKm (5–30, default 15): controls the H3 kRing search depth — matches broadcastRadiusKm on SOS
     // problemType is optional: omit to search all specializations, provide to filter (e.g., "flat_tire")
-    // Uses two-stage H3 + PostGIS geo-search under the hood
     @GetMapping("/available")
     public List<MechanicResponse> findAvailable(
             @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
             @RequestParam @DecimalMin("102.5") @DecimalMax("107.63") double lng,
-            @RequestParam(required = false) String problemType) {
-        return problemType != null
-                ? mechanicService.findAvailable(lat, lng, problemType)
-                : mechanicService.findAvailable(lat, lng);
+            @RequestParam(required = false) String problemType,
+            @RequestParam(defaultValue = "15") @Min(5) @Max(30) int radiusKm) {
+        return mechanicService.findAvailable(lat, lng, problemType, radiusKm);
     }
 
     // PATCH /api/mechanics/{mechanicId}/location?lat=&lng=&sosId= — Update mechanic's real-time GPS

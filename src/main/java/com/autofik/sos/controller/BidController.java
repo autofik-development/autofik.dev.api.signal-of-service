@@ -23,7 +23,7 @@ import java.util.UUID;
  * Handles bid submission, listing, accept/reject by the driver, and mechanic-initiated cancellation.
  */
 @RestController
-@RequestMapping("/api/bids")
+@RequestMapping("/api/v1/bids")
 @RequiredArgsConstructor
 public class BidController {
 

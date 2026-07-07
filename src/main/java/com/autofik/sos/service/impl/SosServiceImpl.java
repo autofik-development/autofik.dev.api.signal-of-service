@@ -182,7 +182,7 @@ public class SosServiceImpl implements SosService {
     public SosRequestResponse updateStatus(UUID sosId, UUID mechanicId, SosStatus toStatus) {
         if (toStatus != SosStatus.ON_THE_WAY && toStatus != SosStatus.ARRIVED) {
             throw new IllegalStateException(
-                "Only ON_THE_WAY and ARRIVED can be set directly. Use /propose-status for COMPLETED.");
+                "Only ON_THE_WAY and ARRIVED can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
         }
         SosRequest sos = findSosOrThrow(sosId);
         validateTransition(sos.getStatus(), toStatus);
@@ -222,12 +222,12 @@ public class SosServiceImpl implements SosService {
     // This records a PENDING_APPROVAL history entry and notifies the user; approveStatusChange() finalizes it.
     @Override
     @Transactional
-    public SosStatusHistoryResponse proposeStatusChange(ProposeStatusChangeRequest request) {
+    public SosStatusHistoryResponse proposeStatusChange(UUID sosId, ProposeStatusChangeRequest request) {
         if (request.toStatus() != SosStatus.COMPLETED) {
             throw new IllegalStateException(
-                "Only COMPLETED requires customer approval. Use PATCH /sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
+                "Only COMPLETED requires customer approval. Use PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
         }
-        SosRequest sos = findSosOrThrow(request.sosId());
+        SosRequest sos = findSosOrThrow(sosId);
         validateTransition(sos.getStatus(), request.toStatus());
         Mechanic mechanic = mechanicRepository.findById(request.mechanicId())
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));

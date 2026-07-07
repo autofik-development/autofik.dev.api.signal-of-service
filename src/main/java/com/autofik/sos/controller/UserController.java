@@ -13,7 +13,7 @@ import java.util.UUID;
 // READ-ONLY. User profiles are created and managed by the SSO team.
 // This service only reads users to validate SOS requests.
 @RestController
-@RequestMapping("/api/users")
+@RequestMapping("/api/v1/users")
 @RequiredArgsConstructor
 public class UserController {
 

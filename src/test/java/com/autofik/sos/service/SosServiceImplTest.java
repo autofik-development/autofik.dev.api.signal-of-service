@@ -315,7 +315,7 @@ class SosServiceImplTest {
     void proposeStatusChange_validTransition_savesHistoryAndReturnsResponse() {
         SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
                 .problemType("Flat Tire").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
@@ -326,7 +326,7 @@ class SosServiceImplTest {
                 });
         when(sosStatusHistoryMapper.toResponse(any(SosStatusHistory.class))).thenReturn(historyResponse);
 
-        SosStatusHistoryResponse result = sosService.proposeStatusChange(request);
+        SosStatusHistoryResponse result = sosService.proposeStatusChange(sosId, request);
 
         ArgumentCaptor<SosStatusHistory> captor = ArgumentCaptor.forClass(SosStatusHistory.class);
         verify(sosStatusHistoryRepository).save(captor.capture());
@@ -339,19 +339,19 @@ class SosServiceImplTest {
 
     @Test
     void proposeStatusChange_invalidTransition_throwsIllegalStateException() {
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
 
-        assertThatThrownBy(() -> sosService.proposeStatusChange(request))
+        assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("PENDING");
     }
 
     @Test
     void proposeStatusChange_terminalStatus_throwsIllegalStateException() {
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.CANCELLED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.CANCELLED);
 
-        assertThatThrownBy(() -> sosService.proposeStatusChange(request))
+        assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -359,11 +359,11 @@ class SosServiceImplTest {
     void proposeStatusChange_mechanicNotFound_throwsEntityNotFoundException() {
         SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
                 .problemType("X").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
-        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, sosId, SosStatus.COMPLETED);
+        ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> sosService.proposeStatusChange(request))
+        assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
                 .isInstanceOf(EntityNotFoundException.class);
     }
 
