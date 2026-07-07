@@ -1,0 +1,102 @@
+
+name: Docker Build and Push Image
+
+on:
+  push:
+    tags:
+      - 'dev-v*'
+      - 'stg-v*'
+      - 'prod-v*'
+
+env:
+  REGISTRY: autofikbyslaap/dev.api.sos
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Version and Tag
+        id: extract
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+
+          if [[ "$TAG" == dev-v* ]]; then
+            VERSION=${TAG#dev-v}
+            ENV=dev
+          elif [[ "$TAG" == stg-v* ]]; then
+            VERSION=${TAG#stg-v}
+            ENV=stg
+          elif [[ "$TAG" == prod-v* ]]; then
+            VERSION=${TAG#prod-v}
+            ENV=prod
+          else
+            echo "Invalid tag format"
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "ENV=$ENV" >> $GITHUB_OUTPUT
+
+      - name: Notify Build Started
+        run: |
+          curl -s -X POST \
+          https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
+          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+          -d parse_mode=HTML \
+          -d text=$'🚀 <b>Build Started</b>\n\nRepository: ${{ github.repository }}\nEnvironment: ${{ steps.extract.outputs.ENV }}\nVersion: ${{ steps.extract.outputs.VERSION }}\nTag: ${{ github.ref_name }}\n\nTriggered by: ${{ github.actor }}'
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Build and Push Docker Images
+        run: |
+          ENV=${{ steps.extract.outputs.ENV }}
+          VERSION=${{ steps.extract.outputs.VERSION }}
+
+          if [[ "$ENV" == "dev" ]]; then
+            docker build -t $REGISTRY:dev-$VERSION .
+            docker push $REGISTRY:dev-$VERSION
+
+            docker tag $REGISTRY:dev-$VERSION $REGISTRY:master
+            docker push $REGISTRY:master
+
+          elif [[ "$ENV" == "stg" ]]; then
+            docker build -t $REGISTRY:stg-$VERSION .
+            docker push $REGISTRY:stg-$VERSION
+
+            docker tag $REGISTRY:stg-$VERSION $REGISTRY:testing
+            docker push $REGISTRY:testing
+
+          elif [[ "$ENV" == "prod" ]]; then
+            docker build -t $REGISTRY:prod-$VERSION .
+            docker push $REGISTRY:prod-$VERSION
+
+            docker tag $REGISTRY:prod-$VERSION $REGISTRY:production
+            docker push $REGISTRY:production
+          fi
+
+      - name: Notify Success
+        if: success()
+        run: |
+          curl -s -X POST \
+          https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
+          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+          -d parse_mode=HTML \
+          -d text=$'✅ <b>Build Success</b>\n\nRepository: ${{ github.repository }}\nEnvironment: ${{ steps.extract.outputs.ENV }}\nVersion: ${{ steps.extract.outputs.VERSION }}\nTag: ${{ github.ref_name }}\n\nImage: $REGISTRY'
+      - name: Notify Failed
+        if: failure()
+        run: |
+          curl -s -X POST \
+          https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
+          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+          -d parse_mode=HTML \
+          -d text=$'❌ <b>Build Failed</b>\n\nRepository: ${{ github.repository }}\nEnvironment: ${{ steps.extract.outputs.ENV }}\nVersion: ${{ steps.extract.outputs.VERSION }}\nTag: ${{ github.ref_name }}\n\nCheck GitHub Actions logs.'
