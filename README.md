@@ -69,19 +69,24 @@ User submits SOS
 │   User   │───────►│ SosRequest  │◄───────│ Vehicle  │
 └──────────┘  1:N   └─────────────┘  N:1   └──────────┘
                            │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-         ┌────────┐  ┌──────────┐  ┌──────────┐
-         │ BidSos │  │ SosStatus│  │ Feedback │
-         └────────┘  │ History  │  └──────────┘
-              │      └──────────┘
-              │
-              ▼
-        ┌──────────┐     ┌──────────────┐
-        │ Mechanic │────►│ MechanicSkill│
-        └──────────┘     └──────────────┘
+              ┌────────────┼──────────────────┐
+              │            │            │      │
+              ▼            ▼            ▼      ▼
+         ┌────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+         │ BidSos │  │ SosStatus│  │ Feedback │  │ SosMedia │
+         └────────┘  │ History  │  └──────────┘  └──────────┘
+              │      └──────────┘        │
+              │                          │ rates
+              ▼                          ▼
+        ┌──────────┐     ┌──────────────┐     ┌─────────────┐
+        │ Mechanic │────►│ MechanicSkill│     │ MechanicRate│
+        └──────────┘  1:N└──────────────┘ 1:1 └─────────────┘
+              │                                      ▲
+              └──────────────────────────────────────┘
+                    upserted on every Feedback submit
 ```
+
+`MechanicRate` is a cached aggregate — one row per mechanic storing `rating_avg` and `rating_count`. Upserted by `FeedbackServiceImpl` after each new feedback so rating lookups never need to aggregate over the full feedback history.
 
 ---
 
