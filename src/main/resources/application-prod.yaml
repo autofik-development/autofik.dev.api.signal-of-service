@@ -1,0 +1,7 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+websocket:
+  allowed-origins: ${WEBSOCKET_ALLOWED_ORIGINS}
