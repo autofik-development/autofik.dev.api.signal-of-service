@@ -113,8 +113,18 @@ public class SosMediaServiceImpl implements SosMediaService {
                 .uploadedByMechanic(mechanic)
                 .build());
 
-        UUID uploadedById = user != null ? user.getUserId() : mechanic.getMechanicId();
-        String uploadedByRole = user != null ? "USER" : "MECHANIC";
+        UUID uploadedById;
+        String uploadedByRole;
+        if (user != null) {
+            uploadedById = user.getUserId();
+            uploadedByRole = "USER";
+        } else {
+            if (mechanic == null) {
+                throw new IllegalStateException("Uploader context is invalid: mechanic is null");
+            }
+            uploadedById = mechanic.getMechanicId();
+            uploadedByRole = "MECHANIC";
+        }
         sosEventProducer.publishMediaUploaded(
                 new SosMediaUploadedEvent(sosId, saved.getMediaId(), uploadedByRole, uploadedById, saved.getUploadedAt()));
 
