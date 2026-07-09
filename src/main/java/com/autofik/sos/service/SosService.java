@@ -82,4 +82,13 @@ public interface SosService {
      * * @return A master list of all SOS records.
      */
     Page<SosRequestResponse> getAll(Pageable pageable);
+
+    /**
+     * Use case: re-opens an EXPIRED SOS request and re-broadcasts to nearby mechanics.
+     * Capped at MAX_REBROADCAST attempts; throws TooManyRequestsException when exhausted.
+     * @param sosId  identify the target SOS
+     * @param userId security check — only the owner can rebroadcast
+     * @return the updated SOS ticket now back in PENDING state
+     */
+    SosRequestResponse rebroadcast(UUID sosId, UUID userId);
 }

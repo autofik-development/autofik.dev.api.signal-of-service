@@ -49,7 +49,7 @@ import org.springframework.data.domain.Pageable;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -356,7 +356,7 @@ public class SosServiceImpl implements SosService {
                 base.sosId(), base.problemType(), base.description(), base.locationAddress(),
                 base.status(), base.latitude(), base.longitude(), base.broadcastRadiusKm(),
                 base.createdAt(), base.updatedAt(),
-                base.biddingExpiresAt(), base.user(), base.vehicle(), mechanic
+                base.biddingExpiresAt(), base.rebroadcastCount(), base.user(), base.vehicle(), mechanic
         );
     }
 
@@ -417,6 +417,44 @@ public class SosServiceImpl implements SosService {
 
     // Uses TaskScheduler (not @Scheduled) because each SOS has its own unique expiry time.
     // The lambda re-fetches the entity inside the transaction to avoid stale-state issues.
+    @Override
+    @Transactional
+    public SosRequestResponse rebroadcast(UUID sosId, UUID userId) {
+        SosRequest sos = findSosOrThrow(sosId);
+
+        if (!sos.getUser().getUserId().equals(userId)) {
+            throw new IllegalArgumentException("You can only rebroadcast your own SOS request");
+        }
+        if (sos.getStatus() != SosStatus.EXPIRED) {
+            throw new IllegalStateException("Only EXPIRED SOS requests can be rebroadcast");
+        }
+        if (sos.getRebroadcastCount() >= SosRequest.MAX_REBROADCAST) {
+            throw new TooManyRequestsException(
+                    "Maximum rebroadcast attempts (" + SosRequest.MAX_REBROADCAST + ") reached. Please call support.");
+        }
+
+        sos.setStatus(SosStatus.PENDING);
+        sos.setRebroadcastCount(sos.getRebroadcastCount() + 1);
+        sos.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(SosRequest.BIDDING_WINDOW_SECONDS));
+        sosRequestRepository.save(sos);
+
+        int attemptsLeft = SosRequest.MAX_REBROADCAST - sos.getRebroadcastCount();
+        messagingTemplate.convertAndSendToUser(
+                userId.toString(), "/queue/sos-updates",
+                Map.of("type", "SOS_REBROADCAST", "sosId", sosId,
+                        "rebroadcastCount", sos.getRebroadcastCount(),
+                        "attemptsLeft", attemptsLeft)
+        );
+
+        fanOutToNearbyMechanics(sosId,
+                sos.getLocation().getY(), sos.getLocation().getX(),
+                sos.getProblemType(), sos.getBroadcastRadiusKm());
+
+        scheduleBiddingExpiry(sos);
+
+        return toResponseWithMechanic(sos);
+    }
+
     private void scheduleBiddingExpiry(SosRequest sos) {
         if (sos.getBiddingExpiresAt() == null) return;
         UUID sosId = sos.getSosId();
@@ -429,15 +467,20 @@ public class SosServiceImpl implements SosService {
                 sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
                         sosId, null, userId, SosStatus.PENDING, SosStatus.EXPIRED, LocalDateTime.now()
                 ));
+                boolean retriesLeft = s.getRebroadcastCount() < SosRequest.MAX_REBROADCAST;
+                String body = retriesLeft
+                        ? "No mechanic was found. Tap to try again."
+                        : "No mechanic available after " + SosRequest.MAX_REBROADCAST + " attempts. Please call support.";
                 sosEventProducer.publishNotification(new SosNotificationEvent(
-                        "BIDDING_EXPIRED", userId, "USER", sosId,
-                        "Bidding window closed", "No mechanic was found. Please try again."
+                        "BIDDING_EXPIRED", userId, "USER", sosId, "Bidding window closed", body
                 ));
                 messagingTemplate.convertAndSendToUser(
                         userId.toString(), "/queue/sos-updates",
-                        Map.of("type", "BIDDING_EXPIRED", "sosId", sosId)
+                        Map.of("type", "BIDDING_EXPIRED", "sosId", sosId,
+                                "retriesLeft", retriesLeft,
+                                "attemptsLeft", SosRequest.MAX_REBROADCAST - s.getRebroadcastCount())
                 );
             });
-        }, sos.getBiddingExpiresAt().toInstant(ZoneOffset.UTC));
+        }, sos.getBiddingExpiresAt().atZone(ZoneId.systemDefault()).toInstant());
     }
 }

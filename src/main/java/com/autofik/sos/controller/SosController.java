@@ -85,4 +85,11 @@ public class SosController {
     public SosRequestResponse cancel(@PathVariable UUID sosId, @RequestParam UUID userId) {
         return sosService.cancel(sosId, userId);
     }
+
+    // POST /api/v1/sos/{sosId}/rebroadcast — Driver re-opens an EXPIRED SOS and fans out to nearby mechanics again
+    // Capped at 3 attempts; returns 429 when exhausted
+    @PostMapping("/{sosId}/rebroadcast")
+    public SosRequestResponse rebroadcast(@PathVariable UUID sosId, @RequestParam UUID userId) {
+        return sosService.rebroadcast(sosId, userId);
+    }
 }

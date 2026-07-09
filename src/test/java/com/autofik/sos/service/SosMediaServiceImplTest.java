@@ -6,6 +6,7 @@ import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.enums.MediaType;
 import com.autofik.sos.dto.response.SosMediaResponse;
+import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.SosMediaMapper;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosMediaRepository;
@@ -27,7 +28,9 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 
-import java.io.ByteArrayInputStream;
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.net.URL;
 import java.util.List;
 import java.util.Optional;
@@ -46,6 +49,7 @@ class SosMediaServiceImplTest {
     @Mock UserRepository userRepository;
     @Mock MechanicRepository mechanicRepository;
     @Mock SosMediaMapper sosMediaMapper;
+    @Mock SosEventProducer sosEventProducer;
     @Mock S3Client s3Client;
     @Mock S3Presigner s3Presigner;
 
@@ -60,6 +64,20 @@ class SosMediaServiceImplTest {
     private Mechanic mechanic;
     private MultipartFile file;
 
+    private static byte[] jpegBytes() throws Exception {
+        BufferedImage img = new BufferedImage(100, 100, BufferedImage.TYPE_INT_RGB);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(img, "jpeg", out);
+        return out.toByteArray();
+    }
+
+    private static byte[] pngBytes() throws Exception {
+        BufferedImage img = new BufferedImage(100, 100, BufferedImage.TYPE_INT_RGB);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(img, "png", out);
+        return out.toByteArray();
+    }
+
     @BeforeEach
     void setUp() throws Exception {
         ReflectionTestUtils.setField(sosMediaService, "bucket", "test-bucket");
@@ -70,9 +88,8 @@ class SosMediaServiceImplTest {
 
         file = mock(MultipartFile.class);
         lenient().when(file.getContentType()).thenReturn("image/jpeg");
-        lenient().when(file.getOriginalFilename()).thenReturn("photo.jpg");
-        lenient().when(file.getSize()).thenReturn(123L);
-        lenient().when(file.getInputStream()).thenReturn(new ByteArrayInputStream("data".getBytes()));
+        lenient().when(file.getSize()).thenReturn(1024L);
+        lenient().when(file.getBytes()).thenReturn(jpegBytes());
 
         PresignedGetObjectRequest presigned = mock(PresignedGetObjectRequest.class);
         lenient().when(presigned.url()).thenReturn(new URL("https://minio.example.com/test-bucket/some-key?signed=1"));
@@ -81,36 +98,56 @@ class SosMediaServiceImplTest {
     }
 
     @Test
-    void upload_userUpload_savesMediaWithInferredTypeAndReturnsPresignedUrl() {
+    void upload_jpeg_compressedAndStoredAsJpeg() throws Exception {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
-        SosMediaResponse mapped = new SosMediaResponse(UUID.randomUUID(), MediaType.PHOTO, "image/jpeg", 123L, null, null);
-        when(sosMediaMapper.toResponse(any(SosMedia.class))).thenReturn(mapped);
+        when(sosMediaMapper.toResponse(any(SosMedia.class)))
+                .thenReturn(new SosMediaResponse(UUID.randomUUID(), MediaType.PHOTO, "image/jpeg", 0L, null, null));
 
         SosMediaResponse result = sosMediaService.upload(sosId, file, userId, null);
 
         assertThat(result.url()).contains("minio.example.com");
-        assertThat(result.mediaType()).isEqualTo(MediaType.PHOTO);
 
         ArgumentCaptor<SosMedia> captor = ArgumentCaptor.forClass(SosMedia.class);
         verify(sosMediaRepository).save(captor.capture());
         SosMedia saved = captor.getValue();
         assertThat(saved.getMediaType()).isEqualTo(MediaType.PHOTO);
+        assertThat(saved.getContentType()).isEqualTo("image/jpeg");
+        assertThat(saved.getObjectKey()).startsWith("sos/" + sosId + "/").endsWith(".jpg");
+        assertThat(saved.getSizeBytes()).isPositive();
         assertThat(saved.getUploadedByUser()).isEqualTo(user);
         assertThat(saved.getUploadedByMechanic()).isNull();
-        assertThat(saved.getObjectKey()).startsWith("sos/" + sosId + "/").endsWith(".jpg");
 
         verify(s3Client).putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class));
     }
 
     @Test
-    void upload_mechanicUpload_setsUploadedByMechanic() {
+    void upload_png_compressedAndStoredAsJpeg() throws Exception {
+        when(file.getContentType()).thenReturn("image/png");
+        when(file.getBytes()).thenReturn(pngBytes());
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(sosMediaMapper.toResponse(any(SosMedia.class)))
+                .thenReturn(new SosMediaResponse(UUID.randomUUID(), MediaType.PHOTO, "image/jpeg", 0L, null, null));
+
+        sosMediaService.upload(sosId, file, userId, null);
+
+        ArgumentCaptor<SosMedia> captor = ArgumentCaptor.forClass(SosMedia.class);
+        verify(sosMediaRepository).save(captor.capture());
+        SosMedia saved = captor.getValue();
+        assertThat(saved.getContentType()).isEqualTo("image/jpeg");
+        assertThat(saved.getObjectKey()).endsWith(".jpg");
+    }
+
+    @Test
+    void upload_mechanicUpload_setsUploadedByMechanic() throws Exception {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
         when(sosMediaMapper.toResponse(any(SosMedia.class)))
-                .thenReturn(new SosMediaResponse(UUID.randomUUID(), MediaType.PHOTO, "image/jpeg", 123L, null, null));
+                .thenReturn(new SosMediaResponse(UUID.randomUUID(), MediaType.PHOTO, "image/jpeg", 0L, null, null));
 
         sosMediaService.upload(sosId, file, null, mechanicId);
 
@@ -148,31 +185,39 @@ class SosMediaServiceImplTest {
     }
 
     @Test
-    void upload_unsupportedContentType_throwsIllegalStateException() {
-        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
-        when(file.getContentType()).thenReturn("application/pdf");
+    void upload_unsupportedContentType_throwsIllegalArgumentException() {
+        when(file.getContentType()).thenReturn("video/mp4");
 
         assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unsupported content type");
 
-        verifyNoInteractions(s3Client, sosMediaRepository);
+        verifyNoInteractions(sosRequestRepository, s3Client, sosMediaRepository);
     }
 
     @Test
-    void upload_videoContentType_inferredAsVideo() {
+    void upload_imageTooLarge_throwsIllegalArgumentException() {
+        when(file.getSize()).thenReturn(11L * 1024 * 1024); // 11 MB > 10 MB limit
+
+        assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("10 MB");
+
+        verifyNoInteractions(sosRequestRepository, s3Client, sosMediaRepository);
+    }
+
+    @Test
+    void upload_magicBytesMismatch_throwsIllegalArgumentException() throws Exception {
+        when(file.getContentType()).thenReturn("image/jpeg");
+        when(file.getBytes()).thenReturn(pngBytes()); // PNG bytes claimed as JPEG
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(file.getContentType()).thenReturn("video/mp4");
-        when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(sosMediaMapper.toResponse(any(SosMedia.class)))
-                .thenReturn(new SosMediaResponse(UUID.randomUUID(), MediaType.VIDEO, "video/mp4", 123L, null, null));
 
-        sosMediaService.upload(sosId, file, userId, null);
+        assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not match declared type");
 
-        ArgumentCaptor<SosMedia> captor = ArgumentCaptor.forClass(SosMedia.class);
-        verify(sosMediaRepository).save(captor.capture());
-        assertThat(captor.getValue().getMediaType()).isEqualTo(MediaType.VIDEO);
+        verifyNoInteractions(s3Client, sosMediaRepository);
     }
 
     @Test

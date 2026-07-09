@@ -1,5 +1,6 @@
 package com.autofik.sos.config;
 
+import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -33,6 +34,7 @@ public class KafkaConfig {
     public static final String TOPIC_SOS_DLQ                    = "sos.dlq";
     public static final String TOPIC_MECHANIC_LOCATION_UPDATED  = "mechanic.location.updated";
     public static final String TOPIC_SOS_NOTIFICATION           = "sos.notification";
+    public static final String TOPIC_SOS_MEDIA_UPLOADED         = "sos.media.uploaded";
 
     private static final int   PARTITION_COUNT    = 3;
     private static final short REPLICATION_FACTOR = 1;
@@ -111,6 +113,11 @@ public class KafkaConfig {
     }
 
     @Bean
+    public NewTopic sosMediaUploadedTopic() {
+        return TopicBuilder.name(TOPIC_SOS_MEDIA_UPLOADED).partitions(PARTITION_COUNT).replicas(REPLICATION_FACTOR).build();
+    }
+
+    @Bean
     public ConsumerFactory<String, Object> consumerFactory() {
         Map<String, Object> props = kafkaProperties.buildConsumerProperties();
 
@@ -125,6 +132,20 @@ public class KafkaConfig {
     public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory() {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
+        return factory;
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, SosMediaUploadedEvent> mediaUploadedListenerContainerFactory() {
+        Map<String, Object> props = kafkaProperties.buildConsumerProperties();
+        props.remove("spring.json.trusted.packages");
+        props.remove("spring.json.value.default.type");
+        JsonDeserializer<SosMediaUploadedEvent> deserializer =
+                new JsonDeserializer<>(SosMediaUploadedEvent.class, kafkaObjectMapper());
+        deserializer.addTrustedPackages("com.autofik.sos.*");
+        ConcurrentKafkaListenerContainerFactory<String, SosMediaUploadedEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), deserializer));
         return factory;
     }
 

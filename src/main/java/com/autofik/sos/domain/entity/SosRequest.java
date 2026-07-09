@@ -63,8 +63,12 @@ public class SosRequest {
     private LocalDateTime updatedAt;
 
     // updatable=false: the bidding window is fixed at creation time and must never change.
-    @Column(name = "bidding_expires_at", updatable = false)
+    @Column(name = "bidding_expires_at")
     private LocalDateTime biddingExpiresAt;
+
+    @Column(name = "rebroadcast_count", columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int rebroadcastCount = 0;
 
     // Optional user-defined cap on how far to broadcast this SOS. null = no limit (mechanic's
     // service_radius_km is the only constraint). Max enforced at the DTO layer (50 km).
@@ -72,7 +76,8 @@ public class SosRequest {
     private Integer broadcastRadiusKm;
 
     // 250 seconds (~4 min) for mechanics to respond before the request expires automatically.
-    private static final int BIDDING_WINDOW_SECONDS = 250;
+    public static final int BIDDING_WINDOW_SECONDS = 250;
+    public static final int MAX_REBROADCAST = 3;
 
     @PrePersist
     protected void onCreate() {
