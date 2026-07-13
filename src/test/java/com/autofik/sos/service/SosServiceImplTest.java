@@ -95,9 +95,9 @@ class SosServiceImplTest {
                 .user(user).vehicle(vehicle).build();
         // Record field order: sosId, problemType, description, locationAddress, status,
         //                     latitude, longitude, broadcastRadiusKm,
-        //                     createdAt, updatedAt, biddingExpiresAt, user, vehicle, mechanic
+        //                     createdAt, updatedAt, biddingExpiresAt, rebroadcastCount, user, vehicle, mechanic
         sosResponse = new SosRequestResponse(sosId, "Flat Tire", null, null, SosStatus.PENDING,
-                13.7, 100.5, null, null, null, null, null, null, null);
+                13.7, 100.5, null, null, null, null, 0, null, null, null);
         historyResponse = new SosStatusHistoryResponse(historyId, SosStatus.ACCEPTED,
                 SosStatus.ON_THE_WAY, null, null, null, ApprovedStatus.PENDING_APPROVAL, null, null);
     }

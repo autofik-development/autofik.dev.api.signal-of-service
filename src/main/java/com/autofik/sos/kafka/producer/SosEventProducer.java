@@ -2,6 +2,7 @@ package com.autofik.sos.kafka.producer;
 
 import com.autofik.sos.config.KafkaConfig;
 import com.autofik.sos.dto.event.BidAcceptedEvent;
+import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.event.BidCancelledEvent;
 import com.autofik.sos.dto.event.BidCreatedEvent;
 import com.autofik.sos.dto.event.BidRejectedEvent;
@@ -92,6 +93,10 @@ public class SosEventProducer {
      *
      * @param event the event payload containing notification message details
      */
+    public void publishMediaUploaded(SosMediaUploadedEvent event) {
+        kafkaTemplate.send(KafkaConfig.TOPIC_SOS_MEDIA_UPLOADED, event.sosId().toString(), event);
+    }
+
     public void publishNotification(SosNotificationEvent event) {
         // recipientId is null for fan-out notifications (e.g. SOS_CREATED, resolved externally
         // by the notification-service) — null key just means round-robin partitioning for those.
