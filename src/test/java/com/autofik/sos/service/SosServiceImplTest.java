@@ -62,6 +62,7 @@ class SosServiceImplTest {
     @Mock SosStatusHistoryMapper sosStatusHistoryMapper;
     @Mock MechanicMapper mechanicMapper;
     @Mock GoogleMapsService googleMapsService;
+    @Mock MedusaService medusaService;
     @Mock SosEventProducer sosEventProducer;
     @Mock SimpMessagingTemplate messagingTemplate;
     @Mock TaskScheduler taskScheduler;
@@ -72,11 +73,13 @@ class SosServiceImplTest {
 
     private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
 
-    private final UUID userId     = UUID.randomUUID();
-    private final UUID sosId      = UUID.randomUUID();
-    private final UUID vehicleId  = UUID.randomUUID();
-    private final UUID mechanicId = UUID.randomUUID();
-    private final UUID historyId  = UUID.randomUUID();
+    private final UUID userId          = UUID.randomUUID();
+    private final UUID sosId           = UUID.randomUUID();
+    private final UUID vehicleId       = UUID.randomUUID();
+    private final UUID mechanicId      = UUID.randomUUID();
+    private final UUID historyId       = UUID.randomUUID();
+    private final String serviceGroupId = "sg_01ABC123";
+    private final String resolvedKey    = "flat_tire";
 
     private User user;
     private Vehicle vehicle;
@@ -91,22 +94,20 @@ class SosServiceImplTest {
         vehicle = Vehicle.builder().id(vehicleId).carBrand("Toyota").carModel("Camry").build();
         mechanic = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com").build();
         pendingSos = SosRequest.builder()
-                .sosId(sosId).problemType("Flat Tire").status(SosStatus.PENDING)
+                .sosId(sosId).problemType(resolvedKey).status(SosStatus.PENDING)
                 .user(user).vehicle(vehicle).build();
-        // Record field order: sosId, problemType, description, locationAddress, status,
-        //                     latitude, longitude, broadcastRadiusKm,
-        //                     createdAt, updatedAt, biddingExpiresAt, rebroadcastCount, user, vehicle, mechanic
-        sosResponse = new SosRequestResponse(sosId, "Flat Tire", null, null, SosStatus.PENDING,
+        sosResponse = new SosRequestResponse(sosId, resolvedKey, null, null, SosStatus.PENDING,
                 13.7, 100.5, null, null, null, null, 0, null, null, null);
         historyResponse = new SosStatusHistoryResponse(historyId, SosStatus.ACCEPTED,
                 SosStatus.ON_THE_WAY, null, null, null, ApprovedStatus.PENDING_APPROVAL, null, null);
     }
 
-    // Stubs the two guards that run at the top of create() before any repo/service calls.
+    // Stubs the guards + Medusa resolution that run at the top of create() before repo calls.
     private void stubCreateGuards() {
         when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
         when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+        when(medusaService.resolveServiceGroupKey(serviceGroupId)).thenReturn(resolvedKey);
     }
 
     // ── create ────────────────────────────────────────────────────────────────
@@ -114,7 +115,7 @@ class SosServiceImplTest {
     @Test
     void create_validRequest_buildsPointAndSaves() {
         stubCreateGuards();
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
@@ -134,9 +135,26 @@ class SosServiceImplTest {
     }
 
     @Test
-    void create_publishesSosCreatedEventWithRequestData() {
+    void create_storesProblemTypeKeyFromMedusa() {
         stubCreateGuards();
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", "desc", 13.7563, 100.5018, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
+        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
+        when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+        when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+        sosService.create(request);
+
+        ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
+        verify(sosRequestRepository, atLeastOnce()).save(captor.capture());
+        assertThat(captor.getValue().getProblemType()).isEqualTo(resolvedKey);
+    }
+
+    @Test
+    void create_publishesSosCreatedEventWithResolvedKey() {
+        stubCreateGuards();
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, "desc", 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenAnswer(inv -> {
@@ -155,15 +173,31 @@ class SosServiceImplTest {
         assertThat(event.sosId()).isEqualTo(sosId);
         assertThat(event.userId()).isEqualTo(userId);
         assertThat(event.vehicleId()).isEqualTo(vehicleId);
-        assertThat(event.problemType()).isEqualTo("Flat Tire");
+        assertThat(event.problemType()).isEqualTo(resolvedKey);
         assertThat(event.latitude()).isEqualTo(13.7563);
         assertThat(event.longitude()).isEqualTo(100.5018);
     }
 
     @Test
+    void create_invalidServiceGroupId_throwsEntityNotFoundException() {
+        when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+        when(medusaService.resolveServiceGroupKey(serviceGroupId))
+                .thenThrow(new EntityNotFoundException("Service group not found: " + serviceGroupId));
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
+
+        assertThatThrownBy(() -> sosService.create(request))
+                .isInstanceOf(EntityNotFoundException.class)
+                .hasMessageContaining(serviceGroupId);
+
+        verify(userRepository, never()).findById(any());
+    }
+
+    @Test
     void create_userNotFound_throwsEntityNotFoundException() {
         stubCreateGuards();
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> sosService.create(request))
@@ -174,7 +208,7 @@ class SosServiceImplTest {
     @Test
     void create_mapsReturnsAddress_setsLocationAddressAndSavesTwice() {
         stubCreateGuards();
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
@@ -191,7 +225,7 @@ class SosServiceImplTest {
     @Test
     void create_mapsReturnsNull_sosStillSavedWithoutAddress() {
         stubCreateGuards();
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7563, 100.5018, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
@@ -206,7 +240,7 @@ class SosServiceImplTest {
     @Test
     void create_vehicleNotFound_throwsEntityNotFoundException() {
         stubCreateGuards();
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.empty());
 
@@ -220,12 +254,13 @@ class SosServiceImplTest {
     @Test
     void create_userHasActiveSos_throwsIllegalStateException() {
         when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(true);
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
 
         assertThatThrownBy(() -> sosService.create(request))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("active SOS request");
 
+        verify(medusaService, never()).resolveServiceGroupKey(any());
         verify(userRepository, never()).findById(any());
     }
 
@@ -234,12 +269,13 @@ class SosServiceImplTest {
         when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
         when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
-        CreateSosRequest request = new CreateSosRequest(userId, "Flat Tire", null, 13.7, 100.5, vehicleId, null);
+        CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
 
         assertThatThrownBy(() -> sosService.create(request))
                 .isInstanceOf(TooManyRequestsException.class)
                 .hasMessageContaining("60 seconds");
 
+        verify(medusaService, never()).resolveServiceGroupKey(any());
         verify(userRepository, never()).findById(any());
     }
 
@@ -314,7 +350,7 @@ class SosServiceImplTest {
     @Test
     void proposeStatusChange_validTransition_savesHistoryAndReturnsResponse() {
         SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
-                .problemType("Flat Tire").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
+                .problemType(resolvedKey).status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
         ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
@@ -358,7 +394,7 @@ class SosServiceImplTest {
     @Test
     void proposeStatusChange_mechanicNotFound_throwsEntityNotFoundException() {
         SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
-                .problemType("X").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
+                .problemType(resolvedKey).status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
         ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
@@ -372,7 +408,7 @@ class SosServiceImplTest {
     @Test
     void approveStatusChange_accepted_updatesSosStatus() {
         SosRequest acceptedSos = SosRequest.builder().sosId(sosId)
-                .problemType("X").status(SosStatus.ACCEPTED).user(user).vehicle(vehicle).build();
+                .problemType(resolvedKey).status(SosStatus.ACCEPTED).user(user).vehicle(vehicle).build();
         SosStatusHistory history = SosStatusHistory.builder()
                 .id(historyId).fromStatus(SosStatus.ACCEPTED).toStatus(SosStatus.ON_THE_WAY)
                 .proposedBy(mechanic).sosRequest(acceptedSos)
@@ -404,7 +440,7 @@ class SosServiceImplTest {
     @Test
     void approveStatusChange_completed_publishesNotificationToUserAndMechanic() {
         SosRequest arrivedSos = SosRequest.builder().sosId(sosId)
-                .problemType("X").status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
+                .problemType(resolvedKey).status(SosStatus.ARRIVED).user(user).vehicle(vehicle).build();
         SosStatusHistory history = SosStatusHistory.builder()
                 .id(historyId).fromStatus(SosStatus.ARRIVED).toStatus(SosStatus.COMPLETED)
                 .proposedBy(mechanic).sosRequest(arrivedSos)
@@ -425,7 +461,7 @@ class SosServiceImplTest {
     @Test
     void approveStatusChange_rejected_doesNotUpdateSosStatus() {
         SosRequest acceptedSos = SosRequest.builder().sosId(sosId)
-                .problemType("X").status(SosStatus.ACCEPTED).user(user).vehicle(vehicle).build();
+                .problemType(resolvedKey).status(SosStatus.ACCEPTED).user(user).vehicle(vehicle).build();
         SosStatusHistory history = SosStatusHistory.builder()
                 .id(historyId).fromStatus(SosStatus.ACCEPTED).toStatus(SosStatus.ON_THE_WAY)
                 .proposedBy(mechanic).sosRequest(acceptedSos)
@@ -470,7 +506,7 @@ class SosServiceImplTest {
     @Test
     void cancel_completedStatus_throwsIllegalStateException() {
         SosRequest completedSos = SosRequest.builder().sosId(sosId)
-                .problemType("X").status(SosStatus.COMPLETED).user(user).vehicle(vehicle).build();
+                .problemType(resolvedKey).status(SosStatus.COMPLETED).user(user).vehicle(vehicle).build();
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
 
         assertThatThrownBy(() -> sosService.cancel(sosId, userId))
@@ -480,7 +516,7 @@ class SosServiceImplTest {
     @Test
     void cancel_cancelledStatus_throwsIllegalStateException() {
         SosRequest cancelledSos = SosRequest.builder().sosId(sosId)
-                .problemType("X").status(SosStatus.CANCELLED).user(user).vehicle(vehicle).build();
+                .problemType(resolvedKey).status(SosStatus.CANCELLED).user(user).vehicle(vehicle).build();
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(cancelledSos));
 
         assertThatThrownBy(() -> sosService.cancel(sosId, userId))

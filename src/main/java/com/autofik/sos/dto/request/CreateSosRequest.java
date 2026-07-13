@@ -11,7 +11,7 @@ import java.util.UUID;
 
 public record CreateSosRequest(
         @NotNull UUID userId,
-        @NotBlank String problemType,
+        @NotBlank String serviceGroupId,
         String description,
         @NotNull @DecimalMin("10.41") @DecimalMax("14.69") Double latitude,
         @NotNull @DecimalMin("102.5") @DecimalMax("107.63") Double longitude,

@@ -28,6 +28,7 @@ import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.repository.VehicleRepository;
 import com.autofik.sos.service.GoogleMapsService;
 import com.autofik.sos.exception.TooManyRequestsException;
+import com.autofik.sos.service.MedusaService;
 import com.autofik.sos.service.SosService;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
@@ -70,9 +71,9 @@ public class SosServiceImpl implements SosService {
     // COMPLETED and EXPIRED are terminal states — they have no outgoing transitions.
     private static final Map<SosStatus, Set<SosStatus>> VALID_TRANSITIONS = Map.of(
             SosStatus.PENDING,    Set.of(SosStatus.ACCEPTED, SosStatus.CANCELLED),
-            SosStatus.ACCEPTED,   Set.of(SosStatus.ON_THE_WAY),
-            SosStatus.ON_THE_WAY, Set.of(SosStatus.ARRIVED),
-            SosStatus.ARRIVED,    Set.of(SosStatus.COMPLETED)
+            SosStatus.ACCEPTED,   Set.of(SosStatus.ON_THE_WAY, SosStatus.CANCELLED),
+            SosStatus.ON_THE_WAY, Set.of(SosStatus.ARRIVED, SosStatus.CANCELLED),
+            SosStatus.ARRIVED,    Set.of(SosStatus.COMPLETED, SosStatus.CANCELLED)
     );
 
     // Standard SRID 4326 geometry factory for GPS tracking (WGS 84 latitude/longitude)
@@ -113,6 +114,7 @@ public class SosServiceImpl implements SosService {
     private final SosStatusHistoryMapper sosStatusHistoryMapper;
     private final MechanicMapper mechanicMapper;
     private final GoogleMapsService googleMapsService;
+    private final MedusaService medusaService;
     private final SosEventProducer sosEventProducer;
     private final SimpMessagingTemplate messagingTemplate;
     private final TaskScheduler taskScheduler;
@@ -142,12 +144,14 @@ public class SosServiceImpl implements SosService {
             throw new TooManyRequestsException("Please wait 60 seconds before submitting another SOS request");
         }
 
+        String problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
+
         User user = userRepository.findById(request.userId())
                 .orElseThrow(() -> new EntityNotFoundException("User not found: " + request.userId()));
         Vehicle vehicle = vehicleRepository.findById(request.vehicleId())
                 .orElseThrow(() -> new EntityNotFoundException("Vehicle not found: " + request.vehicleId()));
         SosRequest sos = SosRequest.builder()
-                .problemType(request.problemType())
+                .problemType(problemTypeKey)
                 .description(request.description())
                 .location(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
                 .broadcastRadiusKm(request.broadcastRadiusKm())
@@ -173,7 +177,7 @@ public class SosServiceImpl implements SosService {
 
         // Spatial dispatch step to find target mechanics
         fanOutToNearbyMechanics(sos.getSosId(), request.latitude(), request.longitude(),
-                request.problemType(), request.broadcastRadiusKm());
+                problemTypeKey, request.broadcastRadiusKm());
 
         // Queue automated closing of the auction window if no responses come through
         scheduleBiddingExpiry(sos);
