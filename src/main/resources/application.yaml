@@ -64,3 +64,7 @@ websocket:
   # Restrict to your domain in production, e.g. https://*.autofik.com
   # Set WEBSOCKET_ALLOWED_ORIGINS env var or override in application-prod.yaml
   allowed-origins: ${WEBSOCKET_ALLOWED_ORIGINS:*}
+
+medusa:
+  base-url: ${MEDUSA_BASE_URL}
+  public-key: ${MEDUSA_PUBLIC_KEY}

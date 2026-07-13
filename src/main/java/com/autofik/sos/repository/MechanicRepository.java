@@ -90,7 +90,7 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
               AND m.available_status = true
               AND EXISTS (
                   SELECT 1 FROM unnest(ms.skill_tags) tag
-                  WHERE UPPER(tag) = UPPER(:problemType)
+                  WHERE UPPER(tag) = :problemType
               )
             """, nativeQuery = true)
     List<Mechanic> findByH3CellsAndSkillTag(
