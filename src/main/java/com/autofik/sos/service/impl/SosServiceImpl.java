@@ -55,6 +55,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+/**
+ * Service implementation managing the lifecycles of emergency roadside requests (SOS).
+ * Employs a deterministic finite-state machine for transitions, leverages an Uber H3
+ * and PostGIS hybrid geospatial fan-out framework to locate nearby mechanics, and manages
+ * active bidding timeouts using dynamic scheduled tasks.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -64,11 +70,12 @@ public class SosServiceImpl implements SosService {
     // COMPLETED and EXPIRED are terminal states — they have no outgoing transitions.
     private static final Map<SosStatus, Set<SosStatus>> VALID_TRANSITIONS = Map.of(
             SosStatus.PENDING,    Set.of(SosStatus.ACCEPTED, SosStatus.CANCELLED),
-            SosStatus.ACCEPTED,   Set.of(SosStatus.ON_THE_WAY, SosStatus.CANCELLED),
-            SosStatus.ON_THE_WAY, Set.of(SosStatus.ARRIVED, SosStatus.CANCELLED),
-            SosStatus.ARRIVED,    Set.of(SosStatus.COMPLETED, SosStatus.CANCELLED)
+            SosStatus.ACCEPTED,   Set.of(SosStatus.ON_THE_WAY),
+            SosStatus.ON_THE_WAY, Set.of(SosStatus.ARRIVED),
+            SosStatus.ARRIVED,    Set.of(SosStatus.COMPLETED)
     );
 
+    // Standard SRID 4326 geometry factory for GPS tracking (WGS 84 latitude/longitude)
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory(new PrecisionModel(), 4326);
     // Resolution 7 ≈ 5 km² per H3 cell — fixed by what is stored in current_h3_index on Mechanic.
     // Changing this would require a schema + data migration; kRing radius is the adaptive variable instead.
@@ -81,6 +88,8 @@ public class SosServiceImpl implements SosService {
 
     private static final String SOS_COOLDOWN_KEY_PREFIX = "sos:cooldown:";
     private static final Duration SOS_COOLDOWN = Duration.ofSeconds(60);
+
+    // Collection of states indicating that a customer ticket is unresolved
     private static final List<SosStatus> ACTIVE_STATUSES = List.of(
             SosStatus.PENDING, SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED
     );
@@ -109,13 +118,24 @@ public class SosServiceImpl implements SosService {
     private final TaskScheduler taskScheduler;
     private final StringRedisTemplate redisTemplate;
 
+    /**
+     * Spawns a new emergency roadside ticket. Enforces concurrency caps per client,
+     * tracks request velocity via Redis, and pushes geo-queries out to dispatch mechanics.
+     *
+     * @param request Data transfer containing spatial positions, problems, and bounds.
+     * @return Transformed SOS object detailing current status and assignments.
+     * @throws IllegalStateException    If the initiating user holds an active ticket.
+     * @throws TooManyRequestsException If throttling window rules are broken.
+     */
     @Override
     @Transactional
     public SosRequestResponse create(CreateSosRequest request) {
+        // Enforce structural restriction: A user can only process one active distress event at a time
         if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
             throw new IllegalStateException("You already have an active SOS request");
         }
 
+        // Redis distributed lock prevents accidental double-tap double submissions
         Boolean allowed = redisTemplate.opsForValue()
                 .setIfAbsent(SOS_COOLDOWN_KEY_PREFIX + request.userId(), "1", SOS_COOLDOWN);
         if (!Boolean.TRUE.equals(allowed)) {
@@ -136,12 +156,14 @@ public class SosServiceImpl implements SosService {
                 .build();
         sosRequestRepository.save(sos);
 
+        // Geocode coordinates asynchronously to map a readable address
         String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
         if (address != null) {
             sos.setLocationAddress(address);
             sosRequestRepository.save(sos);
         }
 
+        // Broadcast out to standard Kafka topic pipelines
         sosEventProducer.publishSosCreated(new SosCreatedEvent(
             sos.getSosId(), user.getUserId(), vehicle.getId(),
             sos.getProblemType(), sos.getDescription(),
@@ -149,9 +171,11 @@ public class SosServiceImpl implements SosService {
             sos.getLocationAddress(), sos.getCreatedAt()
         ));
 
+        // Spatial dispatch step to find target mechanics
         fanOutToNearbyMechanics(sos.getSosId(), request.latitude(), request.longitude(),
                 request.problemType(), request.broadcastRadiusKm());
 
+        // Queue automated closing of the auction window if no responses come through
         scheduleBiddingExpiry(sos);
 
         return toResponseWithMechanic(sos);
@@ -205,6 +229,7 @@ public class SosServiceImpl implements SosService {
                 .build();
         sosStatusHistoryRepository.save(history);
 
+        // Inform external subscribers via Kafka and active WebSocket connections
         SosStatusUpdatedEvent statusEvent = new SosStatusUpdatedEvent(
                 sos.getSosId(), mechanicId, sos.getUser().getUserId(),
                 fromStatus, toStatus, now
@@ -252,6 +277,9 @@ public class SosServiceImpl implements SosService {
         return sosStatusHistoryMapper.toResponse(history);
     }
 
+    /**
+     * Finalizes or discards a pending milestone update based on the client's explicit response.
+     */
     @Override
     @Transactional
     public SosRequestResponse approveStatusChange(ApproveStatusChangeRequest request) {
@@ -316,10 +344,16 @@ public class SosServiceImpl implements SosService {
         }
     }
 
+    /**
+     * Terminates an outstanding ticket before work completion.
+     */
     @Override
     @Transactional
     public SosRequestResponse cancel(UUID sosId, UUID userId) {
         SosRequest sos = findSosOrThrow(sosId);
+        if (!sos.getUser().getUserId().equals(userId)) {
+            throw new IllegalArgumentException("You can only cancel your own SOS request");
+        }
         SosStatus fromStatus = sos.getStatus();
         if (!VALID_TRANSITIONS.containsKey(fromStatus)) {
             throw new IllegalStateException("Cannot cancel a request with status: " + fromStatus);
@@ -373,6 +407,9 @@ public class SosServiceImpl implements SosService {
                 .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
     }
 
+    /**
+     * Compares the target state transition against the allowed matrix rules.
+     */
     private void validateTransition(SosStatus from, SosStatus to) {
         Set<SosStatus> allowed = VALID_TRANSITIONS.getOrDefault(from, Set.of());
         if (!allowed.contains(to)) {
@@ -455,6 +492,11 @@ public class SosServiceImpl implements SosService {
         return toResponseWithMechanic(sos);
     }
 
+    /**
+     * Registers an isolated thread execution wrapper targeting the exact timestamp the ticket closes.
+     * The internal lambda re-fetches the database record at trigger time to eliminate race conditions
+     * or dirty-write status tracking.
+     */
     private void scheduleBiddingExpiry(SosRequest sos) {
         if (sos.getBiddingExpiresAt() == null) return;
         UUID sosId = sos.getSosId();
