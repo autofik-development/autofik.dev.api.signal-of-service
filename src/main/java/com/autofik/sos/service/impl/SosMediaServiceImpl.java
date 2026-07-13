@@ -56,8 +56,9 @@ public class SosMediaServiceImpl implements SosMediaService {
     // Strict upload file size ceiling (10MB)
     private static final long MAX_SIZE_BYTES = 10L * 1024 * 1024;
 
-    // Target maximum dimension bounding box for resized images
-    private static final int MAX_IMAGE_DIMENSION = 1920;
+    // Target maximum dimension bounding box for resized images — sized for mobile
+    // viewing, not print/zoom detail
+    private static final int MAX_IMAGE_DIMENSION = 1280;
     // Hard ceiling on source pixel dimensions, checked before decode. Guards against
     // decompression-bomb uploads (small file, huge declared dimensions) exhausting memory.
     private static final int MAX_SOURCE_DIMENSION = 8000;
