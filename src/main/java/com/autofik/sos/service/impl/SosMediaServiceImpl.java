@@ -28,11 +28,16 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 
+import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
+import java.awt.Dimension;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.time.Duration;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -166,14 +171,35 @@ public class SosMediaServiceImpl implements SosMediaService {
     }
 
     private byte[] compressToJpeg(byte[] raw) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        Thumbnails.of(new ByteArrayInputStream(raw))
-                .size(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION)
-                .keepAspectRatio(true)
+        Dimension size = readDimensions(raw);
+        var builder = Thumbnails.of(new ByteArrayInputStream(raw))
                 .outputQuality(JPEG_QUALITY)
-                .outputFormat("jpeg")
-                .toOutputStream(out);
+                .outputFormat("jpeg");
+        if (size.width > MAX_IMAGE_DIMENSION || size.height > MAX_IMAGE_DIMENSION) {
+            builder.size(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION).keepAspectRatio(true);
+        } else {
+            // Already within bounds — re-encode as JPEG without upscaling.
+            builder.scale(1.0);
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        builder.toOutputStream(out);
         return out.toByteArray();
+    }
+
+    private Dimension readDimensions(byte[] raw) throws IOException {
+        try (ImageInputStream iis = ImageIO.createImageInputStream(new ByteArrayInputStream(raw))) {
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(iis);
+            if (!readers.hasNext()) {
+                throw new IOException("No image reader available for uploaded file");
+            }
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(iis);
+                return new Dimension(reader.getWidth(0), reader.getHeight(0));
+            } finally {
+                reader.dispose();
+            }
+        }
     }
 
     private SosMediaResponse toResponseWithUrl(SosMedia media) {
