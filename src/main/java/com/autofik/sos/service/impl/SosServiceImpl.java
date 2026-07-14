@@ -44,6 +44,8 @@ import org.springframework.transaction.annotation.Transactional;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
@@ -119,6 +121,50 @@ public class SosServiceImpl implements SosService {
     private final SimpMessagingTemplate messagingTemplate;
     private final TaskScheduler taskScheduler;
     private final StringRedisTemplate redisTemplate;
+
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void expireOverduePendingRequests() {
+        LocalDateTime now = LocalDateTime.now();
+
+        List<SosRequest> overdue = sosRequestRepository
+                .findByStatusAndBiddingExpiresAtBefore(SosStatus.PENDING, now);
+        if (!overdue.isEmpty()) {
+            log.warn("Expiring {} PENDING SOS request(s) missed while offline", overdue.size());
+            overdue.forEach(this::doExpire);
+            sosRequestRepository.saveAll(overdue);
+        }
+
+        List<SosRequest> active = sosRequestRepository
+                .findByStatusAndBiddingExpiresAtAfter(SosStatus.PENDING, now);
+        if (!active.isEmpty()) {
+            log.info("Re-arming bidding expiry timer for {} PENDING SOS request(s)", active.size());
+            active.forEach(this::scheduleBiddingExpiry);
+        }
+    }
+
+    private void doExpire(SosRequest s) {
+        s.setStatus(SosStatus.EXPIRED);
+        UUID sosId = s.getSosId();
+        UUID userId = s.getUser().getUserId();
+        sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
+                sosId, null, userId, SosStatus.PENDING, SosStatus.EXPIRED, LocalDateTime.now()
+        ));
+        boolean retriesLeft = s.getRebroadcastCount() < SosRequest.MAX_REBROADCAST;
+        String body = retriesLeft
+                ? "No mechanic was found. Tap to try again."
+                : "No mechanic available after " + SosRequest.MAX_REBROADCAST + " attempts. Please call support.";
+        sosEventProducer.publishNotification(new SosNotificationEvent(
+                "BIDDING_EXPIRED", userId, "USER", sosId, "Bidding window closed", body
+        ));
+        messagingTemplate.convertAndSendToUser(
+                userId.toString(), "/queue/sos-updates",
+                Map.of("type", "BIDDING_EXPIRED", "sosId", sosId,
+                        "retriesLeft", retriesLeft,
+                        "attemptsLeft", SosRequest.MAX_REBROADCAST - s.getRebroadcastCount())
+        );
+    }
+
 
     /**
      * Spawns a new emergency roadside ticket. Enforces concurrency caps per client,
@@ -504,28 +550,11 @@ public class SosServiceImpl implements SosService {
     private void scheduleBiddingExpiry(SosRequest sos) {
         if (sos.getBiddingExpiresAt() == null) return;
         UUID sosId = sos.getSosId();
-        UUID userId = sos.getUser().getUserId();
         taskScheduler.schedule(() -> {
             sosRequestRepository.findById(sosId).ifPresent(s -> {
                 if (s.getStatus() != SosStatus.PENDING) return;
-                s.setStatus(SosStatus.EXPIRED);
+                doExpire(s);
                 sosRequestRepository.save(s);
-                sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
-                        sosId, null, userId, SosStatus.PENDING, SosStatus.EXPIRED, LocalDateTime.now()
-                ));
-                boolean retriesLeft = s.getRebroadcastCount() < SosRequest.MAX_REBROADCAST;
-                String body = retriesLeft
-                        ? "No mechanic was found. Tap to try again."
-                        : "No mechanic available after " + SosRequest.MAX_REBROADCAST + " attempts. Please call support.";
-                sosEventProducer.publishNotification(new SosNotificationEvent(
-                        "BIDDING_EXPIRED", userId, "USER", sosId, "Bidding window closed", body
-                ));
-                messagingTemplate.convertAndSendToUser(
-                        userId.toString(), "/queue/sos-updates",
-                        Map.of("type", "BIDDING_EXPIRED", "sosId", sosId,
-                                "retriesLeft", retriesLeft,
-                                "attemptsLeft", SosRequest.MAX_REBROADCAST - s.getRebroadcastCount())
-                );
             });
         }, sos.getBiddingExpiresAt().atZone(ZoneId.systemDefault()).toInstant());
     }
