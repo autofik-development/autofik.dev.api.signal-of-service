@@ -1,0 +1,15 @@
+spring:
+  jpa:
+    show-sql: false
+    hibernate:
+      ddl-auto: validate
+
+websocket:
+  allowed-origins: ${WEBSOCKET_ALLOWED_ORIGINS}
+
+logging:
+  level:
+    root: WARN
+    com.autofik: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n"
