@@ -7,6 +7,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 /**
@@ -48,4 +49,29 @@ public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
 
     // check if user already has an active SOS in any of the given statuses
     boolean existsByUserUserIdAndStatusIn(UUID userId, List<SosStatus> statuses);
+
+    /**
+     * Dynamic finder query targeted by background cleanup threads and startup listeners.
+     * Evaluates a two-part criteria filter to pull down stale requests for lifecycle transition.
+     *
+     * Performance Warning:
+     * To prevent costly full-table scans during heavy production spikes or service restarts,
+     * this method requires a composite index matching its structural evaluation order:
+     * {@code CREATE INDEX idx_sos_status_expiry ON sos_request(status, bidding_expires_at);}
+     *
+     * @param status The current operational lifecycle state node to filter (e.g., SosStatus.PENDING)
+     * @param threshold The point-in-time barrier comparison marker (typically LocalDateTime.now())
+     * @return A list containing all un-closed tickets whose bidding time frame has elapsed
+     */
+    List<SosRequest> findByStatusAndBiddingExpiresAtBefore(SosStatus status, LocalDateTime threshold);
+
+    /**
+     * Finds PENDING requests whose bidding window has not yet closed.
+     * Used on startup to re-arm in-memory TaskScheduler timers that were lost when the app stopped.
+     *
+     * @param status    the lifecycle state to filter (always SosStatus.PENDING in practice)
+     * @param threshold point-in-time lower bound (typically LocalDateTime.now())
+     * @return requests still within their active bidding window
+     */
+    List<SosRequest> findByStatusAndBiddingExpiresAtAfter(SosStatus status, LocalDateTime threshold);
 }
