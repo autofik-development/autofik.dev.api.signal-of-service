@@ -2,6 +2,7 @@ package com.autofik.sos.config;
 
 import com.autofik.sos.security.GatewayIdentityFilter;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.server.ServerHttpRequest;
@@ -16,6 +17,7 @@ import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
 import org.springframework.web.socket.server.HandshakeInterceptor;
 import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.security.Principal;
 import java.util.List;
@@ -25,12 +27,17 @@ import java.util.UUID;
 @Configuration
 @EnableWebSocketMessageBroker
 @RequiredArgsConstructor
+@Slf4j
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private static final String CALLER_ATTRIBUTE = "callerAuthentication";
 
     @Value("${websocket.allowed-origins:*}")
     private String allowedOrigins;
+
+    /** See SecurityConfig — local-development switch, never enabled anywhere else. */
+    @Value("${websocket.dev-insecure-handshake:false}")
+    private boolean devInsecureHandshake;
 
     private final StompSubscriptionInterceptor subscriptionInterceptor;
 
@@ -47,6 +54,27 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         // someone else was enough to read their private queue.
                         String user = request.getHeaders().getFirst(GatewayIdentityFilter.USER_HEADER);
                         String mechanic = request.getHeaders().getFirst(GatewayIdentityFilter.MECHANIC_HEADER);
+
+                        // Local development only. A browser cannot set headers on a WebSocket
+                        // handshake, so test-ws.html has no way to identify itself; this lets it
+                        // name itself instead. That is precisely the impersonation hole the header
+                        // contract exists to close, which is why it is off unless asked for and
+                        // logs a warning at startup when it is not.
+                        if (devInsecureHandshake && user == null && mechanic == null) {
+                            String clientId = UriComponentsBuilder.fromUri(request.getURI())
+                                    .build().getQueryParams().getFirst("clientId");
+                            String role = UriComponentsBuilder.fromUri(request.getURI())
+                                    .build().getQueryParams().getFirst("role");
+                            if (clientId != null && !clientId.isBlank()) {
+                                log.warn("Insecure dev handshake: accepting caller-supplied clientId={}", clientId);
+                                if ("mechanic".equalsIgnoreCase(role)) {
+                                    mechanic = clientId;
+                                } else {
+                                    user = clientId;
+                                }
+                            }
+                        }
+
                         if ((user == null) == (mechanic == null)) return false;
                         try {
                             UUID id = UUID.fromString(user != null ? user : mechanic);
