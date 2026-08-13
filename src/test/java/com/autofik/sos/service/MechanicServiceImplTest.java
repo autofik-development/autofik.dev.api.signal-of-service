@@ -7,12 +7,19 @@ import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.enums.ApprovalStatus;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
+import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.kafka.producer.SosEventProducer;
+import com.autofik.sos.domain.entity.MechanicSkill;
+import com.autofik.sos.dto.request.CreateMechanicSkillRequest;
+import com.autofik.sos.dto.response.MechanicSkillResponse;
 import com.autofik.sos.mapper.MechanicMapper;
+import com.autofik.sos.mapper.MechanicSkillMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
+import com.autofik.sos.repository.MechanicSkillRepository;
+import com.autofik.sos.service.impl.MechanicLocationWriter;
 import com.autofik.sos.service.impl.MechanicServiceImpl;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,9 +56,13 @@ class MechanicServiceImplTest {
     private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
 
     @Mock MechanicRepository mechanicRepository;
-    @Mock BidSosRepository bidSosRepository;
+    @Mock com.autofik.sos.service.impl.SsoProjection ssoProjection;
+    @Mock MechanicSkillRepository mechanicSkillRepository;
+    @Mock MechanicLocationWriter locationWriter;
     @Mock MechanicMapper mechanicMapper;
+    @Mock MechanicSkillMapper mechanicSkillMapper;
     @Mock SosEventProducer sosEventProducer;
+    @Mock RouteEtaService routeEtaService;
     @Mock StringRedisTemplate redisTemplate;
     @Mock ObjectMapper objectMapper;
 
@@ -158,71 +169,110 @@ class MechanicServiceImplTest {
         assertThat(mechanicService.findAvailable(LAT, LNG, "Flat Tire", 15)).isEmpty();
     }
 
-    // ── updateLocation ────────────────────────────────────────────────────────
+    // ── skills ────────────────────────────────────────────────────────────────
 
+    /**
+     * Tags are dispatch keys compared against the upper-cased Medusa service group key, so they are
+     * normalised on write — otherwise "flat_tire" silently never matches problem type "FLAT_TIRE".
+     */
     @Test
-    void updateLocation_throttled_skipsPostgresWrite() {
-        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
-        when(mechanicRepository.existsById(mechanicId)).thenReturn(true);
-        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-                .thenReturn(Optional.empty());
+    void addSkill_normalisesTagsToUpperCaseTrimmedAndDeduped() {
+        when(ssoProjection.mechanic(mechanicId)).thenReturn(mechanic);
+        when(mechanicSkillRepository.save(any(MechanicSkill.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        mechanicService.updateLocation(mechanicId, LAT, LNG);
+        mechanicService.addSkill(mechanicId, new CreateMechanicSkillRequest(
+                List.of("flat_tire", "  Battery  ", "FLAT_TIRE"), "Asia"));
 
-        verify(mechanicRepository, never()).findById(any());
-        verify(mechanicRepository, never()).save(any());
+        ArgumentCaptor<MechanicSkill> captor = ArgumentCaptor.forClass(MechanicSkill.class);
+        verify(mechanicSkillRepository).save(captor.capture());
+        assertThat(captor.getValue().getSkillTags()).containsExactly("FLAT_TIRE", "BATTERY");
+        assertThat(captor.getValue().getVehicleSpecialization()).isEqualTo("Asia");
+        assertThat(captor.getValue().getMechanic()).isSameAs(mechanic);
     }
 
     @Test
-    void updateLocation_notThrottled_updatesLocationAndH3Index() {
-        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-                .thenReturn(Optional.empty());
+    void addSkill_mechanicNotFound_throws() {
+        // The projection is what fails now: an unknown mechanic is one SSO will not verify.
+        when(ssoProjection.mechanic(mechanicId)).thenThrow(new EntityNotFoundException("Mechanic not found"));
 
-        mechanicService.updateLocation(mechanicId, LAT, LNG);
-
-        assertThat(mechanic.getCurrentLocation()).isNotNull();
-        assertThat(mechanic.getCurrentLocation().getY()).isEqualTo(LAT);
-        assertThat(mechanic.getCurrentLocation().getX()).isEqualTo(LNG);
-        assertThat(mechanic.getCurrentH3Index()).isNotBlank();
-        verify(mechanicRepository).save(mechanic);
-    }
-
-    @Test
-    void updateLocation_redisUnavailable_writesToPostgresOnEveryPing() {
-        when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("Redis down"));
-        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-                .thenReturn(Optional.empty());
-
-        mechanicService.updateLocation(mechanicId, LAT, LNG);
-
-        verify(mechanicRepository).save(mechanic);
-    }
-
-    @Test
-    void updateLocation_mechanicNotFound_persistPath_throws() {
-        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> mechanicService.updateLocation(mechanicId, LAT, LNG))
+        assertThatThrownBy(() -> mechanicService.addSkill(mechanicId,
+                new CreateMechanicSkillRequest(List.of("FLAT_TIRE"), null)))
                 .isInstanceOf(EntityNotFoundException.class);
+        verify(mechanicSkillRepository, never()).save(any());
+    }
+
+    // A known mechanic with nothing declared is a valid state — empty list, not 404.
+    @Test
+    void getSkills_knownMechanicWithNoSkills_returnsEmptyList() {
+        when(mechanicRepository.existsById(mechanicId)).thenReturn(true);
+        when(mechanicSkillRepository.findByMechanicMechanicId(mechanicId)).thenReturn(List.of());
+        when(mechanicSkillMapper.toResponseList(List.of())).thenReturn(List.of());
+
+        assertThat(mechanicService.getSkills(mechanicId)).isEmpty();
     }
 
     @Test
-    void updateLocation_mechanicNotFound_throttledPath_throws() {
-        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
+    void getSkills_unknownMechanic_throws() {
         when(mechanicRepository.existsById(mechanicId)).thenReturn(false);
 
-        assertThatThrownBy(() -> mechanicService.updateLocation(mechanicId, LAT, LNG))
+        assertThatThrownBy(() -> mechanicService.getSkills(mechanicId))
                 .isInstanceOf(EntityNotFoundException.class);
     }
+
+    /**
+     * Ownership guard: a skill id that belongs to a different mechanic must not be editable, even
+     * though the id itself is valid.
+     */
+    @Test
+    void updateSkill_skillBelongsToAnotherMechanic_throws() {
+        UUID skillId = UUID.randomUUID();
+        when(mechanicSkillRepository.findByIdAndMechanicMechanicId(skillId, mechanicId))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> mechanicService.updateSkill(mechanicId, skillId,
+                new CreateMechanicSkillRequest(List.of("BATTERY"), null)))
+                .isInstanceOf(EntityNotFoundException.class);
+        verify(mechanicSkillRepository, never()).save(any());
+    }
+
+    @Test
+    void updateSkill_replacesTagsOnOwnedSkill() {
+        UUID skillId = UUID.randomUUID();
+        MechanicSkill existing = MechanicSkill.builder()
+                .id(skillId).mechanic(mechanic).skillTags(new String[]{"FLAT_TIRE"}).build();
+        when(mechanicSkillRepository.findByIdAndMechanicMechanicId(skillId, mechanicId))
+                .thenReturn(Optional.of(existing));
+        when(mechanicSkillRepository.save(existing)).thenReturn(existing);
+        when(mechanicSkillMapper.toResponse(existing)).thenReturn(
+                new MechanicSkillResponse(skillId, mechanicId, List.of("BATTERY"), "Europe", null));
+
+        MechanicSkillResponse result = mechanicService.updateSkill(mechanicId, skillId,
+                new CreateMechanicSkillRequest(List.of("battery"), "Europe"));
+
+        assertThat(existing.getSkillTags()).containsExactly("BATTERY");
+        assertThat(result.skillTags()).containsExactly("BATTERY");
+    }
+
+    @Test
+    void deleteSkill_skillBelongsToAnotherMechanic_throws() {
+        UUID skillId = UUID.randomUUID();
+        when(mechanicSkillRepository.findByIdAndMechanicMechanicId(skillId, mechanicId))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> mechanicService.deleteSkill(mechanicId, skillId))
+                .isInstanceOf(EntityNotFoundException.class);
+        verify(mechanicSkillRepository, never()).delete(any());
+    }
+
+    // ── updateLocation ────────────────────────────────────────────────────────
+
+    // Persistence, the write throttle and the active-job lookup moved to MechanicLocationWriter
+    // so they keep their transaction while the broadcast below runs without one — they are
+    // covered in MechanicLocationWriterTest. What remains here is the broadcast half.
 
     @Test
     void updateLocation_withSosId_publishesLocationViaRedisPubSub() throws Exception {
-        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).thenReturn(sosId);
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
 
         mechanicService.updateLocation(mechanicId, LAT, LNG, sosId);
@@ -233,8 +283,7 @@ class MechanicServiceImplTest {
 
     @Test
     void updateLocation_withSosId_redisPubSubFails_fallsBackToKafka() throws Exception {
-        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+        when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).thenReturn(sosId);
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         doThrow(new RuntimeException("pub/sub down")).when(redisTemplate).convertAndSend(anyString(), anyString());
 
@@ -248,17 +297,11 @@ class MechanicServiceImplTest {
         assertThat(captor.getValue().longitude()).isEqualTo(LNG);
     }
 
+    // No sosId supplied: the writer resolves the active job and the broadcast follows it,
+    // so a reconnecting app keeps the customer's map alive.
     @Test
-    void updateLocation_withoutSosId_activeBidFound_publishesLocation() throws Exception {
-        SosRequest sosRequest = mock(SosRequest.class);
-        when(sosRequest.getSosId()).thenReturn(sosId);
-        BidSos activeBid = mock(BidSos.class);
-        when(activeBid.getSosRequest()).thenReturn(sosRequest);
-
-        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-                .thenReturn(Optional.of(activeBid));
+    void updateLocation_writerResolvesActiveJob_publishesOnThatSos() throws Exception {
+        when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, null)).thenReturn(sosId);
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
 
         mechanicService.updateLocation(mechanicId, LAT, LNG);
@@ -267,16 +310,52 @@ class MechanicServiceImplTest {
     }
 
     @Test
-    void updateLocation_withoutSosId_noActiveBid_doesNotPublish() {
-        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-        when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-        when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-                .thenReturn(Optional.empty());
+    void updateLocation_withSosId_attachesEtaToEvent() throws Exception {
+        when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).thenReturn(sosId);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(routeEtaService.currentEta(sosId, LAT, LNG))
+                .thenReturn(new EtaInfo(4200, 3900, "4.2 km", "1 hr 5 min", false));
+        doThrow(new RuntimeException("pub/sub down")).when(redisTemplate).convertAndSend(anyString(), anyString());
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG, sosId);
+
+        ArgumentCaptor<MechanicLocationEvent> captor = ArgumentCaptor.forClass(MechanicLocationEvent.class);
+        verify(sosEventProducer).publishMechanicLocation(captor.capture());
+        assertThat(captor.getValue().remainingDistanceM()).isEqualTo(4200L);
+        assertThat(captor.getValue().remainingDurationS()).isEqualTo(3900L);
+        assertThat(captor.getValue().remainingDistanceText()).isEqualTo("4.2 km");
+        assertThat(captor.getValue().remainingDurationText()).isEqualTo("1 hr 5 min");
+    }
+
+    // No ETA (arrived, cancelled, unresolvable route) must still broadcast the position —
+    // the map keeps moving, only the countdown drops out.
+    @Test
+    void updateLocation_withSosId_noEta_stillPublishesPositionWithNullEtaFields() throws Exception {
+        when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).thenReturn(sosId);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(routeEtaService.currentEta(sosId, LAT, LNG)).thenReturn(null);
+        doThrow(new RuntimeException("pub/sub down")).when(redisTemplate).convertAndSend(anyString(), anyString());
+
+        mechanicService.updateLocation(mechanicId, LAT, LNG, sosId);
+
+        ArgumentCaptor<MechanicLocationEvent> captor = ArgumentCaptor.forClass(MechanicLocationEvent.class);
+        verify(sosEventProducer).publishMechanicLocation(captor.capture());
+        assertThat(captor.getValue().latitude()).isEqualTo(LAT);
+        assertThat(captor.getValue().longitude()).isEqualTo(LNG);
+        assertThat(captor.getValue().remainingDistanceM()).isNull();
+        assertThat(captor.getValue().remainingDurationText()).isNull();
+    }
+
+    // Idle mechanic: nothing to broadcast, and no Google call should be paid for either.
+    @Test
+    void updateLocation_noActiveJob_doesNotPublish() {
+        when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, null)).thenReturn(null);
 
         mechanicService.updateLocation(mechanicId, LAT, LNG);
 
         verify(redisTemplate, never()).convertAndSend(anyString(), any());
         verify(sosEventProducer, never()).publishMechanicLocation(any());
+        verify(routeEtaService, never()).currentEta(any(), anyDouble(), anyDouble());
     }
 
     // ── getCurrentLocation ────────────────────────────────────────────────────
@@ -286,7 +365,7 @@ class MechanicServiceImplTest {
         mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(LNG, LAT)));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
 
-        MechanicLocationResponse result = mechanicService.getCurrentLocation(mechanicId);
+        MechanicLocationResponse result = mechanicService.getCurrentLocation(mechanicId, mechanicId);
 
         assertThat(result.latitude()).isEqualTo(LAT);
         assertThat(result.longitude()).isEqualTo(LNG);
@@ -298,7 +377,7 @@ class MechanicServiceImplTest {
         mechanic.setCurrentLocation(null);
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
 
-        assertThatThrownBy(() -> mechanicService.getCurrentLocation(mechanicId))
+        assertThatThrownBy(() -> mechanicService.getCurrentLocation(mechanicId, mechanicId))
                 .isInstanceOf(EntityNotFoundException.class)
                 .hasMessageContaining(mechanicId.toString());
     }
@@ -307,7 +386,7 @@ class MechanicServiceImplTest {
     void getCurrentLocation_mechanicNotFound_throwsEntityNotFoundException() {
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> mechanicService.getCurrentLocation(mechanicId))
+        assertThatThrownBy(() -> mechanicService.getCurrentLocation(mechanicId, mechanicId))
                 .isInstanceOf(EntityNotFoundException.class);
     }
 

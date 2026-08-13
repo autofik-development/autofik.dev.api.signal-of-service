@@ -23,13 +23,17 @@ import java.util.UUID;
 @ToString(onlyExplicitlyIncluded = true)
 public class Vehicle {
 
-    // Primary key, auto-generated as a UUID (not client-supplied, not updatable after creation)
+    // Assigned, not generated: this row is a projection of an SSO vehicle and must carry that
+    // same UUID, because the driver names it by SSO's id when raising an SOS.
     @Id
-    @GeneratedValue
-    @UuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     @ToString.Include
     private UUID id;
+
+    // Registration plate. What the mechanic actually looks for on arrival.
+    @Column(name = "license_plate")
+    @ToString.Include
+    private String licensePlate;
 
     // Vehicle manufacturer, e.g. "Toyota", "Honda"
     @Column(name = "car_brand")

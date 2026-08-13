@@ -14,6 +14,8 @@ import com.autofik.sos.repository.SosMediaRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.SosMediaService;
+import com.autofik.sos.service.SosService;
+import org.springframework.security.access.AccessDeniedException;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import net.coobird.thumbnailator.Thumbnails;
@@ -74,6 +76,7 @@ public class SosMediaServiceImpl implements SosMediaService {
 
     private final SosMediaRepository sosMediaRepository;
     private final SosRequestRepository sosRequestRepository;
+    private final SosService sosService;   // reuses the one definition of "who may see this SOS"
     private final UserRepository userRepository;
     private final MechanicRepository mechanicRepository;
     private final SosMediaMapper sosMediaMapper;
@@ -115,6 +118,12 @@ public class SosMediaServiceImpl implements SosMediaService {
         // Phase 2: Domain Entity Verification
         SosRequest sos = sosRequestRepository.findById(sosId)
                 .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
+
+        // Only the driver and the mechanics who bid may attach to a ticket — otherwise anyone
+        // holding a sosId can push images into someone else's incident.
+        if (!sosService.canView(sosId, userId != null ? userId : mechanicId)) {
+            throw new AccessDeniedException("You are not part of this SOS request");
+        }
 
         User user = null;
         Mechanic mechanic = null;
@@ -182,7 +191,10 @@ public class SosMediaServiceImpl implements SosMediaService {
      */
     @Override
     @Transactional(readOnly = true)
-    public List<SosMediaResponse> getBySosRequest(UUID sosId) {
+    public List<SosMediaResponse> getBySosRequest(UUID sosId, UUID callerId) {
+        if (!sosService.canView(sosId, callerId)) {
+            throw new AccessDeniedException("You are not part of this SOS request");
+        }
         return sosMediaRepository.findBySosRequestSosId(sosId).stream()
                 .map(this::toResponseWithUrl)
                 .toList();

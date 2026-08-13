@@ -68,6 +68,14 @@
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
 
+        <!-- In-JVM L2 cache for the ETA refresh gate: keeps the Google Distance Matrix
+             throttle working (per-instance) when Redis is unavailable. Version managed by
+             spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

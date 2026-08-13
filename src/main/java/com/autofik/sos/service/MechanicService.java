@@ -1,8 +1,10 @@
 package com.autofik.sos.service;
 
 import com.autofik.sos.dto.request.CreateMechanicRequest;
+import com.autofik.sos.dto.request.CreateMechanicSkillRequest;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSkillResponse;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
@@ -20,7 +22,11 @@ public interface MechanicService {
      * @param request Contains name, phone, email, and base GPS coordinates.
      * @return The created mechanic profile.
      */
-    MechanicResponse create(CreateMechanicRequest request);
+    /**
+     * @param mechanicId the caller's SSO mechanic id — this row is a projection of that identity
+     *                   and must carry the same UUID, so the id is never generated here
+     */
+    MechanicResponse create(CreateMechanicRequest request, UUID mechanicId);
 
     /**
      * Use case: Fetch a single mechanic's profile by their unique ID.
@@ -38,6 +44,38 @@ public interface MechanicService {
      * @param radiusKm   Search radius in km (5–30). Controls the H3 kRing depth.
      */
     List<MechanicResponse> findAvailable(double lat, double lng, String problemType, int radiusKm);
+
+    /**
+     * Use case: Declare what work a mechanic can take on. Dispatch inner-joins the skill table,
+     * so a mechanic without at least one skill entry is never matched to an SOS.
+     * @param mechanicId Identifies the mechanic.
+     * @param request Skill tags (matched against the SOS problem type) and vehicle specialization.
+     * @return the stored skill entry.
+     */
+    MechanicSkillResponse addSkill(UUID mechanicId, CreateMechanicSkillRequest request);
+
+    /**
+     * Use case: List every skill entry a mechanic has declared.
+     * @param mechanicId Identifies the mechanic.
+     * @return the mechanic's skill entries, empty when none are declared.
+     */
+    List<MechanicSkillResponse> getSkills(UUID mechanicId);
+
+    /**
+     * Use case: Replace the tags or specialization on one existing skill entry.
+     * @param mechanicId Ownership check — the skill must belong to this mechanic.
+     * @param skillId Identifies the skill entry to replace.
+     * @param request The new tags and specialization.
+     * @return the updated skill entry.
+     */
+    MechanicSkillResponse updateSkill(UUID mechanicId, UUID skillId, CreateMechanicSkillRequest request);
+
+    /**
+     * Use case: Withdraw a skill entry, narrowing what the mechanic is dispatched for.
+     * @param mechanicId Ownership check — the skill must belong to this mechanic.
+     * @param skillId Identifies the skill entry to remove.
+     */
+    void deleteSkill(UUID mechanicId, UUID skillId);
 
     /**
      * Use case: Update a mechanic's real-time GPS position (auto-resolves the active SOS from DB).
@@ -63,9 +101,11 @@ public interface MechanicService {
      * before the next WebSocket push arrives). Reads the live Redis cache first; falls back
      * to the last durable Postgres snapshot if Redis has nothing for this mechanic.
      * @param mechanicId Identifies the target mechanic.
+     * @param callerId   Proven identity of the requester — that mechanic, or the driver they are
+     *                   currently on a job for. Anyone else gets 403.
      * @return The mechanic's most recently known position.
      */
-    MechanicLocationResponse getCurrentLocation(UUID mechanicId);
+    MechanicLocationResponse getCurrentLocation(UUID mechanicId, UUID callerId);
 
     /**
      * Use case: Toggle a mechanic's duty status (online/offline).
@@ -75,11 +115,4 @@ public interface MechanicService {
      * @return Updated mechanic profile.
      */
     MechanicResponse setAvailability(UUID mechanicId, boolean available);
-
-    /**
-     * Use case: Admin dashboard — retrieve all mechanic accounts (paginated).
-     * @param pageable page number, size, and sort criteria.
-     * @return Page of mechanic records.
-     */
-    Page<MechanicResponse> getAll(Pageable pageable);
 }

@@ -5,6 +5,7 @@ import com.autofik.sos.service.GoogleMapsService;
 import com.google.maps.DistanceMatrixApi;
 import com.google.maps.GeoApiContext;
 import com.google.maps.GeocodingApi;
+import com.google.maps.model.AddressType;
 import com.google.maps.model.DistanceMatrix;
 import com.google.maps.model.DistanceMatrixElement;
 import com.google.maps.model.DistanceMatrixElementStatus;
@@ -35,8 +36,18 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
                     .reverseGeocode(geoApiContext, new LatLng(latitude, longitude))
                     .await(); // Synchronously waits for Google's servers to respond over the network
 
-            // 2. EXTRACTION: If Google finds matching layout records, pull the first formatted string option
-            return results.length > 0 ? results[0].formattedAddress : null;
+            if (results.length == 0) return null;
+
+            // 2. EXTRACTION: Prefer a human-readable address over a bare Plus Code entry.
+            // For points without a street number (e.g. inside a campus), Google's first
+            // result is often type plus_code ("HV9R+86Q, Phnom Penh"); skip those.
+            for (GeocodingResult result : results) {
+                boolean isPlusCodeOnly = result.types != null
+                        && result.types.length == 1
+                        && result.types[0] == AddressType.PLUS_CODE;
+                if (!isPlusCodeOnly) return result.formattedAddress;
+            }
+            return results[0].formattedAddress; // every result was a plus code — use it as-is
         } catch (Exception e) {
             // Safe Failure: Log a clear warning message but return null so the application layer doesn't crash
             log.warn("Reverse geocode failed for ({}, {}): {}", latitude, longitude, e.getMessage());

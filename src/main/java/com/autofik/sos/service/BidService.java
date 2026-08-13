@@ -28,7 +28,11 @@ public interface BidService {
      * @param sortBy A filter to bids (e.g, cheapest price or high_rate)
      * @return a list of available bids.
      */
-    List<BidSosResponse> getBySosRequest(UUID sosId, BidSortFilter sortBy);
+    /**
+     * The driver who raised the SOS sees every bid on it. A mechanic sees only their own —
+     * the full list is a competitor's price sheet.
+     */
+    List<BidSosResponse> getBySosRequest(UUID sosId, BidSortFilter sortBy, UUID callerId);
 
     /**
      * Use Case: A mechanic view their own history of bids.
@@ -52,10 +56,4 @@ public interface BidService {
      * @return the canceled bid state
      */
     BidSosResponse cancel(UUID bidId, UUID mechanicId);
-
-    /**
-     * Use Case: Admin dashboard control
-     * @return list all bid record
-     */
-    Page<BidSosResponse> getAll(Pageable pageable);
 }

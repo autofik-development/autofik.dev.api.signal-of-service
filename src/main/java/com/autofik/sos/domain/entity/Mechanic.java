@@ -26,9 +26,10 @@ import java.util.UUID;
 @ToString(onlyExplicitlyIncluded = true)
 public class Mechanic {
 
+    // Assigned, not generated: this row is a projection of an SSO mechanic and must carry that
+    // same UUID. A locally generated id would silently disagree with every other service.
+    // ponytail: an assigned id makes save() SELECT before INSERT. Create path only, not hot.
     @Id
-    @GeneratedValue
-    @UuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     @ToString.Include
     private UUID mechanicId;

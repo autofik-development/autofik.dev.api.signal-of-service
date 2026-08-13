@@ -25,6 +25,7 @@ import com.autofik.sos.service.GoogleMapsService;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +36,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service // tells spring this class core business logic execution
@@ -121,7 +123,18 @@ public class BidServiceImpl implements BidService {
                 "A mechanic placed a bid", "Check the new bid on your request"
         ));
 
-        return bidSosMapper.toResponse(savedBid);
+        BidSosResponse response = bidSosMapper.toResponse(savedBid);
+
+        // The bidding window is 250 seconds. Without this the driver's list only changed when they
+        // pulled to refresh, so the push notification was telling them about a bid the screen in
+        // front of them could not show. Sent on the driver's private queue, not a topic — a
+        // per-SOS broadcast would hand every bidder their competitors' prices.
+        messagingTemplate.convertAndSendToUser(
+                sosRequest.getUser().getUserId().toString(), "/queue/sos-updates",
+                Map.of("type", "BID_RECEIVED", "sosId", sosRequest.getSosId(), "bid", response)
+        );
+
+        return response;
     }
 
     /**
@@ -131,9 +144,21 @@ public class BidServiceImpl implements BidService {
     // multiple tables and in-DB sorting would require additional joins or subqueries.
     @Override
     @Transactional(readOnly = true) // Optimization: Tells the DB this is a read-only query (no data writes)
-    public List<BidSosResponse> getBySosRequest(UUID sosId, BidSortFilter sortBy) {
-        // Fetch all matching records from the database table and map them to DTOs
-        List<BidSosResponse> bids = bidSosMapper.toResponseList(bidSosRepository.findBySosRequestSosId(sosId));
+    public List<BidSosResponse> getBySosRequest(UUID sosId, BidSortFilter sortBy, UUID callerId) {
+        SosRequest sos = sosRequestRepository.findById(sosId)
+                .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
+
+        List<BidSos> found = bidSosRepository.findBySosRequestSosId(sosId);
+        // A mechanic asking about someone else's SOS gets their own bid and nothing more; the full
+        // list would hand them every rival's price. Non-participants see an empty list rather than
+        // a 403, which would confirm the sosId is real.
+        if (!sos.getUser().getUserId().equals(callerId)) {
+            found = found.stream()
+                    .filter(bid -> bid.getMechanic().getMechanicId().equals(callerId))
+                    .toList();
+        }
+
+        List<BidSosResponse> bids = bidSosMapper.toResponseList(found);
         if (sortBy == null) return bids;
 
         // Apply in-memory Stream sorting based on the user's selected preference tab
@@ -179,7 +204,7 @@ public class BidServiceImpl implements BidService {
         // SECURITY CHECK: Ensure that the person executing this call is the actual owner who created the SOS ticket
         UUID sosOwnerId = bid.getSosRequest().getUser().getUserId();
         if (!sosOwnerId.equals(request.userId())) {
-            throw new IllegalStateException("User " + request.userId() + " is not authorized to update bid " + bidId);
+            throw new AccessDeniedException("You can only respond to bids on your own SOS request");
         }
 
         // Commit the status change (e.g., ACCEPTED) to the database
@@ -225,10 +250,20 @@ public class BidServiceImpl implements BidService {
             if (!rejectedBids.isEmpty()) {
                 List<UUID> rejectedBidIds = rejectedBids.stream().map(BidSos::getBidId).toList();
                 sosEventProducer.publishBidRejected(new BidRejectedEvent(sos.getSosId(), rejectedBidIds));
-                rejectedBids.forEach(rejected -> sosEventProducer.publishNotification(new SosNotificationEvent(
-                        "BID_REJECTED", rejected.getMechanic().getMechanicId(), "MECHANIC", sos.getSosId(),
-                        "Another mechanic was selected", "Your bid was not selected for this request"
-                )));
+                rejectedBids.forEach(rejected -> {
+                    sosEventProducer.publishNotification(new SosNotificationEvent(
+                            "BID_REJECTED", rejected.getMechanic().getMechanicId(), "MECHANIC", sos.getSosId(),
+                            "Another mechanic was selected", "Your bid was not selected for this request"
+                    ));
+                    // The winner already gets a socket message; the losers only got a push, so their
+                    // open bid screen kept showing a live auction that had already been decided.
+                    // Their own bid id and nothing else — the winning price is not theirs to see.
+                    messagingTemplate.convertAndSendToUser(
+                            rejected.getMechanic().getMechanicId().toString(), "/queue/sos-updates",
+                            Map.of("type", "BID_REJECTED", "sosId", sos.getSosId(),
+                                    "bidId", rejected.getBidId())
+                    );
+                });
             }
         }
 
@@ -246,7 +281,7 @@ public class BidServiceImpl implements BidService {
 
         // SECURITY CHECK: Verify that the mechanic trying to cancel the bid is the actual creator of the bid
         if (!bid.getMechanic().getMechanicId().equals(mechanicId)) {
-            throw new IllegalStateException("Mechanic " + mechanicId + " is not authorized to cancel bid " + bidId);
+            throw new AccessDeniedException("You can only cancel your own bid");
         }
         // SAFETY CHECK: A mechanic can only withdraw a bid if it's still pending (not yet accepted or rejected)
         if (bid.getStatus() != BidStatus.PENDING) {
@@ -270,13 +305,14 @@ public class BidServiceImpl implements BidService {
                 "A bid was withdrawn", "A mechanic withdrew their bid on your request"
         ));
 
-        return bidSosMapper.toResponse(bid);
-    }
+        // Take the withdrawn bid off the driver's screen. Accepting a bid that no longer exists
+        // wastes the one resource nobody has during a breakdown, which is time.
+        messagingTemplate.convertAndSendToUser(
+                sos.getUser().getUserId().toString(), "/queue/sos-updates",
+                Map.of("type", "BID_CANCELLED", "sosId", sos.getSosId(), "bidId", bid.getBidId())
+        );
 
-    @Override
-    @Transactional(readOnly = true)
-    public Page<BidSosResponse> getAll(Pageable pageable) {
-        return bidSosRepository.findAll(pageable).map(bidSosMapper::toResponse);
+        return bidSosMapper.toResponse(bid);
     }
 
     // When the user accepts one bid, all other PENDING bids on the same SOS must be

@@ -2,6 +2,7 @@ package com.autofik.sos.controller;
 
 import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
+import com.autofik.sos.security.Caller;
 import com.autofik.sos.service.FeedbackService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -9,6 +10,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
@@ -29,7 +31,9 @@ public class FeedbackController {
     // Returns 201 CREATED; also triggers a recalculation of the mechanic's average rating
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public FeedbackResponse create(@Valid @RequestBody CreateFeedbackRequest request) {
+    public FeedbackResponse create(@Valid @RequestBody CreateFeedbackRequest request,
+                                   @AuthenticationPrincipal UUID callerId) {
+        Caller.mustMatch(callerId, request.userId());
         return feedbackService.create(request);
     }
 

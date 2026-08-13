@@ -13,6 +13,7 @@ import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
+import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
@@ -29,15 +30,20 @@ import com.autofik.sos.repository.VehicleRepository;
 import com.autofik.sos.service.GoogleMapsService;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.service.MedusaService;
+import com.autofik.sos.service.RouteEtaService;
 import com.autofik.sos.service.SosService;
+import com.autofik.sos.util.GeoDistance;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -109,6 +115,7 @@ public class SosServiceImpl implements SosService {
     private final SosRequestRepository sosRequestRepository;
     private final UserRepository userRepository;
     private final VehicleRepository vehicleRepository;
+    private final SsoProjection ssoProjection;
     private final MechanicRepository mechanicRepository;
     private final BidSosRepository bidSosRepository;
     private final SosStatusHistoryRepository sosStatusHistoryRepository;
@@ -116,11 +123,18 @@ public class SosServiceImpl implements SosService {
     private final SosStatusHistoryMapper sosStatusHistoryMapper;
     private final MechanicMapper mechanicMapper;
     private final GoogleMapsService googleMapsService;
+    private final RouteEtaService routeEtaService;
     private final MedusaService medusaService;
     private final SosEventProducer sosEventProducer;
     private final SimpMessagingTemplate messagingTemplate;
     private final TaskScheduler taskScheduler;
     private final StringRedisTemplate redisTemplate;
+
+    // How close a mechanic must be, by road, before they may mark ARRIVED. Configurable because
+    // the right value depends on the road layout: a divided boulevard can put someone standing
+    // beside the customer several hundred metres away by road.
+    @Value("${sos.arrival.max-distance-meters:50}")
+    private int arrivalMaxDistanceMeters;
 
     @EventListener(ApplicationReadyEvent.class)
     @Transactional
@@ -192,10 +206,12 @@ public class SosServiceImpl implements SosService {
 
         String problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
 
-        User user = userRepository.findById(request.userId())
-                .orElseThrow(() -> new EntityNotFoundException("User not found: " + request.userId()));
-        Vehicle vehicle = vehicleRepository.findById(request.vehicleId())
-                .orElseThrow(() -> new EntityNotFoundException("Vehicle not found: " + request.vehicleId()));
+        // Both rows are projections of SSO, created here on first use. The vehicle read is scoped
+        // by SSO to the calling user, so it doubles as the ownership check: unverified, a driver
+        // could file a breakdown against a stranger's car and hand a mechanic the wrong plate.
+        // This has to happen inside the request — the caller's bearer exists nowhere else.
+        User user = ssoProjection.user(request.userId());
+        Vehicle vehicle = ssoProjection.vehicle(request.vehicleId(), user);
         SosRequest sos = SosRequest.builder()
                 .problemType(problemTypeKey)
                 .description(request.description())
@@ -233,8 +249,28 @@ public class SosServiceImpl implements SosService {
 
     @Override
     @Transactional(readOnly = true)
-    public SosRequestResponse getById(UUID sosId) {
-        return toResponseWithMechanic(findSosOrThrow(sosId));
+    public SosRequestResponse getById(UUID sosId, UUID callerId) {
+        SosRequest sos = findSosOrThrow(sosId);
+        // Not 403: telling an outsider "forbidden" tells them the id is real.
+        if (!isVisibleTo(sos, callerId)) {
+            throw new EntityNotFoundException("SOS request not found: " + sosId);
+        }
+        return toResponseWithMechanic(sos);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean canView(UUID sosId, UUID callerId) {
+        return sosRequestRepository.findById(sosId)
+                .map(sos -> isVisibleTo(sos, callerId))
+                .orElse(false);
+    }
+
+    // The driver who raised it, or any mechanic who bid on it — a mechanic needs to read the SOS
+    // to decide what to bid, so visibility starts at the bid rather than at the acceptance.
+    private boolean isVisibleTo(SosRequest sos, UUID callerId) {
+        return sos.getUser().getUserId().equals(callerId)
+                || bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sos.getSosId(), callerId);
     }
 
     @Override
@@ -245,8 +281,8 @@ public class SosServiceImpl implements SosService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<SosRequestResponse> getByStatus(SosStatus status, Pageable pageable) {
-        return toPageWithMechanic(sosRequestRepository.findByStatus(status, pageable));
+    public Page<SosRequestResponse> getByUserAndStatus(UUID userId, SosStatus status, Pageable pageable) {
+        return toPageWithMechanic(sosRequestRepository.findByUserUserIdAndStatus(userId, status, pageable));
     }
 
     // Direct status update (mechanic-initiated, no user approval needed).
@@ -262,10 +298,24 @@ public class SosServiceImpl implements SosService {
         validateTransition(sos.getStatus(), toStatus);
         Mechanic mechanic = mechanicRepository.findById(mechanicId)
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+        requireAssignedMechanic(sos, mechanicId);
+
+        if (toStatus == SosStatus.ARRIVED) {
+            requireMechanicAtSos(mechanic, sos);
+        }
 
         SosStatus fromStatus = sos.getStatus();
         sos.setStatus(toStatus);
         sosRequestRepository.save(sos);
+
+        // The cached route is keyed only by sosId and outlives its 30s refresh window, so leaving
+        // en route has to invalidate it eagerly. Without this, pings arriving inside the current
+        // window keep interpolating against the stale snapshot and the customer watches a live
+        // countdown for up to 30 seconds after the mechanic has already pulled up.
+        // ON_THE_WAY is still en route; only ARRIVED ends the drive here.
+        if (toStatus == SosStatus.ARRIVED) {
+            routeEtaService.clear(sosId);
+        }
 
         LocalDateTime now = LocalDateTime.now();
         SosStatusHistory history = SosStatusHistory.builder()
@@ -306,6 +356,7 @@ public class SosServiceImpl implements SosService {
         validateTransition(sos.getStatus(), request.toStatus());
         Mechanic mechanic = mechanicRepository.findById(request.mechanicId())
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
+        requireAssignedMechanic(sos, request.mechanicId());
         SosStatusHistory history = SosStatusHistory.builder()
                 .sosRequest(sos)
                 .fromStatus(sos.getStatus())
@@ -337,6 +388,11 @@ public class SosServiceImpl implements SosService {
                 .orElseThrow(() -> new EntityNotFoundException("Status history not found: " + request.historyId()));
         User user = userRepository.findById(request.userId())
                 .orElseThrow(() -> new EntityNotFoundException("User not found: " + request.userId()));
+        // The historyId is the only thing the caller supplies — without this, any driver could
+        // approve or reject the completion of anyone else's job.
+        if (!history.getSosRequest().getUser().getUserId().equals(request.userId())) {
+            throw new AccessDeniedException("You can only respond to your own SOS request");
+        }
 
         history.setApprovedStatus(request.approvedStatus());
         history.setApprovedBy(user);
@@ -349,6 +405,7 @@ public class SosServiceImpl implements SosService {
             validateTransition(fromStatus, history.getToStatus());
             sos.setStatus(history.getToStatus());
             sosRequestRepository.save(sos);
+            routeEtaService.clear(sos.getSosId());   // COMPLETED — no drive left to count down
 
             UUID mechanicId = history.getProposedBy().getMechanicId();
             SosStatusUpdatedEvent statusEvent = new SosStatusUpdatedEvent(
@@ -402,7 +459,7 @@ public class SosServiceImpl implements SosService {
     public SosRequestResponse cancel(UUID sosId, UUID userId) {
         SosRequest sos = findSosOrThrow(sosId);
         if (!sos.getUser().getUserId().equals(userId)) {
-            throw new IllegalArgumentException("You can only cancel your own SOS request");
+            throw new AccessDeniedException("You can only cancel your own SOS request");
         }
         SosStatus fromStatus = sos.getStatus();
         if (!VALID_TRANSITIONS.containsKey(fromStatus)) {
@@ -410,6 +467,7 @@ public class SosServiceImpl implements SosService {
         }
         sos.setStatus(SosStatus.CANCELLED);
         sosRequestRepository.save(sos);
+        routeEtaService.clear(sosId);   // job is over — drop any countdown still cached
 
         sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
                 sos.getSosId(), null, userId, fromStatus, SosStatus.CANCELLED, LocalDateTime.now()
@@ -420,12 +478,6 @@ public class SosServiceImpl implements SosService {
         ));
 
         return toResponseWithMechanic(sos);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public Page<SosRequestResponse> getAll(Pageable pageable) {
-        return toPageWithMechanic(sosRequestRepository.findAll(pageable));
     }
 
     // SosRequest has no direct mechanic relation — the assigned mechanic is resolved
@@ -452,6 +504,18 @@ public class SosServiceImpl implements SosService {
         return page.map(this::toResponseWithMechanic);
     }
 
+    // Advancing a job belongs to the mechanic whose bid was accepted, not to whoever knows the
+    // sosId. Without this any mechanic could walk someone else's ticket to ARRIVED or COMPLETED.
+    private void requireAssignedMechanic(SosRequest sos, UUID mechanicId) {
+        boolean assigned = bidSosRepository
+                .findFirstBySosRequestSosIdAndStatus(sos.getSosId(), BidStatus.ACCEPTED)
+                .map(bid -> bid.getMechanic().getMechanicId().equals(mechanicId))
+                .orElse(false);
+        if (!assigned) {
+            throw new AccessDeniedException("You are not the mechanic assigned to this SOS request");
+        }
+    }
+
     private SosRequest findSosOrThrow(UUID sosId) {
         return sosRequestRepository.findById(sosId)
                 .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
@@ -460,6 +524,51 @@ public class SosServiceImpl implements SosService {
     /**
      * Compares the target state transition against the allowed matrix rules.
      */
+    /**
+     * Gate on ON_THE_WAY → ARRIVED: the mechanic must actually be at the breakdown.
+     *
+     * Measured against current_location in Postgres, never against coordinates supplied with the
+     * request — a mechanic controls those and would simply send the customer's own position. That
+     * makes this a guard against the casual "close enough, mark it arrived" tap rather than against
+     * a deliberately spoofed GPS feed, which only client attestation can address.
+     *
+     * Road distance rather than straight-line, so a mechanic who is metres away across a river or
+     * below an overpass — and cannot actually reach the customer — does not pass. The trade is that
+     * being parked across a divided road can read several hundred metres, so the threshold is
+     * configurable; see sos.arrival.max-distance-meters.
+     */
+    private void requireMechanicAtSos(Mechanic mechanic, SosRequest sos) {
+        Point mechanicLocation = mechanic.getCurrentLocation();
+        if (mechanicLocation == null) {
+            throw new IllegalStateException(
+                    "Cannot mark arrived: no location on record for this mechanic. "
+                            + "Enable location sharing and try again.");
+        }
+
+        DistanceInfo route = googleMapsService.getDistanceInfo(mechanicLocation, sos.getLocation());
+
+        // Maps unavailable or no drivable route: fall back to straight-line rather than blocking
+        // every arrival in the country during an outage. Straight-line never exceeds road distance,
+        // so the fallback is the more permissive of the two — it fails toward letting a mechanic
+        // who is genuinely present complete the job.
+        double distanceMeters;
+        if (route != null) {
+            distanceMeters = route.distanceMeters();
+        } else {
+            distanceMeters = GeoDistance.haversineMeters(
+                    mechanicLocation.getY(), mechanicLocation.getX(),
+                    sos.getLocation().getY(), sos.getLocation().getX());
+            log.warn("Route distance unavailable for SOS {}; falling back to straight-line {}m",
+                    sos.getSosId(), Math.round(distanceMeters));
+        }
+
+        if (distanceMeters > arrivalMaxDistanceMeters) {
+            throw new IllegalStateException(String.format(
+                    "Cannot mark arrived: %dm from the customer, which exceeds the %dm limit.",
+                    Math.round(distanceMeters), arrivalMaxDistanceMeters));
+        }
+    }
+
     private void validateTransition(SosStatus from, SosStatus to) {
         Set<SosStatus> allowed = VALID_TRANSITIONS.getOrDefault(from, Set.of());
         if (!allowed.contains(to)) {
@@ -510,7 +619,7 @@ public class SosServiceImpl implements SosService {
         SosRequest sos = findSosOrThrow(sosId);
 
         if (!sos.getUser().getUserId().equals(userId)) {
-            throw new IllegalArgumentException("You can only rebroadcast your own SOS request");
+            throw new AccessDeniedException("You can only rebroadcast your own SOS request");
         }
         if (sos.getStatus() != SosStatus.EXPIRED) {
             throw new IllegalStateException("Only EXPIRED SOS requests can be rebroadcast");
@@ -524,6 +633,8 @@ public class SosServiceImpl implements SosService {
         sos.setRebroadcastCount(sos.getRebroadcastCount() + 1);
         sos.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(SosRequest.BIDDING_WINDOW_SECONDS));
         sosRequestRepository.save(sos);
+        // Back to bidding: the previous mechanic's route is meaningless now.
+        routeEtaService.clear(sosId);
 
         int attemptsLeft = SosRequest.MAX_REBROADCAST - sos.getRebroadcastCount();
         messagingTemplate.convertAndSendToUser(

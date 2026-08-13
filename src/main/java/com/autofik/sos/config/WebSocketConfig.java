@@ -1,43 +1,77 @@
 package com.autofik.sos.config;
 
+import com.autofik.sos.security.GatewayIdentityFilter;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.server.ServerHttpRequest;
+import org.springframework.http.server.ServerHttpResponse;
+import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+import org.springframework.web.socket.server.HandshakeInterceptor;
 import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import java.security.Principal;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Configuration
 @EnableWebSocketMessageBroker
+@RequiredArgsConstructor
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    private static final String CALLER_ATTRIBUTE = "callerAuthentication";
 
     @Value("${websocket.allowed-origins:*}")
     private String allowedOrigins;
+
+    private final StompSubscriptionInterceptor subscriptionInterceptor;
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws")
                 .setAllowedOriginPatterns(allowedOrigins)
+                .addInterceptors(new HandshakeInterceptor() {
+                    @Override
+                    public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response,
+                                                   WebSocketHandler wsHandler, Map<String, Object> attributes) {
+                        // Same headers as the REST filter, written by APISIX on the upgrade request.
+                        // The old ?clientId= is gone: it was chosen by the caller, so connecting as
+                        // someone else was enough to read their private queue.
+                        String user = request.getHeaders().getFirst(GatewayIdentityFilter.USER_HEADER);
+                        String mechanic = request.getHeaders().getFirst(GatewayIdentityFilter.MECHANIC_HEADER);
+                        if ((user == null) == (mechanic == null)) return false;
+                        try {
+                            UUID id = UUID.fromString(user != null ? user : mechanic);
+                            String role = user != null
+                                    ? GatewayIdentityFilter.ROLE_USER
+                                    : GatewayIdentityFilter.ROLE_MECHANIC;
+                            attributes.put(CALLER_ATTRIBUTE, new UsernamePasswordAuthenticationToken(
+                                    id, null, List.of(new SimpleGrantedAuthority(role))));
+                            return true;
+                        } catch (IllegalArgumentException malformedUuid) {
+                            return false;   // 403 on the upgrade
+                        }
+                    }
+
+                    @Override
+                    public void afterHandshake(ServerHttpRequest request, ServerHttpResponse response,
+                                               WebSocketHandler wsHandler, Exception exception) {
+                    }
+                })
                 .setHandshakeHandler(new DefaultHandshakeHandler() {
                     @Override
-                    protected Principal determineUser(ServerHttpRequest request,
-                                                     WebSocketHandler wsHandler,
-                                                     Map<String, Object> attributes) {
-                        // Mobile app / test page passes ?clientId=<uuid> in the WS URL.
-                        // This becomes the principal name used by convertAndSendToUser().
-                        String clientId = UriComponentsBuilder.fromUri(request.getURI())
-                                .build().getQueryParams().getFirst("clientId");
-                        if (clientId != null && !clientId.isBlank()) {
-                            return () -> clientId;
-                        }
-                        return super.determineUser(request, wsHandler, attributes);
+                    protected Principal determineUser(ServerHttpRequest request, WebSocketHandler wsHandler,
+                                                      Map<String, Object> attributes) {
+                        // getName() is the UUID string, which is what convertAndSendToUser routes on.
+                        return (Principal) attributes.get(CALLER_ATTRIBUTE);
                     }
                 });
     }
@@ -46,5 +80,17 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public void configureMessageBroker(MessageBrokerRegistry config) {
         config.setApplicationDestinationPrefixes("/app");
         config.enableSimpleBroker("/topic", "/queue");
+    }
+
+    @Override
+    public void configureClientInboundChannel(ChannelRegistration registration) {
+        registration.interceptors(subscriptionInterceptor);
+        // Location pings land here, and a ping can pay for a Google Directions call once per 30s
+        // per SOS. The default pool is one thread per core, so a handful of in-flight route
+        // refreshes would stall every other mechanic's ping behind them — the HTTP path never
+        // showed this because Tomcat has ~200 threads to absorb it.
+        // ponytail: sized pool in front of blocking I/O. Move the route refresh off this thread
+        // if the fleet outgrows it.
+        registration.taskExecutor().corePoolSize(32).maxPoolSize(64);
     }
 }

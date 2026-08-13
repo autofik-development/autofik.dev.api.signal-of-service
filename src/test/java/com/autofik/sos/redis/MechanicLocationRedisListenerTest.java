@@ -12,7 +12,7 @@ import org.springframework.data.redis.connection.Message;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +35,8 @@ class MechanicLocationRedisListenerTest {
 
     @Test
     void onMessage_validPayload_parsesAndForwardsToCorrectWebSocketTopic() throws Exception {
-        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5573, 104.9282, Instant.now());
+        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5573, 104.9282, OffsetDateTime.now(),
+                null, null, null, null);
         Message message = mockMessage("mechanic:loc:" + sosId, "{}");
         when(objectMapper.readValue(message.getBody(), MechanicLocationEvent.class)).thenReturn(event);
 
@@ -49,7 +50,8 @@ class MechanicLocationRedisListenerTest {
     @Test
     void onMessage_extractsSosIdFromChannelName() throws Exception {
         UUID anotherSosId = UUID.randomUUID();
-        MechanicLocationEvent event = new MechanicLocationEvent(anotherSosId, mechanicId, 11.5, 104.9, Instant.now());
+        MechanicLocationEvent event = new MechanicLocationEvent(anotherSosId, mechanicId, 11.5, 104.9, OffsetDateTime.now(),
+                null, null, null, null);
         Message message = mockMessage("mechanic:loc:" + anotherSosId, "{}");
         when(objectMapper.readValue(message.getBody(), MechanicLocationEvent.class)).thenReturn(event);
 
@@ -74,7 +76,8 @@ class MechanicLocationRedisListenerTest {
 
     @Test
     void onMessage_webSocketFails_doesNotThrow() throws Exception {
-        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5, 104.9, Instant.now());
+        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5, 104.9, OffsetDateTime.now(),
+                null, null, null, null);
         Message message = mockMessage("mechanic:loc:" + sosId, "{}");
         when(objectMapper.readValue(message.getBody(), MechanicLocationEvent.class)).thenReturn(event);
         doThrow(new RuntimeException("WS broker down"))
