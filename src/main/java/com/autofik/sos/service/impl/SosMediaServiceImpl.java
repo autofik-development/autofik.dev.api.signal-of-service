@@ -1,23 +1,19 @@
 package com.autofik.sos.service.impl;
 
-import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosMedia;
-import com.autofik.sos.domain.entity.SosRequest;
-import com.autofik.sos.domain.entity.User;
-import com.autofik.sos.domain.enums.MediaType;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.response.SosMediaResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.SosMediaMapper;
-import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosMediaRepository;
 import com.autofik.sos.repository.SosRequestRepository;
-import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.SosMediaService;
 import com.autofik.sos.service.SosService;
 import org.springframework.security.access.AccessDeniedException;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import net.coobird.thumbnailator.Thumbnails;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -25,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -50,10 +47,14 @@ import java.util.UUID;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class SosMediaServiceImpl implements SosMediaService {
 
     // Presigned URL expiration window
     private static final Duration PLAYBACK_URL_TTL = Duration.ofMinutes(15);
+
+    // Everything is transcoded to JPEG on the way in, whatever it arrived as.
+    private static final String JPEG_CONTENT_TYPE = "image/jpeg";
 
     // Strict upload file size ceiling (10MB)
     private static final long MAX_SIZE_BYTES = 10L * 1024 * 1024;
@@ -77,8 +78,7 @@ public class SosMediaServiceImpl implements SosMediaService {
     private final SosMediaRepository sosMediaRepository;
     private final SosRequestRepository sosRequestRepository;
     private final SosService sosService;   // reuses the one definition of "who may see this SOS"
-    private final UserRepository userRepository;
-    private final MechanicRepository mechanicRepository;
+    private final SosMediaWriter sosMediaWriter;
     private final SosMediaMapper sosMediaMapper;
     private final SosEventProducer sosEventProducer;
     private final S3Client s3Client;
@@ -96,16 +96,15 @@ public class SosMediaServiceImpl implements SosMediaService {
      * @param userId     The identity of the user uploader (null if uploaded by mechanic).
      * @param mechanicId The identity of the mechanic uploader (null if uploaded by user).
      * @return Formatted media response object including a short-lived S3 access URL.
-     * @throws IllegalStateException    If neither or both actor contexts are passed.
+     * @throws ConflictException        If neither or both actor contexts are passed.
      * @throws IllegalArgumentException If file structural validation, size limits, or magic bytes check fail.
      */
     @Override
-    @Transactional
     public SosMediaResponse upload(UUID sosId, MultipartFile file, UUID userId, UUID mechanicId) {
 
         // Enforce XOR logic: An upload must strictly be tied to either a User OR a Mechanic context
         if ((userId == null) == (mechanicId == null)) {
-            throw new IllegalStateException("Exactly one of userId or mechanicId must be provided");
+            throw new ConflictException("Exactly one of userId or mechanicId must be provided");
         }
 
         // Phase 1: Basic validation filters
@@ -115,24 +114,14 @@ public class SosMediaServiceImpl implements SosMediaService {
                     "File exceeds the " + (MAX_SIZE_BYTES / (1024 * 1024)) + " MB limit");
         }
 
-        // Phase 2: Domain Entity Verification
-        SosRequest sos = sosRequestRepository.findById(sosId)
-                .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
-
-        // Only the driver and the mechanics who bid may attach to a ticket — otherwise anyone
-        // holding a sosId can push images into someone else's incident.
-        if (!sosService.canView(sosId, userId != null ? userId : mechanicId)) {
-            throw new AccessDeniedException("You are not part of this SOS request");
+        // Phase 2: the request has to exist, and the uploader has to be part of it — otherwise
+        // anyone holding a sosId can push images into someone else's incident.
+        if (!sosRequestRepository.existsById(sosId)) {
+            throw new EntityNotFoundException("SOS request not found: " + sosId);
         }
-
-        User user = null;
-        Mechanic mechanic = null;
-        if (userId != null) {
-            user = userRepository.findById(userId)
-                    .orElseThrow(() -> new EntityNotFoundException("User not found: " + userId));
-        } else {
-            mechanic = mechanicRepository.findById(mechanicId)
-                    .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+        UUID uploadedById = userId != null ? userId : mechanicId;
+        if (!sosService.canView(sosId, uploadedById)) {
+            throw new AccessDeniedException("You are not part of this SOS request");
         }
 
         // Phase 3: Secure media transformation
@@ -147,40 +136,41 @@ public class SosMediaServiceImpl implements SosMediaService {
             throw new UncheckedIOException("Failed to process uploaded file", e);
         }
 
-        // Phase 4: S3 Object Storage Persistence
+        // Phase 4: S3 first, then the row. Deliberately outside a transaction — see SosMediaWriter.
         String objectKey = "sos/" + sosId + "/" + UUID.randomUUID() + ".jpg";
         s3Client.putObject(
-                PutObjectRequest.builder().bucket(bucket).key(objectKey).contentType("image/jpeg").build(),
+                PutObjectRequest.builder().bucket(bucket).key(objectKey).contentType(JPEG_CONTENT_TYPE).build(),
                 RequestBody.fromBytes(compressed));
 
-        // Phase 5: RDBMS Metadata Persistence
-        SosMedia saved = sosMediaRepository.save(SosMedia.builder()
-                .sosRequest(sos)
-                .mediaType(MediaType.PHOTO)
-                .contentType("image/jpeg")
-                .sizeBytes((long) compressed.length)
-                .objectKey(objectKey)
-                .uploadedByUser(user)
-                .uploadedByMechanic(mechanic)
-                .build());
+        // Phase 5: metadata row. S3 does not roll back with Postgres, so a failed insert has to
+        // take its object with it — otherwise every failure leaves a paid-for orphan nothing
+        // references.
+        SosMedia saved;
+        try {
+            saved = sosMediaWriter.persist(sosId, userId, mechanicId,
+                    objectKey, JPEG_CONTENT_TYPE, compressed.length);
+        } catch (RuntimeException e) {
+            deleteQuietly(objectKey);
+            throw e;
+        }
 
         // Phase 6: Event Notification Propagation (Kafka)
-        UUID uploadedById;
-        String uploadedByRole;
-        if (user != null) {
-            uploadedById = user.getUserId();
-            uploadedByRole = "USER";
-        } else {
-            if (mechanic == null) {
-                throw new IllegalStateException("Uploader context is invalid: mechanic is null");
-            }
-            uploadedById = mechanic.getMechanicId();
-            uploadedByRole = "MECHANIC";
-        }
-        sosEventProducer.publishMediaUploaded(
-                new SosMediaUploadedEvent(sosId, saved.getMediaId(), uploadedByRole, uploadedById, saved.getUploadedAt()));
+        sosEventProducer.publishMediaUploaded(new SosMediaUploadedEvent(
+                sosId, saved.getMediaId(), userId != null ? "USER" : "MECHANIC",
+                uploadedById, saved.getUploadedAt()));
 
         return toResponseWithUrl(saved);
+    }
+
+    // Best-effort: the row insert already failed and that is what the caller is being told about.
+    // A failure to clean up leaves an orphan, which is a storage cost, not a correctness problem.
+    private void deleteQuietly(String objectKey) {
+        try {
+            s3Client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(objectKey).build());
+        } catch (RuntimeException cleanupFailure) {
+            log.warn("Orphaned S3 object {} — metadata insert failed and cleanup did not succeed: {}",
+                    objectKey, cleanupFailure.getMessage());
+        }
     }
 
     /**

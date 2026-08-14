@@ -4,9 +4,11 @@ import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.enums.BidStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,6 +42,14 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
      * Uses 'Optional' because an ACCEPTED bid might not exist yet if the customer is still picking a mechanic.
      */
     Optional<BidSos> findFirstBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
+
+    /**
+     * The batch form of the lookup above, for resolving the assigned mechanic across a whole page
+     * of SOS requests. One query instead of one per row, with the mechanic and its rating joined in
+     * — otherwise reading bid.getMechanic() re-introduces the N+1 a row at a time.
+     */
+    @EntityGraph(attributePaths = {"mechanic", "mechanic.rate"})
+    List<BidSos> findBySosRequestSosIdInAndStatus(Collection<UUID> sosIds, BidStatus status);
 
     /**
      * Resolve the active SOS request for a mechanic — used to route location broadcasts.

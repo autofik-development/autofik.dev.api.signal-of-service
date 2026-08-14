@@ -5,7 +5,11 @@ import com.autofik.sos.domain.enums.SosStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -81,4 +85,32 @@ public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
      * @return requests still within their active bidding window
      */
     List<SosRequest> findByStatusAndBiddingExpiresAtAfter(SosStatus status, LocalDateTime threshold);
+
+    /**
+     * Moves one request between two states in a single statement, and reports whether it won.
+     *
+     * <p>Read-then-write cannot express this. The expiry timer reading PENDING, a bid being
+     * accepted, and the timer then writing EXPIRED interleave into an expired request with an
+     * accepted bid on it. Here the {@code from} state is part of the WHERE clause, so the loser of
+     * that race changes nothing and gets 0 back.
+     *
+     * <p>The same property gives multi-instance deployments free leader election: every instance
+     * may run the startup sweep, but exactly one receives 1 for any given row, so only one instance
+     * publishes the notifications.
+     *
+     * @return 1 when this caller performed the transition, 0 when the request had already moved on
+     */
+    @Transactional
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    // VERSIONED bumps the optimistic-lock column, which a bulk update otherwise leaves alone —
+    // without it a copy of this row already loaded elsewhere could still be written back on top.
+    @Query("""
+            UPDATE VERSIONED SosRequest s
+               SET s.status = :to
+             WHERE s.sosId = :sosId
+               AND s.status = :from
+            """)
+    int compareAndSetStatus(@Param("sosId") UUID sosId,
+                            @Param("from") SosStatus from,
+                            @Param("to") SosStatus to);
 }

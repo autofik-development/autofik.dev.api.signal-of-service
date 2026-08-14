@@ -4,7 +4,6 @@ import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.MechanicSkill;
 import com.autofik.sos.domain.enums.BidStatus;
-import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.request.CreateMechanicRequest;
@@ -20,13 +19,11 @@ import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.MechanicSkillRepository;
 import com.autofik.sos.service.MechanicService;
 import com.autofik.sos.service.RouteEtaService;
-import com.uber.h3core.H3Core;
+import com.autofik.sos.util.GeoSupport;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.locationtech.jts.geom.Coordinate;
-import org.locationtech.jts.geom.GeometryFactory;
-import org.locationtech.jts.geom.PrecisionModel;
+import org.locationtech.jts.geom.Point;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -35,11 +32,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
-import java.io.IOException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -50,27 +47,8 @@ import java.util.UUID;
 @Slf4j
 public class MechanicServiceImpl implements MechanicService {
 
-    private static final int H3_RESOLUTION = 7;
-    // Center-to-center distance between adjacent resolution-7 cells ≈ edge × √3 ≈ 2.114 km.
-    // Matches the constant in SosServiceImpl so both fan-out and availability use the same formula.
-    private static final double H3_R7_CENTER_TO_CENTER_KM = 2.114;
-    private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory(new PrecisionModel(), 4326);
     // The service is Cambodia-only — see the coordinate bounds on the controller.
     private static final ZoneId CAMBODIA = ZoneId.of("Asia/Phnom_Penh");
-    // A job is live while the ticket is unresolved — the window in which the driver may watch
-    // their mechanic approach.
-    private static final List<SosStatus> ACTIVE_STATUSES = List.of(
-            SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED
-    );
-    private static final H3Core H3;
-
-    static {
-        try {
-            H3 = H3Core.newInstance();
-        } catch (IOException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
 
     // Redis is used here only for live location pub/sub — broadcasting mechanic position to the
     // customer app during an active job. The GPS write throttle lives in MechanicLocationWriter
@@ -100,7 +78,7 @@ public class MechanicServiceImpl implements MechanicService {
                 .mechanicRole(request.mechanicRole())
                 .address(request.address())
                 .serviceRadiusKm(request.serviceRadiusKm() != null ? request.serviceRadiusKm() : 10)
-                .baseLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
+                .baseLocation(GeoSupport.point(request.latitude(), request.longitude()))
                 .build();
         Mechanic saved = mechanicRepository.save(mechanic);
 
@@ -197,8 +175,7 @@ public class MechanicServiceImpl implements MechanicService {
     public List<MechanicResponse> findAvailable(double lat, double lng, String problemType, int radiusKm) {
         boolean needsSkills = problemType != null && !problemType.isBlank();
 
-        String centerCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
-        List<String> searchCells = H3.kRing(centerCell, ringRadiusFor(radiusKm));
+        List<String> searchCells = GeoSupport.searchCells(lat, lng, radiusKm);
 
         List<Mechanic> stage1 = mechanicRepository.findByH3Cells(searchCells);
         if (stage1.isEmpty()) {
@@ -221,7 +198,7 @@ public class MechanicServiceImpl implements MechanicService {
             result = withSkills.stream()
                     .filter(m -> m.getSkills() != null && m.getSkills().stream()
                             .anyMatch(s -> s.getSkillTags() != null &&
-                                    java.util.Arrays.stream(s.getSkillTags())
+                                    Arrays.stream(s.getSkillTags())
                                             .anyMatch(tag -> tag.equalsIgnoreCase(problemType))))
                     .toList();
             if (result.isEmpty()) {
@@ -231,10 +208,6 @@ public class MechanicServiceImpl implements MechanicService {
         }
 
         return mechanicMapper.toResponseList(result);
-    }
-
-    private static int ringRadiusFor(int radiusKm) {
-        return (int) Math.ceil(radiusKm / H3_R7_CENTER_TO_CENTER_KM) + 1;
     }
 
     // Convenience overload — delegates so both entry points share one broadcast decision.
@@ -298,7 +271,7 @@ public class MechanicServiceImpl implements MechanicService {
         }
         Mechanic mechanic = mechanicRepository.findById(mechanicId)
                 .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
-        org.locationtech.jts.geom.Point location = mechanic.getCurrentLocation();
+        Point location = mechanic.getCurrentLocation();
         if (location == null) {
             throw new EntityNotFoundException("No location available for mechanic: " + mechanicId);
         }
@@ -306,11 +279,11 @@ public class MechanicServiceImpl implements MechanicService {
     }
 
     // "Active job" is the ACCEPTED bid: it is what assigns a mechanic to a driver, and it ends
-    // when the SOS leaves an active state.
+    // when the SOS leaves an assigned state.
     private boolean hasActiveJobWith(UUID mechanicId, UUID userId) {
         return bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED)
                 .map(BidSos::getSosRequest)
-                .filter(sos -> ACTIVE_STATUSES.contains(sos.getStatus()))
+                .filter(sos -> sos.getStatus().isAssigned())
                 .map(sos -> sos.getUser().getUserId().equals(userId))
                 .orElse(false);
     }

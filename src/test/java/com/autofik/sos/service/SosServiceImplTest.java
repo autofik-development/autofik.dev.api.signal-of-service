@@ -59,7 +59,6 @@ class SosServiceImplTest {
     @Mock SosRequestRepository sosRequestRepository;
     @Mock com.autofik.sos.service.impl.SsoProjection ssoProjection;
     @Mock UserRepository userRepository;
-    @Mock VehicleRepository vehicleRepository;
     @Mock MechanicRepository mechanicRepository;
     @Mock BidSosRepository bidSosRepository;
     @Mock SosStatusHistoryRepository sosStatusHistoryRepository;
@@ -69,9 +68,10 @@ class SosServiceImplTest {
     @Mock GoogleMapsService googleMapsService;
     @Mock RouteEtaService routeEtaService;
     @Mock MedusaService medusaService;
+    @Mock com.autofik.sos.service.impl.SosDispatchService sosDispatchService;
+    @Mock com.autofik.sos.service.impl.SosExpiryScheduler sosExpiryScheduler;
     @Mock SosEventProducer sosEventProducer;
     @Mock SimpMessagingTemplate messagingTemplate;
-    @Mock TaskScheduler taskScheduler;
     @Mock StringRedisTemplate redisTemplate;
     @Mock ValueOperations<String, String> valueOps;
 
@@ -114,10 +114,12 @@ class SosServiceImplTest {
     }
 
     // Stubs the guards + Medusa resolution that run at the top of create() before repo calls.
+    // Order matters: the Redis cooldown is claimed first, so it is what a spamming caller hits
+    // before the geocode and the database are touched at all.
     private void stubCreateGuards() {
-        when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
         when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+        when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
         when(medusaService.resolveServiceGroupKey(serviceGroupId)).thenReturn(resolvedKey);
     }
 
@@ -350,8 +352,10 @@ class SosServiceImplTest {
         verify(sosRequestRepository, never()).save(any());
     }
 
+    // The address is resolved before the row is built, so it goes in on the single insert rather
+    // than costing a second write — and the Maps call happens before any connection is held.
     @Test
-    void create_mapsReturnsAddress_setsLocationAddressAndSavesTwice() {
+    void create_mapsReturnsAddress_setsLocationAddressOnTheSingleSave() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
         when(ssoProjection.user(userId)).thenReturn(user);
@@ -363,7 +367,7 @@ class SosServiceImplTest {
         sosService.create(request);
 
         ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
-        verify(sosRequestRepository, times(2)).save(captor.capture());
+        verify(sosRequestRepository, times(1)).save(captor.capture());
         assertThat(captor.getValue().getLocationAddress()).isEqualTo("Sukhumvit Rd, Bangkok");
     }
 
@@ -401,7 +405,9 @@ class SosServiceImplTest {
     // ── create guards ─────────────────────────────────────────────────────────
 
     @Test
-    void create_userHasActiveSos_throwsIllegalStateException() {
+    void create_userHasActiveSos_throwsConflictException() {
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
         when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(true);
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
 
@@ -415,7 +421,6 @@ class SosServiceImplTest {
 
     @Test
     void create_withinCooldown_throwsTooManyRequestsException() {
-        when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
         when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
@@ -424,6 +429,9 @@ class SosServiceImplTest {
                 .isInstanceOf(TooManyRequestsException.class)
                 .hasMessageContaining("60 seconds");
 
+        // Nothing past the throttle runs: no paid Maps call, no database read.
+        verify(googleMapsService, never()).reverseGeocode(anyDouble(), anyDouble());
+        verify(sosRequestRepository, never()).existsByUserUserIdAndStatusIn(any(), any());
         verify(medusaService, never()).resolveServiceGroupKey(any());
         verify(userRepository, never()).findById(any());
     }
@@ -471,13 +479,15 @@ class SosServiceImplTest {
         Pageable pageable = PageRequest.of(0, 20);
         when(sosRequestRepository.findByUserUserId(userId, pageable))
                 .thenReturn(new PageImpl<>(List.of(pendingSos)));
-        when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
-                .thenReturn(Optional.empty());
+        // One batch lookup for the whole page, not one per row.
+        when(bidSosRepository.findBySosRequestSosIdInAndStatus(List.of(sosId), BidStatus.ACCEPTED))
+                .thenReturn(List.of());
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
         Page<SosRequestResponse> result = sosService.getByUser(userId, pageable);
 
         assertThat(result.getContent()).containsExactly(sosResponse);
+        verify(bidSosRepository, never()).findFirstBySosRequestSosIdAndStatus(any(), any());
     }
 
     @Test
@@ -485,8 +495,8 @@ class SosServiceImplTest {
         Pageable pageable = PageRequest.of(0, 20);
         when(sosRequestRepository.findByUserUserIdAndStatus(userId, SosStatus.PENDING, pageable))
                 .thenReturn(new PageImpl<>(List.of(pendingSos)));
-        when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
-                .thenReturn(Optional.empty());
+        when(bidSosRepository.findBySosRequestSosIdInAndStatus(List.of(sosId), BidStatus.ACCEPTED))
+                .thenReturn(List.of());
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
         Page<SosRequestResponse> result = sosService.getByUserAndStatus(userId, SosStatus.PENDING, pageable);
@@ -546,12 +556,14 @@ class SosServiceImplTest {
                 .hasMessageContaining("PENDING");
     }
 
+    // Proposing anything but COMPLETED is a client using the wrong endpoint — a 400, not a
+    // conflict with the current state.
     @Test
-    void proposeStatusChange_terminalStatus_throwsIllegalStateException() {
+    void proposeStatusChange_nonCompletedTarget_throwsIllegalArgumentException() {
         ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.CANCELLED);
 
         assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

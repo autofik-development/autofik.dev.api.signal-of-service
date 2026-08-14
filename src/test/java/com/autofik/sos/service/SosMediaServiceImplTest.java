@@ -14,12 +14,12 @@ import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.SosService;
 import com.autofik.sos.service.impl.SosMediaServiceImpl;
+import com.autofik.sos.service.impl.SosMediaWriter;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -55,7 +55,9 @@ class SosMediaServiceImplTest {
     @Mock S3Client s3Client;
     @Mock S3Presigner s3Presigner;
 
-    @InjectMocks SosMediaServiceImpl sosMediaService;
+    // The writer is built for real rather than mocked: it is the half that maps ids onto the row,
+    // and these tests are largely about what lands in that row.
+    private SosMediaServiceImpl sosMediaService;
 
     private final UUID sosId = UUID.randomUUID();
     private final UUID userId = UUID.randomUUID();
@@ -82,6 +84,11 @@ class SosMediaServiceImplTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        SosMediaWriter sosMediaWriter = new SosMediaWriter(
+                sosMediaRepository, sosRequestRepository, userRepository, mechanicRepository);
+        sosMediaService = new SosMediaServiceImpl(
+                sosMediaRepository, sosRequestRepository, sosService, sosMediaWriter,
+                sosMediaMapper, sosEventProducer, s3Client, s3Presigner);
         ReflectionTestUtils.setField(sosMediaService, "bucket", "test-bucket");
         // Participation is covered by SosServiceImplTest; here every caller is a legitimate party.
         lenient().when(sosService.canView(any(), any())).thenReturn(true);
@@ -103,6 +110,7 @@ class SosMediaServiceImplTest {
 
     @Test
     void upload_jpeg_compressedAndStoredAsJpeg() throws Exception {
+        when(sosRequestRepository.existsById(sosId)).thenReturn(true);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -130,6 +138,7 @@ class SosMediaServiceImplTest {
     void upload_png_compressedAndStoredAsJpeg() throws Exception {
         when(file.getContentType()).thenReturn("image/png");
         when(file.getBytes()).thenReturn(pngBytes());
+        when(sosRequestRepository.existsById(sosId)).thenReturn(true);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -147,6 +156,7 @@ class SosMediaServiceImplTest {
 
     @Test
     void upload_mechanicUpload_setsUploadedByMechanic() throws Exception {
+        when(sosRequestRepository.existsById(sosId)).thenReturn(true);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -181,7 +191,7 @@ class SosMediaServiceImplTest {
 
     @Test
     void upload_sosNotFound_throwsEntityNotFoundException() {
-        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+        when(sosRequestRepository.existsById(sosId)).thenReturn(false);
 
         assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
                 .isInstanceOf(EntityNotFoundException.class)
@@ -214,8 +224,7 @@ class SosMediaServiceImplTest {
     void upload_magicBytesMismatch_throwsIllegalArgumentException() throws Exception {
         when(file.getContentType()).thenReturn("image/jpeg");
         when(file.getBytes()).thenReturn(pngBytes()); // PNG bytes claimed as JPEG
-        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(sosRequestRepository.existsById(sosId)).thenReturn(true);
 
         assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
                 .isInstanceOf(IllegalArgumentException.class)

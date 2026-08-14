@@ -16,7 +16,12 @@ import java.util.UUID;
 * Maps directly to the 'bid_sos' table in the database
 * */
 @Entity // tell JPA that this class is a database model/table
-@Table(name = "bid_sos") // Specifies the exact database table name
+// One bid per mechanic per request. The service checks this before inserting, but check-then-act
+// loses to a double-tap: two concurrent requests both pass the check and both insert. The unique
+// index is what actually holds — the service check only exists to give the common case a readable
+// error instead of a constraint violation.
+@Table(name = "bid_sos", uniqueConstraints = @UniqueConstraint(
+        name = "uk_bid_sos_request_mechanic", columnNames = {"sos_id", "mechanic_id"}))
 @Getter @Setter // Lombok: Automatically generates getter and setter for all fields
 @NoArgsConstructor @AllArgsConstructor // Lombok: Generates both empty and all-argument constructors
 @Builder // Lombok: Implements the Builder Pattern for clean object creation
@@ -34,6 +39,15 @@ public class BidSos {
     // precision 10, scale 2 means: max 10 digits total, with 2 digits after the decimal point (e.g., 99999999.99)
     @Column(name = "price", nullable = false, precision = 10, scale = 2)
     private BigDecimal price;
+
+    // Optimistic lock. Two drivers cannot answer the same bid, but the same driver double-tapping
+    // accept can — and without this the second write wins silently instead of failing.
+    // columnDefinition carries the default so ddl-auto can add the column to a table that already
+    // has rows — the same pattern rebroadcast_count uses on SosRequest.
+    @Version
+    @Column(name = "version", columnDefinition = "bigint not null default 0")
+    @Builder.Default
+    private Long version = 0L;
 
     // Tracks the state of the bid (e.g., PENDING, ACCEPTED, REJECTED)
     @Enumerated(EnumType.STRING) // Saves the enum as a String text (e.g., "PENDING") in the DB instead of an integer index (0, 1)

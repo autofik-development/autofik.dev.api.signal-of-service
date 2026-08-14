@@ -4,18 +4,14 @@ import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
-import com.uber.h3core.H3Core;
+import com.autofik.sos.util.GeoSupport;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.locationtech.jts.geom.Coordinate;
-import org.locationtech.jts.geom.GeometryFactory;
-import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
 import java.time.Duration;
 import java.util.UUID;
 
@@ -31,18 +27,6 @@ import java.util.UUID;
 @RequiredArgsConstructor
 @Slf4j
 public class MechanicLocationWriter {
-
-    private static final int H3_RESOLUTION = 7;
-    private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory(new PrecisionModel(), 4326);
-    private static final H3Core H3;
-
-    static {
-        try {
-            H3 = H3Core.newInstance();
-        } catch (IOException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
 
     private static final String PG_SYNC_KEY_PREFIX = "mechanic:pg-sync:";
     private static final Duration PG_SYNC_INTERVAL = Duration.ofSeconds(10);
@@ -94,8 +78,8 @@ public class MechanicLocationWriter {
         if (shouldPersist) {
             Mechanic mechanic = mechanicRepository.findById(mechanicId)
                     .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
-            mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
-            mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
+            mechanic.setCurrentLocation(GeoSupport.point(lat, lng));
+            mechanic.setCurrentH3Index(GeoSupport.h3Address(lat, lng));
             mechanicRepository.save(mechanic);
         } else if (!mechanicRepository.existsById(mechanicId)) {
             throw new EntityNotFoundException("Mechanic not found: " + mechanicId);

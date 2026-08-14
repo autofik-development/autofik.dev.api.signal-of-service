@@ -1,8 +1,5 @@
 package com.autofik.sos.service.impl;
 
-import com.autofik.sos.kafka.producer.SosEventProducer;
-import com.autofik.sos.dto.event.SosCreatedEvent;
-import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.SosStatusHistory;
@@ -11,13 +8,19 @@ import com.autofik.sos.domain.entity.Vehicle;
 import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
+import com.autofik.sos.dto.event.SosCreatedEvent;
+import com.autofik.sos.dto.event.SosNotificationEvent;
+import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
+import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
-import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import com.autofik.sos.exception.ConflictException;
+import com.autofik.sos.exception.TooManyRequestsException;
+import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.mapper.SosMapper;
 import com.autofik.sos.mapper.SosStatusHistoryMapper;
@@ -26,95 +29,57 @@ import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.repository.UserRepository;
-import com.autofik.sos.repository.VehicleRepository;
 import com.autofik.sos.service.GoogleMapsService;
-import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.service.MedusaService;
 import com.autofik.sos.service.RouteEtaService;
 import com.autofik.sos.service.SosService;
 import com.autofik.sos.util.GeoDistance;
-import com.uber.h3core.H3Core;
+import com.autofik.sos.util.GeoSupport;
+import com.autofik.sos.util.TransactionHooks;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.locationtech.jts.geom.Coordinate;
-import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
-import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.scheduling.TaskScheduler;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
-
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Service implementation managing the lifecycles of emergency roadside requests (SOS).
- * Employs a deterministic finite-state machine for transitions, leverages an Uber H3
- * and PostGIS hybrid geospatial fan-out framework to locate nearby mechanics, and manages
- * active bidding timeouts using dynamic scheduled tasks.
+ *
+ * <p>Transitions are guarded by the state machine on {@link SosStatus}. Dispatch to nearby mechanics
+ * lives in {@link SosDispatchService} and the bidding-window timers in {@link SosExpiryScheduler} —
+ * both are separate beans because both need to run outside this class's transaction.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class SosServiceImpl implements SosService {
 
-    // State-machine guard: only transitions listed here are allowed.
-    // COMPLETED and EXPIRED are terminal states — they have no outgoing transitions.
-    private static final Map<SosStatus, Set<SosStatus>> VALID_TRANSITIONS = Map.of(
-            SosStatus.PENDING,    Set.of(SosStatus.ACCEPTED, SosStatus.CANCELLED),
-            SosStatus.ACCEPTED,   Set.of(SosStatus.ON_THE_WAY, SosStatus.CANCELLED),
-            SosStatus.ON_THE_WAY, Set.of(SosStatus.ARRIVED, SosStatus.CANCELLED),
-            SosStatus.ARRIVED,    Set.of(SosStatus.COMPLETED, SosStatus.CANCELLED)
-    );
-
-    // Standard SRID 4326 geometry factory for GPS tracking (WGS 84 latitude/longitude)
-    private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory(new PrecisionModel(), 4326);
-    // Resolution 7 ≈ 5 km² per H3 cell — fixed by what is stored in current_h3_index on Mechanic.
-    // Changing this would require a schema + data migration; kRing radius is the adaptive variable instead.
-    private static final int H3_RESOLUTION = 7;
-    // Center-to-center distance between adjacent resolution-7 cells ≈ edge * sqrt(3) ≈ 2.114 km.
-    // Used to convert a km radius into the minimum kRing radius that covers it.
-    private static final double H3_R7_CENTER_TO_CENTER_KM = 2.114;
-    // Default broadcast radius used for fan-out when the SOS request has no user-defined limit.
-    private static final int DEFAULT_BROADCAST_KM = 15;
-
     private static final String SOS_COOLDOWN_KEY_PREFIX = "sos:cooldown:";
     private static final Duration SOS_COOLDOWN = Duration.ofSeconds(60);
 
-    // Collection of states indicating that a customer ticket is unresolved
-    private static final List<SosStatus> ACTIVE_STATUSES = List.of(
-            SosStatus.PENDING, SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED
-    );
-    private static final H3Core H3;
-
-    static {
-        try {
-            H3 = H3Core.newInstance();
-        } catch (IOException e) {
-            throw new ExceptionInInitializerError(e);
-        }
-    }
+    // Derived from the state machine so there is one definition of "unresolved" rather than a
+    // hand-maintained copy that drifts from it.
+    private static final List<SosStatus> ACTIVE_STATUSES = Arrays.stream(SosStatus.values())
+            .filter(SosStatus::isActive)
+            .toList();
 
     private final SosRequestRepository sosRequestRepository;
     private final UserRepository userRepository;
-    private final VehicleRepository vehicleRepository;
     private final SsoProjection ssoProjection;
     private final MechanicRepository mechanicRepository;
     private final BidSosRepository bidSosRepository;
@@ -125,10 +90,12 @@ public class SosServiceImpl implements SosService {
     private final GoogleMapsService googleMapsService;
     private final RouteEtaService routeEtaService;
     private final MedusaService medusaService;
+    private final SosDispatchService sosDispatchService;
+    private final SosExpiryScheduler sosExpiryScheduler;
     private final SosEventProducer sosEventProducer;
     private final SimpMessagingTemplate messagingTemplate;
-    private final TaskScheduler taskScheduler;
     private final StringRedisTemplate redisTemplate;
+
 
     // How close a mechanic must be, by road, before they may mark ARRIVED. Configurable because
     // the right value depends on the road layout: a divided boulevard can put someone standing
@@ -136,72 +103,36 @@ public class SosServiceImpl implements SosService {
     @Value("${sos.arrival.max-distance-meters:50}")
     private int arrivalMaxDistanceMeters;
 
-    @EventListener(ApplicationReadyEvent.class)
-    @Transactional
-    public void expireOverduePendingRequests() {
-        LocalDateTime now = LocalDateTime.now();
-
-        List<SosRequest> overdue = sosRequestRepository
-                .findByStatusAndBiddingExpiresAtBefore(SosStatus.PENDING, now);
-        if (!overdue.isEmpty()) {
-            log.warn("Expiring {} PENDING SOS request(s) missed while offline", overdue.size());
-            overdue.forEach(this::doExpire);
-            sosRequestRepository.saveAll(overdue);
-        }
-
-        List<SosRequest> active = sosRequestRepository
-                .findByStatusAndBiddingExpiresAtAfter(SosStatus.PENDING, now);
-        if (!active.isEmpty()) {
-            log.info("Re-arming bidding expiry timer for {} PENDING SOS request(s)", active.size());
-            active.forEach(this::scheduleBiddingExpiry);
-        }
-    }
-
-    private void doExpire(SosRequest s) {
-        s.setStatus(SosStatus.EXPIRED);
-        UUID sosId = s.getSosId();
-        UUID userId = s.getUser().getUserId();
-        sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
-                sosId, null, userId, SosStatus.PENDING, SosStatus.EXPIRED, LocalDateTime.now()
-        ));
-        boolean retriesLeft = s.getRebroadcastCount() < SosRequest.MAX_REBROADCAST;
-        String body = retriesLeft
-                ? "No mechanic was found. Tap to try again."
-                : "No mechanic available after " + SosRequest.MAX_REBROADCAST + " attempts. Please call support.";
-        sosEventProducer.publishNotification(new SosNotificationEvent(
-                "BIDDING_EXPIRED", userId, "USER", sosId, "Bidding window closed", body
-        ));
-        messagingTemplate.convertAndSendToUser(
-                userId.toString(), "/queue/sos-updates",
-                Map.of("type", "BIDDING_EXPIRED", "sosId", sosId,
-                        "retriesLeft", retriesLeft,
-                        "attemptsLeft", SosRequest.MAX_REBROADCAST - s.getRebroadcastCount())
-        );
-    }
-
-
     /**
-     * Spawns a new emergency roadside ticket. Enforces concurrency caps per client,
-     * tracks request velocity via Redis, and pushes geo-queries out to dispatch mechanics.
+     * Spawns a new emergency roadside ticket. Enforces one active ticket per driver, throttles
+     * repeat submissions through Redis, and dispatches the request to nearby mechanics.
      *
-     * @param request Data transfer containing spatial positions, problems, and bounds.
-     * @return Transformed SOS object detailing current status and assignments.
-     * @throws IllegalStateException    If the initiating user holds an active ticket.
-     * @throws TooManyRequestsException If throttling window rules are broken.
+     * @throws ConflictException        if the initiating user already holds an active ticket
+     * @throws TooManyRequestsException if the per-user cooldown has not elapsed
      */
     @Override
     @Transactional
     public SosRequestResponse create(CreateSosRequest request) {
-        // Enforce structural restriction: A user can only process one active distress event at a time
-        if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
-            throw new IllegalStateException("You already have an active SOS request");
-        }
-
-        // Redis distributed lock prevents accidental double-tap double submissions
+        // Redis cooldown first: it is the cheapest rejection, it needs no database connection, and
+        // it is what stops a double-tap from reaching the paid Maps call below.
         Boolean allowed = redisTemplate.opsForValue()
                 .setIfAbsent(SOS_COOLDOWN_KEY_PREFIX + request.userId(), "1", SOS_COOLDOWN);
         if (!Boolean.TRUE.equals(allowed)) {
             throw new TooManyRequestsException("Please wait 60 seconds before submitting another SOS request");
+        }
+        // Redis does not roll back with Postgres. Without this, a create that fails on any of the
+        // checks below still costs the driver a 60-second lockout for a request that never existed.
+        TransactionHooks.afterRollback(() ->
+                redisTemplate.delete(SOS_COOLDOWN_KEY_PREFIX + request.userId()));
+
+        // Geocoded before the first database read, so this blocking HTTP call does not hold a
+        // connection from the pool for its duration. Fails soft — a null address costs the UI a
+        // street name, nothing more.
+        String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
+
+        // Enforce structural restriction: a user can only have one unresolved distress event
+        if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
+            throw new ConflictException("You already have an active SOS request");
         }
 
         String problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
@@ -215,34 +146,29 @@ public class SosServiceImpl implements SosService {
         SosRequest sos = SosRequest.builder()
                 .problemType(problemTypeKey)
                 .description(request.description())
-                .location(GEOMETRY_FACTORY.createPoint(new Coordinate(request.longitude(), request.latitude())))
+                .location(GeoSupport.point(request.latitude(), request.longitude()))
+                .locationAddress(address)
                 .broadcastRadiusKm(request.broadcastRadiusKm())
                 .user(user)
                 .vehicle(vehicle)
                 .build();
         sosRequestRepository.save(sos);
 
-        // Geocode coordinates asynchronously to map a readable address
-        String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
-        if (address != null) {
-            sos.setLocationAddress(address);
-            sosRequestRepository.save(sos);
-        }
-
-        // Broadcast out to standard Kafka topic pipelines
-        sosEventProducer.publishSosCreated(new SosCreatedEvent(
-            sos.getSosId(), user.getUserId(), vehicle.getId(),
-            sos.getProblemType(), sos.getDescription(),
-            request.latitude(), request.longitude(),
-            sos.getLocationAddress(), sos.getCreatedAt()
-        ));
-
-        // Spatial dispatch step to find target mechanics
-        fanOutToNearbyMechanics(sos.getSosId(), request.latitude(), request.longitude(),
-                problemTypeKey, request.broadcastRadiusKm());
-
-        // Queue automated closing of the auction window if no responses come through
-        scheduleBiddingExpiry(sos);
+        // Kafka, the mechanic fan-out and the expiry timer all fire only once the row is committed.
+        // A mechanic told about an SOS that is not yet visible gets a 404 from their next read, and
+        // a rollback after this point would leave every nearby mechanic notified of a breakdown
+        // that never happened.
+        TransactionHooks.afterCommit(() -> {
+            sosEventProducer.publishSosCreated(new SosCreatedEvent(
+                    sos.getSosId(), user.getUserId(), vehicle.getId(),
+                    sos.getProblemType(), sos.getDescription(),
+                    request.latitude(), request.longitude(),
+                    sos.getLocationAddress(), sos.getCreatedAt()
+            ));
+            sosDispatchService.fanOutToNearbyMechanics(sos.getSosId(), request.latitude(), request.longitude(),
+                    problemTypeKey, request.broadcastRadiusKm());
+            sosExpiryScheduler.schedule(sos);
+        });
 
         return toResponseWithMechanic(sos);
     }
@@ -291,7 +217,7 @@ public class SosServiceImpl implements SosService {
     @Transactional
     public SosRequestResponse updateStatus(UUID sosId, UUID mechanicId, SosStatus toStatus) {
         if (toStatus != SosStatus.ON_THE_WAY && toStatus != SosStatus.ARRIVED) {
-            throw new IllegalStateException(
+            throw new IllegalArgumentException(
                 "Only ON_THE_WAY and ARRIVED can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
         }
         SosRequest sos = findSosOrThrow(sosId);
@@ -329,16 +255,18 @@ public class SosServiceImpl implements SosService {
                 .build();
         sosStatusHistoryRepository.save(history);
 
-        // Inform external subscribers via Kafka and active WebSocket connections
+        // Inform external subscribers via Kafka and active WebSocket connections — after commit,
+        // so nobody is told about a transition that is still capable of rolling back.
         SosStatusUpdatedEvent statusEvent = new SosStatusUpdatedEvent(
                 sos.getSosId(), mechanicId, sos.getUser().getUserId(),
                 fromStatus, toStatus, now
         );
-        sosEventProducer.publishStatusUpdated(statusEvent);
-        messagingTemplate.convertAndSendToUser(
-                sos.getUser().getUserId().toString(), "/queue/sos-updates", statusEvent
-        );
-        publishStatusNotifications(toStatus, sos, mechanicId);
+        UUID userId = sos.getUser().getUserId();
+        TransactionHooks.afterCommit(() -> {
+            sosEventProducer.publishStatusUpdated(statusEvent);
+            messagingTemplate.convertAndSendToUser(userId.toString(), "/queue/sos-updates", statusEvent);
+            publishStatusNotifications(toStatus, sosId, userId, mechanicId);
+        });
 
         return toResponseWithMechanic(sos);
     }
@@ -349,7 +277,7 @@ public class SosServiceImpl implements SosService {
     @Transactional
     public SosStatusHistoryResponse proposeStatusChange(UUID sosId, ProposeStatusChangeRequest request) {
         if (request.toStatus() != SosStatus.COMPLETED) {
-            throw new IllegalStateException(
+            throw new IllegalArgumentException(
                 "Only COMPLETED requires customer approval. Use PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
         }
         SosRequest sos = findSosOrThrow(sosId);
@@ -367,14 +295,17 @@ public class SosServiceImpl implements SosService {
                 .build();
         sosStatusHistoryRepository.save(history);
 
-        messagingTemplate.convertAndSendToUser(
-                sos.getUser().getUserId().toString(), "/queue/sos-updates",
-                Map.of("type", "COMPLETION_REQUESTED", "sosId", sos.getSosId(), "historyId", history.getId())
-        );
-        sosEventProducer.publishNotification(new SosNotificationEvent(
-                "COMPLETION_REQUESTED", sos.getUser().getUserId(), "USER", sos.getSosId(),
-                "Completion requested", "Your mechanic has marked the service complete. Please approve."
-        ));
+        UUID userId = sos.getUser().getUserId();
+        TransactionHooks.afterCommit(() -> {
+            messagingTemplate.convertAndSendToUser(
+                    userId.toString(), "/queue/sos-updates",
+                    Map.of("type", "COMPLETION_REQUESTED", "sosId", sosId, "historyId", history.getId())
+            );
+            sosEventProducer.publishNotification(new SosNotificationEvent(
+                    "COMPLETION_REQUESTED", userId, "USER", sosId,
+                    "Completion requested", "Your mechanic has marked the service complete. Please approve."
+            ));
+        });
         return sosStatusHistoryMapper.toResponse(history);
     }
 
@@ -400,54 +331,57 @@ public class SosServiceImpl implements SosService {
         sosStatusHistoryRepository.save(history);
 
         SosRequest sos = history.getSosRequest();
+        UUID sosId = sos.getSosId();
+        UUID mechanicId = history.getProposedBy().getMechanicId();
         if (request.approvedStatus() == ApprovedStatus.ACCEPTED) {
             SosStatus fromStatus = sos.getStatus();
-            validateTransition(fromStatus, history.getToStatus());
-            sos.setStatus(history.getToStatus());
+            SosStatus toStatus = history.getToStatus();
+            validateTransition(fromStatus, toStatus);
+            sos.setStatus(toStatus);
             sosRequestRepository.save(sos);
-            routeEtaService.clear(sos.getSosId());   // COMPLETED — no drive left to count down
+            routeEtaService.clear(sosId);   // COMPLETED — no drive left to count down
 
-            UUID mechanicId = history.getProposedBy().getMechanicId();
             SosStatusUpdatedEvent statusEvent = new SosStatusUpdatedEvent(
-                    sos.getSosId(), mechanicId, user.getUserId(),
-                    fromStatus, history.getToStatus(), LocalDateTime.now()
+                    sosId, mechanicId, user.getUserId(), fromStatus, toStatus, LocalDateTime.now()
             );
-            sosEventProducer.publishStatusUpdated(statusEvent);
-            messagingTemplate.convertAndSendToUser(mechanicId.toString(), "/queue/sos-updates", statusEvent);
-
-            publishStatusNotifications(history.getToStatus(), sos, mechanicId);
+            TransactionHooks.afterCommit(() -> {
+                sosEventProducer.publishStatusUpdated(statusEvent);
+                messagingTemplate.convertAndSendToUser(mechanicId.toString(), "/queue/sos-updates", statusEvent);
+                publishStatusNotifications(toStatus, sosId, user.getUserId(), mechanicId);
+            });
         } else if (request.approvedStatus() == ApprovedStatus.REJECTED) {
-            UUID mechanicId = history.getProposedBy().getMechanicId();
-            messagingTemplate.convertAndSendToUser(
-                    mechanicId.toString(), "/queue/sos-updates",
-                    Map.of("type", "COMPLETION_REJECTED", "sosId", sos.getSosId(), "historyId", history.getId())
-            );
-            sosEventProducer.publishNotification(new SosNotificationEvent(
-                    "COMPLETION_REJECTED", mechanicId, "MECHANIC", sos.getSosId(),
-                    "Completion rejected", "The customer has rejected the service completion request."
-            ));
+            UUID historyId = history.getId();
+            TransactionHooks.afterCommit(() -> {
+                messagingTemplate.convertAndSendToUser(
+                        mechanicId.toString(), "/queue/sos-updates",
+                        Map.of("type", "COMPLETION_REJECTED", "sosId", sosId, "historyId", historyId)
+                );
+                sosEventProducer.publishNotification(new SosNotificationEvent(
+                        "COMPLETION_REJECTED", mechanicId, "MECHANIC", sosId,
+                        "Completion rejected", "The customer has rejected the service completion request."
+                ));
+            });
         }
         return toResponseWithMechanic(sos);
     }
 
-    private void publishStatusNotifications(SosStatus toStatus, SosRequest sos, UUID mechanicId){
-        UUID userId = sos.getUser().getUserId();
+    private void publishStatusNotifications(SosStatus toStatus, UUID sosId, UUID userId, UUID mechanicId) {
         switch (toStatus) {
             case ON_THE_WAY -> sosEventProducer.publishNotification(new SosNotificationEvent(
-                    "STATUS_ON_THE_WAY", userId, "USER", sos.getSosId(),
+                    "STATUS_ON_THE_WAY", userId, "USER", sosId,
                     "Mechanic is on the way", "Your mechanic is heading to your location"));
             case ARRIVED -> sosEventProducer.publishNotification(new SosNotificationEvent(
-                    "STATUS_ARRIVED", userId, "USER", sos.getSosId(),
+                    "STATUS_ARRIVED", userId, "USER", sosId,
                     "Mechanic has arrived", "Your mechanic has arrived at your location"));
             case COMPLETED -> {
                 sosEventProducer.publishNotification(new SosNotificationEvent(
-                        "STATUS_COMPLETED", userId, "USER", sos.getSosId(),
+                        "STATUS_COMPLETED", userId, "USER", sosId,
                         "Service completed", "Your repair has been completed"));
                 sosEventProducer.publishNotification(new SosNotificationEvent(
-                        "STATUS_COMPLETED", mechanicId, "MECHANIC", sos.getSosId(),
+                        "STATUS_COMPLETED", mechanicId, "MECHANIC", sosId,
                         "Service completed", "The service has been marked completed"));
             }
-            default -> { } 
+            default -> { }
         }
     }
 
@@ -462,20 +396,22 @@ public class SosServiceImpl implements SosService {
             throw new AccessDeniedException("You can only cancel your own SOS request");
         }
         SosStatus fromStatus = sos.getStatus();
-        if (!VALID_TRANSITIONS.containsKey(fromStatus)) {
-            throw new IllegalStateException("Cannot cancel a request with status: " + fromStatus);
+        if (fromStatus.isTerminal()) {
+            throw new ConflictException("Cannot cancel a request with status: " + fromStatus);
         }
         sos.setStatus(SosStatus.CANCELLED);
         sosRequestRepository.save(sos);
         routeEtaService.clear(sosId);   // job is over — drop any countdown still cached
 
-        sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
-                sos.getSosId(), null, userId, fromStatus, SosStatus.CANCELLED, LocalDateTime.now()
-        ));
-        sosEventProducer.publishNotification(new SosNotificationEvent(
-                "STATUS_CANCELLED", userId, "USER", sos.getSosId(),
-                "SOS request cancelled", "Your SOS request has been cancelled"
-        ));
+        TransactionHooks.afterCommit(() -> {
+            sosEventProducer.publishStatusUpdated(new SosStatusUpdatedEvent(
+                    sosId, null, userId, fromStatus, SosStatus.CANCELLED, LocalDateTime.now()
+            ));
+            sosEventProducer.publishNotification(new SosNotificationEvent(
+                    "STATUS_CANCELLED", userId, "USER", sosId,
+                    "SOS request cancelled", "Your SOS request has been cancelled"
+            ));
+        });
 
         return toResponseWithMechanic(sos);
     }
@@ -483,25 +419,37 @@ public class SosServiceImpl implements SosService {
     // SosRequest has no direct mechanic relation — the assigned mechanic is resolved
     // from the ACCEPTED bid on this SOS request (at most one can exist).
     private SosRequestResponse toResponseWithMechanic(SosRequest sos) {
-        SosRequestResponse base = sosMapper.toResponse(sos);
         MechanicResponse mechanic = bidSosRepository
                 .findFirstBySosRequestSosIdAndStatus(sos.getSosId(), BidStatus.ACCEPTED)
                 .map(bid -> mechanicMapper.toResponse(bid.getMechanic()))
                 .orElse(null);
+        return withMechanic(sos, mechanic);
+    }
+
+    // One query for the whole page instead of one per row: a 20-row page cost 21 round trips
+    // before, plus a lazy mechanic load on each.
+    private Page<SosRequestResponse> toPageWithMechanic(Page<SosRequest> page) {
+        List<UUID> sosIds = page.getContent().stream().map(SosRequest::getSosId).toList();
+        if (sosIds.isEmpty()) {
+            return page.map(sos -> withMechanic(sos, null));
+        }
+        Map<UUID, MechanicResponse> assigned = bidSosRepository
+                .findBySosRequestSosIdInAndStatus(sosIds, BidStatus.ACCEPTED).stream()
+                .collect(Collectors.toMap(
+                        bid -> bid.getSosRequest().getSosId(),
+                        bid -> mechanicMapper.toResponse(bid.getMechanic()),
+                        (first, duplicate) -> first));
+        return page.map(sos -> withMechanic(sos, assigned.get(sos.getSosId())));
+    }
+
+    private SosRequestResponse withMechanic(SosRequest sos, MechanicResponse mechanic) {
+        SosRequestResponse base = sosMapper.toResponse(sos);
         return new SosRequestResponse(
                 base.sosId(), base.problemType(), base.description(), base.locationAddress(),
                 base.status(), base.latitude(), base.longitude(), base.broadcastRadiusKm(),
                 base.createdAt(), base.updatedAt(),
                 base.biddingExpiresAt(), base.rebroadcastCount(), base.user(), base.vehicle(), mechanic
         );
-    }
-
-    private List<SosRequestResponse> toResponseListWithMechanic(List<SosRequest> sosList) {
-        return sosList.stream().map(this::toResponseWithMechanic).toList();
-    }
-
-    private Page<SosRequestResponse> toPageWithMechanic(Page<SosRequest> page) {
-        return page.map(this::toResponseWithMechanic);
     }
 
     // Advancing a job belongs to the mechanic whose bid was accepted, not to whoever knows the
@@ -522,9 +470,6 @@ public class SosServiceImpl implements SosService {
     }
 
     /**
-     * Compares the target state transition against the allowed matrix rules.
-     */
-    /**
      * Gate on ON_THE_WAY → ARRIVED: the mechanic must actually be at the breakdown.
      *
      * Measured against current_location in Postgres, never against coordinates supplied with the
@@ -540,7 +485,7 @@ public class SosServiceImpl implements SosService {
     private void requireMechanicAtSos(Mechanic mechanic, SosRequest sos) {
         Point mechanicLocation = mechanic.getCurrentLocation();
         if (mechanicLocation == null) {
-            throw new IllegalStateException(
+            throw new ConflictException(
                     "Cannot mark arrived: no location on record for this mechanic. "
                             + "Enable location sharing and try again.");
         }
@@ -563,56 +508,22 @@ public class SosServiceImpl implements SosService {
         }
 
         if (distanceMeters > arrivalMaxDistanceMeters) {
-            throw new IllegalStateException(String.format(
+            throw new ConflictException(String.format(
                     "Cannot mark arrived: %dm from the customer, which exceeds the %dm limit.",
                     Math.round(distanceMeters), arrivalMaxDistanceMeters));
         }
     }
 
     private void validateTransition(SosStatus from, SosStatus to) {
-        Set<SosStatus> allowed = VALID_TRANSITIONS.getOrDefault(from, Set.of());
-        if (!allowed.contains(to)) {
-            throw new IllegalStateException("Invalid status transition: " + from + " → " + to);
+        if (!from.canTransitionTo(to)) {
+            throw new ConflictException("Invalid status transition: " + from + " → " + to);
         }
     }
 
-    // Two-stage geo-search to notify relevant mechanics when a new SOS is created.
-    // Stage 1 (H3 index): fast B-tree scan to get candidates in nearby hex cells.
-    // Stage 2 (PostGIS): exact ST_DWithin check against each mechanic's service_radius_m.
-    // recipientId=null in the notification signals a fan-out (no specific OneSignal push).
-    private void fanOutToNearbyMechanics(UUID sosId, double lat, double lng,
-                                         String problemType, Integer broadcastRadiusKm) {
-        int effectiveRadiusKm = broadcastRadiusKm != null ? broadcastRadiusKm : DEFAULT_BROADCAST_KM;
-        String sosCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
-        List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
-
-        List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
-        if (coarse.isEmpty()) return;
-
-        List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-        List<Mechanic> matched = broadcastRadiusKm != null
-                ? mechanicRepository.filterByRadiusAndBroadcast(ids, lat, lng, broadcastRadiusKm * 1000.0)
-                : mechanicRepository.filterByRadius(ids, lat, lng);
-
-        SosNotificationEvent notification = new SosNotificationEvent(
-                "SOS_CREATED", null, "MECHANIC", sosId,
-                "New SOS request nearby", "Problem: " + problemType
-        );
-        matched.forEach(m ->
-                messagingTemplate.convertAndSendToUser(
-                        m.getMechanicId().toString(), "/queue/sos-new-request", notification
-                )
-        );
-    }
-
-    // Converts a km radius into the minimum kRing depth that fully covers it at resolution 7.
-    // +1 ring of buffer accounts for partial hex overlap at the boundary.
-    private static int ringRadiusFor(int radiusKm) {
-        return (int) Math.ceil(radiusKm / H3_R7_CENTER_TO_CENTER_KM) + 1;
-    }
-
-    // Uses TaskScheduler (not @Scheduled) because each SOS has its own unique expiry time.
-    // The lambda re-fetches the entity inside the transaction to avoid stale-state issues.
+    /**
+     * Re-opens an expired request and dispatches it again. Capped at
+     * {@link SosRequest#MAX_REBROADCAST} attempts.
+     */
     @Override
     @Transactional
     public SosRequestResponse rebroadcast(UUID sosId, UUID userId) {
@@ -622,7 +533,7 @@ public class SosServiceImpl implements SosService {
             throw new AccessDeniedException("You can only rebroadcast your own SOS request");
         }
         if (sos.getStatus() != SosStatus.EXPIRED) {
-            throw new IllegalStateException("Only EXPIRED SOS requests can be rebroadcast");
+            throw new ConflictException("Only EXPIRED SOS requests can be rebroadcast");
         }
         if (sos.getRebroadcastCount() >= SosRequest.MAX_REBROADCAST) {
             throw new TooManyRequestsException(
@@ -636,37 +547,23 @@ public class SosServiceImpl implements SosService {
         // Back to bidding: the previous mechanic's route is meaningless now.
         routeEtaService.clear(sosId);
 
-        int attemptsLeft = SosRequest.MAX_REBROADCAST - sos.getRebroadcastCount();
-        messagingTemplate.convertAndSendToUser(
-                userId.toString(), "/queue/sos-updates",
-                Map.of("type", "SOS_REBROADCAST", "sosId", sosId,
-                        "rebroadcastCount", sos.getRebroadcastCount(),
-                        "attemptsLeft", attemptsLeft)
-        );
-
-        fanOutToNearbyMechanics(sosId,
-                sos.getLocation().getY(), sos.getLocation().getX(),
-                sos.getProblemType(), sos.getBroadcastRadiusKm());
-
-        scheduleBiddingExpiry(sos);
+        int rebroadcastCount = sos.getRebroadcastCount();
+        int attemptsLeft = SosRequest.MAX_REBROADCAST - rebroadcastCount;
+        double lat = sos.getLocation().getY();
+        double lng = sos.getLocation().getX();
+        String problemType = sos.getProblemType();
+        Integer broadcastRadiusKm = sos.getBroadcastRadiusKm();
+        TransactionHooks.afterCommit(() -> {
+            messagingTemplate.convertAndSendToUser(
+                    userId.toString(), "/queue/sos-updates",
+                    Map.of("type", "SOS_REBROADCAST", "sosId", sosId,
+                            "rebroadcastCount", rebroadcastCount,
+                            "attemptsLeft", attemptsLeft)
+            );
+            sosDispatchService.fanOutToNearbyMechanics(sosId, lat, lng, problemType, broadcastRadiusKm);
+            sosExpiryScheduler.schedule(sos);
+        });
 
         return toResponseWithMechanic(sos);
-    }
-
-    /**
-     * Registers an isolated thread execution wrapper targeting the exact timestamp the ticket closes.
-     * The internal lambda re-fetches the database record at trigger time to eliminate race conditions
-     * or dirty-write status tracking.
-     */
-    private void scheduleBiddingExpiry(SosRequest sos) {
-        if (sos.getBiddingExpiresAt() == null) return;
-        UUID sosId = sos.getSosId();
-        taskScheduler.schedule(() -> {
-            sosRequestRepository.findById(sosId).ifPresent(s -> {
-                if (s.getStatus() != SosStatus.PENDING) return;
-                doExpire(s);
-                sosRequestRepository.save(s);
-            });
-        }, sos.getBiddingExpiresAt().atZone(ZoneId.systemDefault()).toInstant());
     }
 }

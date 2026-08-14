@@ -4,6 +4,7 @@ import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -64,14 +65,31 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handles business logic conflict states (e.g., trying to modify an resource that isn't ready).
+     * Handles business logic conflict states (e.g., bidding on a request that has already closed).
      * Maps to HTTP 409 Conflict.
+     *
+     * <p>Bound to the service's own exception rather than to {@link IllegalStateException}: any
+     * library can throw the JDK type, and reporting an internal fault as a business conflict hides
+     * a 500 that should have been logged and alerted on.
      */
-    @ExceptionHandler(IllegalStateException.class)
+    @ExceptionHandler(ConflictException.class)
     @ResponseStatus(HttpStatus.CONFLICT)
-    public ErrorResponse handleConflict(IllegalStateException ex) {
+    public ErrorResponse handleConflict(ConflictException ex) {
         return new ErrorResponse(HttpStatus.CONFLICT.value(), HttpStatus.CONFLICT.getReasonPhrase(),
                 ex.getMessage(), LocalDateTime.now());
+    }
+
+    /**
+     * Two writers touched the same row and this one lost. Nothing is wrong with the request — it
+     * arrived a moment late — so the client is told to read the current state and try again.
+     * Maps to HTTP 409 Conflict.
+     */
+    @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public ErrorResponse handleOptimisticLock(ObjectOptimisticLockingFailureException ex) {
+        log.warn("Optimistic lock conflict: {}", ex.getMessage());
+        return new ErrorResponse(HttpStatus.CONFLICT.value(), HttpStatus.CONFLICT.getReasonPhrase(),
+                "This request was updated by someone else. Refresh and try again.", LocalDateTime.now());
     }
 
     /**

@@ -45,6 +45,15 @@ public class SosRequest {
     @Builder.Default
     private SosStatus status = SosStatus.PENDING;
 
+    // Optimistic lock. The status field is written from four places — the driver cancelling, the
+    // mechanic advancing, a bid being accepted, and the expiry timer — and several of those can
+    // land in the same second at the end of a bidding window.
+    // columnDefinition carries the default so ddl-auto can add the column to a table with rows.
+    @Version
+    @Column(name = "version", columnDefinition = "bigint not null default 0")
+    @Builder.Default
+    private Long version = 0L;
+
     // geography(Point, 4326) uses WGS-84 (the same CRS as GPS/Google Maps).
     // PostGIS stores it as a "geography" (not "geometry") type so that ST_DWithin
     // radius checks work in meters without requiring a local projection.

@@ -15,6 +15,7 @@ import com.autofik.sos.dto.event.BidCreatedEvent;
 import com.autofik.sos.dto.event.BidRejectedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.response.BidSosResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -103,11 +105,11 @@ class BidServiceImplTest {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
-        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosRepository.saveAndFlush(any(BidSos.class))).thenReturn(bid);
         when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
 
         assertThat(bidService.create(request)).isEqualTo(bidResponse);
-        verify(bidSosRepository).save(any(BidSos.class));
+        verify(bidSosRepository).saveAndFlush(any(BidSos.class));
         verify(sosEventProducer).publishBidCreated(any(BidCreatedEvent.class));
         verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
     }
@@ -118,7 +120,7 @@ class BidServiceImplTest {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
-        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosRepository.saveAndFlush(any(BidSos.class))).thenReturn(bid);
         when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
 
         bidService.create(request);
@@ -184,13 +186,13 @@ class BidServiceImplTest {
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
         when(googleMapsService.getDistanceInfo(mechanicLocation, sosLocation))
                 .thenReturn(new DistanceInfo(3200, 480, "3.2 km", "8 mins"));
-        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosRepository.saveAndFlush(any(BidSos.class))).thenReturn(bid);
         when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
 
         bidService.create(request);
 
         ArgumentCaptor<BidSos> captor = ArgumentCaptor.forClass(BidSos.class);
-        verify(bidSosRepository).save(captor.capture());
+        verify(bidSosRepository).saveAndFlush(captor.capture());
         BidSos saved = captor.getValue();
         assertThat(saved.getEstimatedDistanceM()).isEqualTo(3200);
         assertThat(saved.getEstimatedDurationS()).isEqualTo(480);
@@ -213,13 +215,13 @@ class BidServiceImplTest {
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanicWithLocation));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
         when(googleMapsService.getDistanceInfo(any(), any())).thenReturn(null);
-        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosRepository.saveAndFlush(any(BidSos.class))).thenReturn(bid);
         when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
 
         bidService.create(request);
 
         ArgumentCaptor<BidSos> captor = ArgumentCaptor.forClass(BidSos.class);
-        verify(bidSosRepository).save(captor.capture());
+        verify(bidSosRepository).saveAndFlush(captor.capture());
         BidSos saved = captor.getValue();
         assertThat(saved.getEstimatedDistanceM()).isNull();
         assertThat(saved.getEstimatedDurationS()).isNull();
@@ -231,7 +233,7 @@ class BidServiceImplTest {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
-        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosRepository.saveAndFlush(any(BidSos.class))).thenReturn(bid);
         when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
 
         bidService.create(request);
@@ -306,7 +308,7 @@ class BidServiceImplTest {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
         when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
-        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosRepository.saveAndFlush(any(BidSos.class))).thenReturn(bid);
         when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
 
         bidService.create(request);
@@ -433,14 +435,66 @@ class BidServiceImplTest {
     }
 
     @Test
-    void updateStatus_cancelledStatus_throwsIllegalStateException() {
+    void updateStatus_cancelledStatus_throwsIllegalArgumentException() {
         UpdateBidStatusRequest request = new UpdateBidStatusRequest(userId, BidStatus.CANCELLED);
 
         assertThatThrownBy(() -> bidService.updateStatus(bidId, request))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cancel endpoint");
 
         verify(bidSosRepository, never()).findById(any());
+    }
+
+    // Accepting a second bid used to leave two ACCEPTED rows on one request, and every downstream
+    // lookup takes the first ACCEPTED bid it finds — so which mechanic was "assigned" came down to
+    // row order.
+    @Test
+    void updateStatus_bidAlreadyAnswered_isRejected() {
+        bid.setStatus(BidStatus.ACCEPTED);
+        UpdateBidStatusRequest request = new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED);
+        when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+
+        assertThatThrownBy(() -> bidService.updateStatus(bidId, request))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("already been answered");
+
+        verify(bidSosRepository, never()).save(any());
+        verify(sosRequestRepository, never()).save(any());
+        verify(sosEventProducer, never()).publishBidAccepted(any());
+    }
+
+    // A stale bid screen must not be able to drag an expired request back to ACCEPTED.
+    @Test
+    void updateStatus_sosNoLongerPending_isRejected() {
+        pendingSos.setStatus(SosStatus.EXPIRED);
+        UpdateBidStatusRequest request = new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED);
+        when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+
+        assertThatThrownBy(() -> bidService.updateStatus(bidId, request))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("EXPIRED");
+
+        assertThat(pendingSos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+        verify(bidSosRepository, never()).save(any());
+        verify(sosEventProducer, never()).publishBidAccepted(any());
+    }
+
+    // The pre-check loses to a double-tap: both requests read "no bid yet" before either inserts.
+    // The unique index is what actually holds, and the client gets the same answer either way.
+    @Test
+    void create_concurrentDuplicateBid_surfacesAsConflict() {
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
+        when(bidSosRepository.saveAndFlush(any(BidSos.class)))
+                .thenThrow(new DataIntegrityViolationException("uk_bid_sos_request_mechanic"));
+
+        assertThatThrownBy(() -> bidService.create(request))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("already submitted a bid");
+
+        verify(sosEventProducer, never()).publishBidCreated(any());
     }
 
     // ── cancel ────────────────────────────────────────────────────────────────
