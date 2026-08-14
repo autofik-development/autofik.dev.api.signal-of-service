@@ -23,10 +23,9 @@ import java.util.UUID;
 @ToString(onlyExplicitlyIncluded = true)
 public class User {
 
-    // Primary key, auto-generated as a UUID (not client-supplied, not updatable after creation)
+    // Assigned, not generated: this row is a projection of an SSO user and must carry that same
+    // UUID. A locally generated id would silently disagree with every other service.
     @Id
-    @GeneratedValue
-    @UuidGenerator
     @Column(name = "user_id", updatable = false, nullable = false)
     @ToString.Include
     private UUID userId;

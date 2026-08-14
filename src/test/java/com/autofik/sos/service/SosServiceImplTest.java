@@ -44,6 +44,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.autofik.sos.dto.external.DistanceInfo;
+import org.locationtech.jts.geom.Coordinate;
+import org.springframework.test.util.ReflectionTestUtils;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
@@ -53,6 +57,7 @@ import static org.mockito.Mockito.*;
 class SosServiceImplTest {
 
     @Mock SosRequestRepository sosRequestRepository;
+    @Mock com.autofik.sos.service.impl.SsoProjection ssoProjection;
     @Mock UserRepository userRepository;
     @Mock VehicleRepository vehicleRepository;
     @Mock MechanicRepository mechanicRepository;
@@ -62,6 +67,7 @@ class SosServiceImplTest {
     @Mock SosStatusHistoryMapper sosStatusHistoryMapper;
     @Mock MechanicMapper mechanicMapper;
     @Mock GoogleMapsService googleMapsService;
+    @Mock RouteEtaService routeEtaService;
     @Mock MedusaService medusaService;
     @Mock SosEventProducer sosEventProducer;
     @Mock SimpMessagingTemplate messagingTemplate;
@@ -91,8 +97,13 @@ class SosServiceImplTest {
     @BeforeEach
     void setUp() {
         user = User.builder().userId(userId).name("Alice").build();
-        vehicle = Vehicle.builder().id(vehicleId).carBrand("Toyota").carModel("Camry").build();
-        mechanic = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com").build();
+        vehicle = Vehicle.builder().id(vehicleId).carBrand("Toyota").carModel("Camry").user(user).build();
+        mechanic = Mechanic.builder().mechanicId(mechanicId).fullName("Bob").phoneNumber("081").email("bob@fix.com")
+                // Parked at the breakdown by default; the proximity gate reads this, not the request.
+                .currentLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)))
+                .build();
+        // @Value is not applied by @InjectMocks, so the gate would otherwise run against 0 metres.
+        ReflectionTestUtils.setField(sosService, "arrivalMaxDistanceMeters", 50);
         pendingSos = SosRequest.builder()
                 .sosId(sosId).problemType(resolvedKey).status(SosStatus.PENDING)
                 .user(user).vehicle(vehicle).build();
@@ -110,14 +121,145 @@ class SosServiceImplTest {
         when(medusaService.resolveServiceGroupKey(serviceGroupId)).thenReturn(resolvedKey);
     }
 
+    // ── updateStatus: cached ETA invalidation ─────────────────────────────────
+
+    private SosRequest sosAt(SosStatus status) {
+        return SosRequest.builder()
+                .sosId(sosId).problemType(resolvedKey).status(status)
+                .location(GEO.createPoint(new Coordinate(104.9282, 11.5573)))
+                .user(user).vehicle(vehicle).build();
+    }
+
+    // The mechanic advancing a job is the one whose bid was accepted; every updateStatus path
+    // has to pass that gate before reaching the behaviour under test.
+    private void stubAssignedMechanic(SosRequest sos) {
+        when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.of(BidSos.builder().bidId(UUID.randomUUID())
+                        .status(BidStatus.ACCEPTED).sosRequest(sos).mechanic(mechanic).build()));
+    }
+
+    private void stubUpdateStatus(SosRequest sos) {
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+        // updateStatus is reserved for the mechanic whose bid was accepted, so the fixture has to
+        // be that mechanic — the same lookup also resolves the mechanic on the response.
+        when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+                .thenReturn(Optional.of(BidSos.builder().bidId(UUID.randomUUID())
+                        .status(BidStatus.ACCEPTED).sosRequest(sos).mechanic(mechanic).build()));
+    }
+
+    // The cached route outlives its 30s refresh window, so without an eager clear the customer
+    // keeps receiving an interpolated countdown after the mechanic has already pulled up.
+    @Test
+    void updateStatus_arrived_clearsCachedEta() {
+        SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+        stubUpdateStatus(sos);
+        when(googleMapsService.getDistanceInfo(any(), any()))
+                .thenReturn(new DistanceInfo(30, 20, "30 m", "1 min"));
+
+        sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED);
+
+        verify(routeEtaService).clear(sosId);
+    }
+
+    // ON_THE_WAY is still en route — clearing here would throw away a paid-for route mid-drive,
+    // and the proximity gate must not apply: the mechanic is only just setting off.
+    @Test
+    void updateStatus_onTheWay_keepsCachedEtaAndSkipsProximityCheck() {
+        SosRequest sos = sosAt(SosStatus.ACCEPTED);
+        stubUpdateStatus(sos);
+
+        sosService.updateStatus(sosId, mechanicId, SosStatus.ON_THE_WAY);
+
+        verify(routeEtaService, never()).clear(any());
+        verify(googleMapsService, never()).getDistanceInfo(any(), any());
+    }
+
+    // ── updateStatus: arrival proximity gate ──────────────────────────────────
+
+    @Test
+    void updateStatus_arrived_withinLimit_allowed() {
+        SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+        stubUpdateStatus(sos);
+        when(googleMapsService.getDistanceInfo(any(), any()))
+                .thenReturn(new DistanceInfo(48, 30, "48 m", "1 min"));
+
+        sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED);
+
+        assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+    }
+
+    // The whole point of the gate: a mechanic who is not there cannot claim to be.
+    @Test
+    void updateStatus_arrived_beyondLimit_rejectedAndStatusUnchanged() {
+        SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        stubAssignedMechanic(sos);
+        when(googleMapsService.getDistanceInfo(any(), any()))
+                .thenReturn(new DistanceInfo(4200, 600, "4.2 km", "10 min"));
+
+        assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("4200m");
+
+        assertThat(sos.getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+        verify(sosRequestRepository, never()).save(any());
+        verify(routeEtaService, never()).clear(any());
+    }
+
+    // A mechanic who never shares location must not be able to bypass the gate by staying silent.
+    @Test
+    void updateStatus_arrived_noMechanicLocation_rejected() {
+        mechanic.setCurrentLocation(null);
+        SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        stubAssignedMechanic(sos);
+
+        assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("no location on record");
+
+        verify(googleMapsService, never()).getDistanceInfo(any(), any());
+    }
+
+    // A Maps outage must not halt every arrival in the country — fall back to straight-line,
+    // which never exceeds road distance and so errs toward letting a present mechanic proceed.
+    @Test
+    void updateStatus_arrived_mapsUnavailable_fallsBackToStraightLine() {
+        SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+        stubUpdateStatus(sos);
+        when(googleMapsService.getDistanceInfo(any(), any())).thenReturn(null);
+
+        sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED);
+
+        assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+    }
+
+    @Test
+    void updateStatus_arrived_mapsUnavailable_stillRejectsWhenFarAway() {
+        mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(103.8600, 13.3600))); // Siem Reap
+        SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        stubAssignedMechanic(sos);
+        when(googleMapsService.getDistanceInfo(any(), any())).thenReturn(null);
+
+        assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("exceeds the 50m limit");
+    }
+
     // ── create ────────────────────────────────────────────────────────────────
 
     @Test
     void create_validRequest_buildsPointAndSaves() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(ssoProjection.user(userId)).thenReturn(user);
+        when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
         when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
         when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -138,8 +280,8 @@ class SosServiceImplTest {
     void create_storesProblemTypeKeyFromMedusa() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(ssoProjection.user(userId)).thenReturn(user);
+        when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
         when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
         when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -155,8 +297,8 @@ class SosServiceImplTest {
     void create_publishesSosCreatedEventWithResolvedKey() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, "desc", 13.7563, 100.5018, vehicleId, null);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(ssoProjection.user(userId)).thenReturn(user);
+        when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
         when(sosRequestRepository.save(any(SosRequest.class))).thenAnswer(inv -> {
             SosRequest arg = inv.getArgument(0);
             arg.setSosId(sosId);
@@ -195,22 +337,25 @@ class SosServiceImplTest {
     }
 
     @Test
-    void create_userNotFound_throwsEntityNotFoundException() {
+    // An unverified or unknown driver never gets a local row — SSO is the gate, not this service.
+    void create_userNotVerified_isRejected() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
-        when(userRepository.findById(userId)).thenReturn(Optional.empty());
+        when(ssoProjection.user(userId))
+                .thenThrow(new org.springframework.security.access.AccessDeniedException("not verified"));
 
         assertThatThrownBy(() -> sosService.create(request))
-                .isInstanceOf(EntityNotFoundException.class)
-                .hasMessageContaining(userId.toString());
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+
+        verify(sosRequestRepository, never()).save(any());
     }
 
     @Test
     void create_mapsReturnsAddress_setsLocationAddressAndSavesTwice() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(ssoProjection.user(userId)).thenReturn(user);
+        when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
         when(googleMapsService.reverseGeocode(13.7563, 100.5018)).thenReturn("Sukhumvit Rd, Bangkok");
         when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -226,8 +371,8 @@ class SosServiceImplTest {
     void create_mapsReturnsNull_sosStillSavedWithoutAddress() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.of(vehicle));
+        when(ssoProjection.user(userId)).thenReturn(user);
+        when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
         when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
         when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
         when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -238,15 +383,19 @@ class SosServiceImplTest {
     }
 
     @Test
-    void create_vehicleNotFound_throwsEntityNotFoundException() {
+    // SSO scopes the vehicle read to its owner, so "not yours" and "does not exist" arrive
+    // identically — and neither may produce an SOS against a stranger's car.
+    void create_vehicleNotTheCallers_isRejected() {
         stubCreateGuards();
         CreateSosRequest request = new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-        when(vehicleRepository.findById(vehicleId)).thenReturn(Optional.empty());
+        when(ssoProjection.user(userId)).thenReturn(user);
+        when(ssoProjection.vehicle(vehicleId, user))
+                .thenThrow(new org.springframework.security.access.AccessDeniedException("SSO denied"));
 
         assertThatThrownBy(() -> sosService.create(request))
-                .isInstanceOf(EntityNotFoundException.class)
-                .hasMessageContaining(vehicleId.toString());
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+
+        verify(sosRequestRepository, never()).save(any());
     }
 
     // ── create guards ─────────────────────────────────────────────────────────
@@ -286,14 +435,14 @@ class SosServiceImplTest {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
-        assertThat(sosService.getById(sosId)).isEqualTo(sosResponse);
+        assertThat(sosService.getById(sosId, userId)).isEqualTo(sosResponse);
     }
 
     @Test
     void getById_notFound_throwsEntityNotFoundException() {
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> sosService.getById(sosId))
+        assertThatThrownBy(() -> sosService.getById(sosId, userId))
                 .isInstanceOf(EntityNotFoundException.class);
     }
 
@@ -310,7 +459,7 @@ class SosServiceImplTest {
                 .thenReturn(Optional.of(acceptedBid));
         when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
 
-        SosRequestResponse result = sosService.getById(sosId);
+        SosRequestResponse result = sosService.getById(sosId, userId);
 
         assertThat(result.mechanic()).isEqualTo(mechanicResponse);
     }
@@ -332,17 +481,30 @@ class SosServiceImplTest {
     }
 
     @Test
-    void getByStatus_delegatesToRepositoryAndMapsResult() {
+    void getByUserAndStatus_delegatesToRepositoryAndMapsResult() {
         Pageable pageable = PageRequest.of(0, 20);
-        when(sosRequestRepository.findByStatus(SosStatus.PENDING, pageable))
+        when(sosRequestRepository.findByUserUserIdAndStatus(userId, SosStatus.PENDING, pageable))
                 .thenReturn(new PageImpl<>(List.of(pendingSos)));
         when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
                 .thenReturn(Optional.empty());
         when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
-        Page<SosRequestResponse> result = sosService.getByStatus(SosStatus.PENDING, pageable);
+        Page<SosRequestResponse> result = sosService.getByUserAndStatus(userId, SosStatus.PENDING, pageable);
 
         assertThat(result.getContent()).containsExactly(sosResponse);
+    }
+
+    // Status listings must never escape the caller's own rows: unscoped, this endpoint returned
+    // every breakdown in the system.
+    @Test
+    void getById_foreignSos_hidesItAsNotFound() {
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        UUID stranger = UUID.randomUUID();
+        when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, stranger))
+                .thenReturn(false);
+
+        assertThatThrownBy(() -> sosService.getById(sosId, stranger))
+                .isInstanceOf(EntityNotFoundException.class);
     }
 
     // ── proposeStatusChange ───────────────────────────────────────────────────
@@ -354,6 +516,7 @@ class SosServiceImplTest {
         ProposeStatusChangeRequest request = new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
         when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
         when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        stubAssignedMechanic(arrivedSos);
         when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
                 .thenAnswer(inv -> {
                     SosStatusHistory h = inv.getArgument(0);

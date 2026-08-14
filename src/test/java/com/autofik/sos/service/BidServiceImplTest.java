@@ -38,6 +38,7 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.security.access.AccessDeniedException;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -49,6 +50,7 @@ import org.mockito.ArgumentCaptor;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.*;
 
@@ -240,11 +242,22 @@ class BidServiceImplTest {
     // ── getBySosRequest / getByMechanic ───────────────────────────────────────
 
     @Test
-    void getBySosRequest_delegatesAndReturnsMappedList() {
+    void getBySosRequest_ownerSeesEveryBid() {
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
         when(bidSosRepository.findBySosRequestSosId(sosId)).thenReturn(List.of(bid));
         when(bidSosMapper.toResponseList(List.of(bid))).thenReturn(List.of(bidResponse));
 
-        assertThat(bidService.getBySosRequest(sosId, null)).containsExactly(bidResponse);
+        assertThat(bidService.getBySosRequest(sosId, null, userId)).containsExactly(bidResponse);
+    }
+
+    // The full list is a rival's price sheet — a mechanic gets their own bid and nothing else.
+    @Test
+    void getBySosRequest_otherMechanic_seesNoBids() {
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        when(bidSosRepository.findBySosRequestSosId(sosId)).thenReturn(List.of(bid));
+        when(bidSosMapper.toResponseList(List.of())).thenReturn(List.of());
+
+        assertThat(bidService.getBySosRequest(sosId, null, UUID.randomUUID())).isEmpty();
     }
 
     @Test
@@ -276,6 +289,85 @@ class BidServiceImplTest {
         verify(sosEventProducer, never()).publishBidAccepted(any());
         verify(sosEventProducer, never()).publishBidRejected(any());
         verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.Map<String, Object> asMap(Object payload) {
+        return (java.util.Map<String, Object>) payload;
+    }
+
+    // ── live bidding pushes ───────────────────────────────────────────────────
+
+    // The bidding window is 250 seconds. A push notification about a bid the open screen cannot
+    // show is not a real-time auction.
+    @Test
+    void create_pushesTheNewBidToTheDriver() {
+        CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
+        when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+        when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+        when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId)).thenReturn(false);
+        when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+        when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+        bidService.create(request);
+
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(messagingTemplate).convertAndSendToUser(
+                eq(userId.toString()), eq("/queue/sos-updates"), payload.capture());
+        assertThat(asMap(payload.getValue()))
+                .containsEntry("type", "BID_RECEIVED")
+                .containsEntry("sosId", sosId)
+                .containsEntry("bid", bidResponse);
+    }
+
+    // A losing mechanic is told their own bid lost and nothing else — the winning price is not
+    // theirs to see.
+    @Test
+    void updateStatus_accepted_notifiesLosersWithOnlyTheirOwnBidId() {
+        UUID otherMechanicId = UUID.randomUUID();
+        Mechanic otherMechanic = Mechanic.builder().mechanicId(otherMechanicId).fullName("Carol")
+                .phoneNumber("082").availableStatus(true).build();
+        BidSos otherBid = BidSos.builder().bidId(UUID.randomUUID()).price(BigDecimal.valueOf(400))
+                .sosRequest(pendingSos).mechanic(otherMechanic).build();
+        UpdateBidStatusRequest request = new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED);
+        when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+        when(bidSosRepository.save(bid)).thenReturn(bid);
+        when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+                .thenReturn(List.of(otherBid));
+        when(bidSosRepository.saveAll(anyList())).thenReturn(List.of(otherBid));
+        when(sosRequestRepository.save(pendingSos)).thenReturn(pendingSos);
+        when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+        bidService.updateStatus(bidId, request);
+
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(messagingTemplate).convertAndSendToUser(
+                eq(otherMechanicId.toString()), eq("/queue/sos-updates"), payload.capture());
+        java.util.Map<String, Object> message = asMap(payload.getValue());
+        assertThat(message)
+                .containsEntry("type", "BID_REJECTED")
+                .containsEntry("bidId", otherBid.getBidId());
+        assertThat(message).doesNotContainKey("bid");
+        assertThat(message.values()).doesNotContain((Object) bid.getPrice());
+    }
+
+    // A bid the driver can still tap but the mechanic has withdrawn wastes the one thing nobody
+    // has during a breakdown.
+    @Test
+    void cancel_removesTheBidFromTheDriverScreen() {
+        bid.setStatus(BidStatus.PENDING);
+        when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+        when(bidSosRepository.save(bid)).thenReturn(bid);
+        when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+        bidService.cancel(bidId, mechanicId);
+
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(messagingTemplate).convertAndSendToUser(
+                eq(userId.toString()), eq("/queue/sos-updates"), payload.capture());
+        assertThat(asMap(payload.getValue()))
+                .containsEntry("type", "BID_CANCELLED")
+                .containsEntry("bidId", bidId);
     }
 
     @Test
@@ -328,14 +420,13 @@ class BidServiceImplTest {
     }
 
     @Test
-    void updateStatus_callerNotSosOwner_throwsIllegalStateException() {
+    void updateStatus_callerNotSosOwner_throwsAccessDenied() {
         UUID otherUserId = UUID.randomUUID();
         UpdateBidStatusRequest request = new UpdateBidStatusRequest(otherUserId, BidStatus.ACCEPTED);
         when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
 
         assertThatThrownBy(() -> bidService.updateStatus(bidId, request))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("not authorized");
+                .isInstanceOf(AccessDeniedException.class);
 
         verify(bidSosRepository, never()).save(any());
         verify(sosEventProducer, never()).publishBidAccepted(any());
@@ -383,13 +474,12 @@ class BidServiceImplTest {
     }
 
     @Test
-    void cancel_callerNotBidOwner_throwsIllegalStateException() {
+    void cancel_callerNotBidOwner_throwsAccessDenied() {
         UUID otherMechanicId = UUID.randomUUID();
         when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
 
         assertThatThrownBy(() -> bidService.cancel(bidId, otherMechanicId))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("not authorized");
+                .isInstanceOf(AccessDeniedException.class);
 
         verify(bidSosRepository, never()).save(any());
         verify(sosEventProducer, never()).publishBidCancelled(any());

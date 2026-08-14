@@ -10,7 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
-import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,7 +32,8 @@ class MechanicLocationConsumerTest {
 
     @Test
     void consume_validEvent_forwardsToCorrectWebSocketTopic() {
-        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5573, 104.9282, Instant.now());
+        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5573, 104.9282, OffsetDateTime.now(),
+                null, null, null, null);
 
         consumer.consume(event);
 
@@ -45,7 +46,8 @@ class MechanicLocationConsumerTest {
     void consume_forwardsExactCoordinates() {
         double lat = 13.7563;
         double lng = 100.5018;
-        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, lat, lng, Instant.now());
+        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, lat, lng, OffsetDateTime.now(),
+                null, null, null, null);
 
         consumer.consume(event);
 
@@ -60,7 +62,8 @@ class MechanicLocationConsumerTest {
 
     @Test
     void consume_webSocketFails_doesNotThrow_kafkaOffsetAdvances() {
-        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5, 104.9, Instant.now());
+        MechanicLocationEvent event = new MechanicLocationEvent(sosId, mechanicId, 11.5, 104.9, OffsetDateTime.now(),
+                null, null, null, null);
         doThrow(new RuntimeException("WS broker unavailable"))
                 .when(messagingTemplate).convertAndSend(anyString(), any(MechanicLocationEvent.class));
 

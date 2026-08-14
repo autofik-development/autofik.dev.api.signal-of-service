@@ -27,9 +27,19 @@ public interface SosService {
     /**
      * Use Case: fetch data for specified sos
      * @param sosId identify the target sos
+     * @param callerId the proven identity of the requester
      * @return match sos request
+     * @throws jakarta.persistence.EntityNotFoundException when the caller may not see it — a 403
+     *         here would confirm that someone else's sosId exists
      */
-    SosRequestResponse getById(UUID sosId);
+    SosRequestResponse getById(UUID sosId, UUID callerId);
+
+    /**
+     * May this identity see this SOS? True for the driver who raised it and for any mechanic who
+     * bid on it. Shared by the REST reads and by the WebSocket SUBSCRIBE check, which guards the
+     * same data on /topic/sos/{sosId}/**.
+     */
+    boolean canView(UUID sosId, UUID callerId);
 
     /**
      * Use case: View history sos
@@ -39,11 +49,11 @@ public interface SosService {
     Page<SosRequestResponse> getByUser(UUID userId, Pageable pageable);
 
     /**
-     * Use case: filter sos by their current state
+     * Use case: the caller filters their own history by state.
      * @param status The target state to look up (e.g., PENDING, ACTIVE, COMPLETED)
-     * @return list of sos records currently matching
+     * @return list of the user's sos records currently matching
      */
-    Page<SosRequestResponse> getByStatus(SosStatus status, Pageable pageable);
+    Page<SosRequestResponse> getByUserAndStatus(UUID userId, SosStatus status, Pageable pageable);
 
     /**
      * Use case : update the operation status of a sos request
@@ -75,13 +85,6 @@ public interface SosService {
      * @return cancel ticket summary data
      */
     SosRequestResponse cancel(UUID sosId, UUID userId);
-
-    /**
-     * Retrieves a master list of every single emergency ticket recorded in the database system.
-     * Mainly used for administrative management panels and analytical metrics.
-     * * @return A master list of all SOS records.
-     */
-    Page<SosRequestResponse> getAll(Pageable pageable);
 
     /**
      * Use case: re-opens an EXPIRED SOS request and re-broadcasts to nearby mechanics.

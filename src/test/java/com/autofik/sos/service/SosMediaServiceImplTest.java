@@ -12,6 +12,7 @@ import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosMediaRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
+import com.autofik.sos.service.SosService;
 import com.autofik.sos.service.impl.SosMediaServiceImpl;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,7 @@ import static org.mockito.Mockito.*;
 class SosMediaServiceImplTest {
 
     @Mock SosMediaRepository sosMediaRepository;
+    @Mock SosService sosService;
     @Mock SosRequestRepository sosRequestRepository;
     @Mock UserRepository userRepository;
     @Mock MechanicRepository mechanicRepository;
@@ -81,6 +83,8 @@ class SosMediaServiceImplTest {
     @BeforeEach
     void setUp() throws Exception {
         ReflectionTestUtils.setField(sosMediaService, "bucket", "test-bucket");
+        // Participation is covered by SosServiceImplTest; here every caller is a legitimate party.
+        lenient().when(sosService.canView(any(), any())).thenReturn(true);
 
         sosRequest = SosRequest.builder().sosId(sosId).build();
         user = User.builder().userId(userId).name("Alice").build();
@@ -228,7 +232,7 @@ class SosMediaServiceImplTest {
         when(sosMediaMapper.toResponse(media))
                 .thenReturn(new SosMediaResponse(media.getMediaId(), MediaType.PHOTO, "image/jpeg", 10L, null, null));
 
-        List<SosMediaResponse> result = sosMediaService.getBySosRequest(sosId);
+        List<SosMediaResponse> result = sosMediaService.getBySosRequest(sosId, userId);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).url()).contains("minio.example.com");

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "SOS API",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd \"C:\\\\Users\\\\HP Omen 16\\\\IdeaProjects\\\\autofik.dev.api.signal-of-service\" && ./mvnw spring-boot:run"],
+      "port": 8080,
+      "autoPort": true
+    }
+  ]
+}

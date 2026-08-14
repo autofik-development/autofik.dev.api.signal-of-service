@@ -27,5 +27,5 @@ public interface SosMediaService {
      * * Application: Used by both drivers and mechanics to view the complete photo gallery
      * associated with an active or historical rescue job.
      */
-    List<SosMediaResponse> getBySosRequest(UUID sosId);
+    List<SosMediaResponse> getBySosRequest(UUID sosId, UUID callerId);
 }

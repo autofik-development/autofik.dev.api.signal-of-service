@@ -38,6 +38,13 @@ public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
     Page<SosRequest> findByStatus(SosStatus status, Pageable pageable);
 
     /**
+     * Use case: the caller filters their own SOS history by state.
+     * Scoped to one user by design — an unscoped status listing exposes every breakdown
+     * in the system.
+     */
+    Page<SosRequest> findByUserUserIdAndStatus(UUID userId, SosStatus status, Pageable pageable);
+
+    /**
      * Fetches all SOS requests submitted by a specific user that belong to a single explicit status.
      * Handy for extracting un-paginated context on localized user-specific states.
      *

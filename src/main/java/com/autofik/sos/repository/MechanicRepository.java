@@ -1,6 +1,9 @@
 package com.autofik.sos.repository;
 
 import com.autofik.sos.domain.entity.Mechanic;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -12,6 +15,15 @@ import java.util.UUID;
 
 @Repository
 public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
+
+    /**
+     * Mechanic.rate is an inverse-side @OneToOne, which Hibernate cannot proxy — it issues a
+     * separate SELECT per row unless the association is fetched up front. Without this graph a
+     * 20-row page costs 21 queries. The graph forces a single LEFT JOIN instead.
+     */
+    @Override
+    @EntityGraph(attributePaths = "rate")
+    Page<Mechanic> findAll(Pageable pageable);
     /**
      * Use case : fetch a mechanic by their email address
      * @param email the mechanic's email addres
@@ -30,6 +42,7 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
      * GEOSPATIAL SEARCH - STAGE 1: Coarse Grid Filtering (Fast)
      * Instant B-tree scan on H3 cell IDs — eliminates 99% of mechanics before PostGIS touches them.
      */
+    @EntityGraph(attributePaths = "rate")
     @Query("SELECT m FROM Mechanic m WHERE m.currentH3Index IN :cellIds AND m.availableStatus = true")
     List<Mechanic> findByH3Cells(@Param("cellIds") List<String> cellIds);
 
