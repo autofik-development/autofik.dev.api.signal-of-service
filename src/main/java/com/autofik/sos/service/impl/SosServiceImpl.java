@@ -143,7 +143,7 @@ public class SosServiceImpl implements SosService {
         // This has to happen inside the request — the caller's bearer exists nowhere else.
         User user = ssoProjection.user(request.userId());
         Vehicle vehicle = ssoProjection.vehicle(request.vehicleId(), user);
-        SosRequest sos = SosRequest.builder()
+        SosRequest built = SosRequest.builder()
                 .problemType(problemTypeKey)
                 .description(request.description())
                 .location(GeoSupport.point(request.latitude(), request.longitude()))
@@ -152,7 +152,12 @@ public class SosServiceImpl implements SosService {
                 .user(user)
                 .vehicle(vehicle)
                 .build();
-        sosRequestRepository.save(sos);
+        // Must use the returned instance, not `built`: @Builder.Default sets version=0L (not
+        // null), so Spring Data's version-based isNew() check sees a non-null version and treats
+        // this transient row as already-persisted — save() routes to merge() instead of
+        // persist(), which returns a new managed copy and leaves `built`'s generated sosId
+        // permanently null.
+        SosRequest sos = sosRequestRepository.save(built);
 
         // Kafka, the mechanic fan-out and the expiry timer all fire only once the row is committed.
         // A mechanic told about an SOS that is not yet visible gets a 404 from their next read, and

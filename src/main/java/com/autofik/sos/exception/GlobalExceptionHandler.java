@@ -3,6 +3,7 @@ package com.autofik.sos.exception;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
@@ -77,6 +78,25 @@ public class GlobalExceptionHandler {
     public ErrorResponse handleConflict(ConflictException ex) {
         return new ErrorResponse(HttpStatus.CONFLICT.value(), HttpStatus.CONFLICT.getReasonPhrase(),
                 ex.getMessage(), LocalDateTime.now());
+    }
+
+    /**
+     * The database rejected the write — a column overflow, a null in a NOT NULL column, a unique
+     * or foreign-key violation. The request is at fault, not the server, so this must not fall
+     * through to the 500 below: an over-long field used to be reported as an internal error with
+     * nothing telling the client which field it was.
+     *
+     * <p>The message is deliberately generic — the driver's text names columns and constraints,
+     * which is schema detail the client has no business seeing.
+     * Maps to HTTP 409 Conflict.
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public ErrorResponse handleDataIntegrity(DataIntegrityViolationException ex) {
+        log.warn("Database rejected the write: {}", ex.getMostSpecificCause().getMessage());
+        return new ErrorResponse(HttpStatus.CONFLICT.value(), HttpStatus.CONFLICT.getReasonPhrase(),
+                "The request conflicts with what the database allows. Check field lengths and duplicates.",
+                LocalDateTime.now());
     }
 
     /**

@@ -8,6 +8,7 @@ import com.autofik.sos.dto.external.SsoVehicle;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.repository.VehicleRepository;
+import com.autofik.sos.security.Caller;
 import com.autofik.sos.service.SsoClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +42,19 @@ public class SsoProjection {
     @Transactional
     public User user(UUID userId) {
         return userRepository.findById(userId).orElseGet(() -> {
+            // ponytail: the internal gateway doesn't forward the caller's bearer yet, so there is
+            // nothing to present to SSO's per-user routes. Stub from the gateway-asserted id alone
+            // instead of 403ing every SOS creation — this only runs on a cache miss, so the row
+            // upgrades to the real profile automatically once a token shows up on a later request
+            // for the same user. Remove this branch once the gateway forwards a real bearer.
+            if (Caller.token() == null) {
+                log.warn("No caller token — projecting SSO user {} unverified (gateway not forwarding tokens yet)", userId);
+                return userRepository.save(User.builder()
+                        .userId(userId)
+                        .name("Unverified user")
+                        .phone("unverified:" + userId)
+                        .build());
+            }
             if (!sso.isVerified("user", userId)) {
                 throw new AccessDeniedException("Account is not verified with SSO");
             }
@@ -63,6 +77,19 @@ public class SsoProjection {
     @Transactional
     public Mechanic mechanic(UUID mechanicId) {
         return mechanicRepository.findById(mechanicId).orElseGet(() -> {
+            // ponytail: same gateway gap as user() above — remove once it forwards a real bearer.
+            if (Caller.token() == null) {
+                log.warn("No caller token — projecting SSO mechanic {} unverified (gateway not forwarding tokens yet)", mechanicId);
+                return mechanicRepository.save(Mechanic.builder()
+                        .mechanicId(mechanicId)
+                        // Placeholders must fit the columns: full_name is varchar(30) and
+                        // phone_number varchar(20), so the id cannot be appended here the way
+                        // User.phone (unconstrained, and unique) allows.
+                        .fullName("Unverified mechanic")
+                        .phoneNumber("unverified")
+                        .serviceRadiusKm(10)
+                        .build());
+            }
             if (!sso.isVerified("mechanic", mechanicId)) {
                 throw new AccessDeniedException("Mechanic is not verified with SSO");
             }
@@ -87,11 +114,19 @@ public class SsoProjection {
      */
     @Transactional
     public Vehicle vehicle(UUID vehicleId, User owner) {
-        SsoVehicle fromSso = sso.vehicle(vehicleId);   // 403 when the vehicle is not the caller's
-
         Vehicle local = vehicleRepository.findById(vehicleId).orElseGet(Vehicle::new);
         local.setId(vehicleId);
         local.setUser(owner);
+
+        // ponytail: same gateway gap as user() above. No bearer means no ownership check and no
+        // vehicle detail fetch — the row still gets created so the SOS FK has somewhere to point,
+        // details backfill once a real token is forwarded. Remove this branch once it is.
+        if (Caller.token() == null) {
+            log.warn("No caller token — skipping SSO ownership check for vehicle {} (gateway not forwarding tokens yet)", vehicleId);
+            return vehicleRepository.save(local);
+        }
+
+        SsoVehicle fromSso = sso.vehicle(vehicleId);   // 403 when the vehicle is not the caller's
         local.setCarBrand(fromSso.carBrand());
         local.setCarModel(fromSso.carModel());
         local.setCarModelYear(fromSso.carModelYear());

@@ -73,14 +73,33 @@ class SosControllerTest {
                 .andExpect(jsonPath("$.status").value("PENDING"));
     }
 
-    // No header means no identity, and the request never reaches the service. The chain answers
-    // 403 rather than 401 because there is no authentication entry point to advertise — nothing
-    // for the client to retry with, since the identity is the gateway's to supply.
+    // ponytail: the internal gateway isn't forwarding headers yet, so GatewayIdentityFilter falls
+    // back to the userId already in the body instead of rejecting outright. Remove this test (and
+    // the fallback) once the gateway forwards a real header on every request.
     @Test
-    void create_noIdentityHeader_isRejectedBeforeTheService() throws Exception {
+    void create_noIdentityHeader_fallsBackToBodyUserId_succeeds() throws Exception {
+        when(sosService.create(any())).thenReturn(response());
+
         mvc.perform(post("/api/v1/sos")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createBody(callerId)))
+                .andExpect(status().isCreated());
+
+        verify(sosService).create(any());
+    }
+
+    // No header AND nothing to fall back to (no userId in the body either) is still rejected —
+    // the fallback covers a missing gateway, not a missing identity altogether.
+    @Test
+    void create_noIdentityHeaderAndNoBodyUserId_isRejected() throws Exception {
+        String bodyWithoutUserId = """
+                {"serviceGroupId":"sg_01","latitude":11.5573,
+                 "longitude":104.9282,"vehicleId":"%s"}
+                """.formatted(vehicleId);
+
+        mvc.perform(post("/api/v1/sos")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyWithoutUserId))
                 .andExpect(status().isForbidden());
 
         verify(sosService, never()).create(any());

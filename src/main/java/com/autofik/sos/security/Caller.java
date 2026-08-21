@@ -31,16 +31,15 @@ public final class Caller {
     /**
      * The caller's SSO bearer, for the profile and vehicle reads that SSO scopes to its owner.
      *
-     * @throws AccessDeniedException when the request carried no token — those reads cannot be
-     *                               retried later from a background job, so failing here is the
-     *                               only honest answer.
+     * @return the bearer, or {@code null} if the request carried none.
+     * <p>ponytail: null used to be a hard 403 here. The internal gateway doesn't forward a real
+     * caller token yet, so every SSO-backed projection would 403 before this gateway exists —
+     * callers now decide for themselves (see {@code SsoProjection}), which degrades to an
+     * unverified local stub instead of blocking. Put the throw back once the gateway forwards a
+     * real bearer on every request.
      */
     public static String token() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        Object token = auth == null ? null : auth.getCredentials();
-        if (token == null) {
-            throw new AccessDeniedException("No caller token available for SSO");
-        }
-        return (String) token;
+        return auth == null ? null : (String) auth.getCredentials();
     }
 }

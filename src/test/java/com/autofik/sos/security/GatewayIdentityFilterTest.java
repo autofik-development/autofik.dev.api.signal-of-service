@@ -3,10 +3,12 @@ package com.autofik.sos.security;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.UUID;
 
@@ -19,7 +21,7 @@ import static org.mockito.Mockito.mock;
  */
 class GatewayIdentityFilterTest {
 
-    private final GatewayIdentityFilter filter = new GatewayIdentityFilter();
+    private final GatewayIdentityFilter filter = new GatewayIdentityFilter(new ObjectMapper());
     private final FilterChain chain = mock(FilterChain.class);
 
     @AfterEach
@@ -84,5 +86,47 @@ class GatewayIdentityFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), chain);
 
         assertThat(Caller.token()).isEqualTo("Bearer abc123");
+    }
+
+    // ponytail fallback: the gateway isn't forwarding headers yet, so a GET with no body falls
+    // back to a query param instead of 401ing.
+    @Test
+    void noHeader_fallsBackToMechanicIdQueryParam() throws Exception {
+        UUID id = UUID.randomUUID();
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setParameter("mechanicId", id.toString());
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(auth.getPrincipal()).isEqualTo(id);
+        assertThat(auth.getAuthorities()).extracting("authority")
+                .containsExactly(GatewayIdentityFilter.ROLE_MECHANIC);
+    }
+
+    // Same fallback, but sniffed from a POST JSON body instead — and the body must still reach
+    // the controller afterward, so this also pins that the request stays readable downstream.
+    @Test
+    void noHeader_fallsBackToUserIdInJsonBody_bodyStillReadableDownstream() throws Exception {
+        UUID id = UUID.randomUUID();
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setMethod("POST");
+        request.setContentType("application/json");
+        request.setContent(("{\"userId\":\"" + id + "\",\"description\":\"flat tire\"}")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(auth.getPrincipal()).isEqualTo(id);
+        assertThat(auth.getAuthorities()).extracting("authority")
+                .containsExactly(GatewayIdentityFilter.ROLE_USER);
+
+        ArgumentCaptor<jakarta.servlet.ServletRequest> captor =
+                ArgumentCaptor.forClass(jakarta.servlet.ServletRequest.class);
+        org.mockito.Mockito.verify(chain).doFilter(captor.capture(), org.mockito.Mockito.any());
+        String replayedBody = new String(captor.getValue().getInputStream().readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(replayedBody).contains("flat tire");
     }
 }

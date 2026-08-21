@@ -7,13 +7,17 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 import java.util.List;
 
+// The @Size caps mirror the column widths on the Mechanic entity. Without them an over-long value
+// passes validation and dies in the database instead, which surfaced as a 500 rather than telling
+// the client which field was too long.
 public record CreateMechanicRequest(
-        @NotBlank String fullName,
-        @NotBlank String phoneNumber,
-        @NotBlank @Email String email,
+        @NotBlank @Size(max = 30) String fullName,
+        @NotBlank @Size(max = 20) String phoneNumber,
+        @NotBlank @Email @Size(max = 30) String email,
         @NotNull MechanicRole mechanicRole,
         String address,
         Integer serviceRadiusKm,
