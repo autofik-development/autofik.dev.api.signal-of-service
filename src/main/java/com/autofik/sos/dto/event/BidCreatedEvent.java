@@ -13,5 +13,4 @@ public record BidCreatedEvent(
     Long estimatedDurationS,
     String estimatedDistanceText,
     String estimatedDurationText,
-    LocalDateTime bidAt
-) {}
+    LocalDateTime bidAt) {}

@@ -15,17 +15,19 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class MechanicLocationConsumer {
 
-    private final SimpMessagingTemplate messagingTemplate;
+  private final SimpMessagingTemplate messagingTemplate;
 
-    @KafkaListener(
-            topics = KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED,
-            groupId = "${spring.kafka.consumer.group-id}"
-    )
-    public void consume(MechanicLocationEvent event) {
-        try {
-            messagingTemplate.convertAndSend("/topic/sos/" + event.sosId() + "/location", event);
-        } catch (Exception e) {
-            log.error("Failed to relay Kafka location event to WebSocket sosId={}: {}", event.sosId(), e.getMessage());
-        }
+  @KafkaListener(
+      topics = KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED,
+      groupId = "${spring.kafka.consumer.group-id}")
+  public void consume(MechanicLocationEvent event) {
+    try {
+      messagingTemplate.convertAndSend("/topic/sos/" + event.sosId() + "/location", event);
+    } catch (Exception e) {
+      log.error(
+          "Failed to relay Kafka location event to WebSocket sosId={}: {}",
+          event.sosId(),
+          e.getMessage());
     }
+  }
 }

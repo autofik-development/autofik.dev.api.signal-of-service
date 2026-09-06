@@ -7,16 +7,13 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration
 @ConfigurationProperties(prefix = "medusa")
-@Getter @Setter
+@Getter
+@Setter
 public class MedusaConfig {
 
-    /**
-     * The base URL endpoint for the Medusa external API service.
-     */
-    private String baseUrl;
+  /** The base URL endpoint for the Medusa external API service. */
+  private String baseUrl;
 
-    /**
-     * The public API key used for non-sensitive public identifier tasks.
-     */
-    private String publicKey;
+  /** The public API key used for non-sensitive public identifier tasks. */
+  private String publicKey;
 }
