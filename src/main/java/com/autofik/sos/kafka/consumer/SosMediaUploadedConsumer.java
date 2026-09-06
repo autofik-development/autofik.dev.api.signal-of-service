@@ -13,19 +13,21 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class SosMediaUploadedConsumer {
 
-    private final SimpMessagingTemplate messagingTemplate;
+  private final SimpMessagingTemplate messagingTemplate;
 
-    @KafkaListener(
-            topics = KafkaConfig.TOPIC_SOS_MEDIA_UPLOADED,
-            groupId = "${spring.kafka.consumer.group-id}",
-            containerFactory = "mediaUploadedListenerContainerFactory"
-    )
-    public void consume(SosMediaUploadedEvent event) {
-        try {
-            messagingTemplate.convertAndSend("/topic/sos/" + event.sosId() + "/media", event);
-        } catch (Exception e) {
-            log.error("Failed to relay media upload event to WebSocket sosId={} mediaId={}: {}",
-                    event.sosId(), event.mediaId(), e.getMessage());
-        }
+  @KafkaListener(
+      topics = KafkaConfig.TOPIC_SOS_MEDIA_UPLOADED,
+      groupId = "${spring.kafka.consumer.group-id}",
+      containerFactory = "mediaUploadedListenerContainerFactory")
+  public void consume(SosMediaUploadedEvent event) {
+    try {
+      messagingTemplate.convertAndSend("/topic/sos/" + event.sosId() + "/media", event);
+    } catch (Exception e) {
+      log.error(
+          "Failed to relay media upload event to WebSocket sosId={} mediaId={}: {}",
+          event.sosId(),
+          event.mediaId(),
+          e.getMessage());
     }
+  }
 }

@@ -1,0 +1,64 @@
+name: PR Check
+
+# The release workflow (master.yml) only runs on tags, and the Dockerfile builds with
+# -DskipTests, so without this the test suite never runs in CI at all.
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Lint (spotless)
+        run: ./mvnw -B spotless:check
+
+      # SosApplicationTests boots the whole context and needs a live Postgres+PostGIS,
+      # Redis and Kafka. Everything else is unit and slice tests that need nothing.
+      # Excluded rather than deleted: bring it back behind a Postgres service container
+      # (or Testcontainers) when wiring bugs start slipping through.
+      - name: Run tests
+        run: ./mvnw -B test -Dtest='!SosApplicationTests'
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          retention-days: 7
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-24.04
+
+    # The release build happens on a tag, long after review. Without this, a change that
+    # breaks the image is only discovered when someone tries to cut a release.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

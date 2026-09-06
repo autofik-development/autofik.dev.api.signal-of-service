@@ -11,6 +11,7 @@ import com.autofik.sos.dto.event.BidCancelledEvent;
 import com.autofik.sos.dto.event.BidCreatedEvent;
 import com.autofik.sos.dto.event.BidRejectedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
+import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
@@ -19,315 +20,370 @@ import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
-import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.service.BidService;
 import com.autofik.sos.service.GoogleMapsService;
 import jakarta.persistence.EntityNotFoundException;
-import lombok.RequiredArgsConstructor;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service // tells spring this class core business logic execution
-@RequiredArgsConstructor  // automatic creates a constructor with all dependencies
+@RequiredArgsConstructor // automatic creates a constructor with all dependencies
 public class BidServiceImpl implements BidService {
 
-    // --- DEPENDENCIES (REPOSITORIES & EXTERNAL SERVICES) ---
-    private final BidSosRepository bidSosRepository;
-    private final SosRequestRepository sosRequestRepository;
-    private final MechanicRepository mechanicRepository;
-    private final BidSosMapper bidSosMapper;                    // Converts between Database Entities and DTO Responses
-    private final GoogleMapsService googleMapsService;          // Calculates real road mileage and times
-    private final SosEventProducer sosEventProducer;            // Publishes asynchronous system events to Kafka
-    private final SimpMessagingTemplate messagingTemplate;      // Handles instant WebSocket communication directly to mobile apps
+  // --- DEPENDENCIES (REPOSITORIES & EXTERNAL SERVICES) ---
+  private final BidSosRepository bidSosRepository;
+  private final SosRequestRepository sosRequestRepository;
+  private final MechanicRepository mechanicRepository;
+  private final BidSosMapper bidSosMapper; // Converts between Database Entities and DTO Responses
+  private final GoogleMapsService googleMapsService; // Calculates real road mileage and times
+  private final SosEventProducer sosEventProducer; // Publishes asynchronous system events to Kafka
+  private final SimpMessagingTemplate
+      messagingTemplate; // Handles instant WebSocket communication directly to mobile apps
 
-    /**
-     * WORKFLOW: A mechanic submits a price bid to help a stranded driver.
-     */
-    @Override
-    @Transactional // Ensures data safety: if any step crashes, the entire database entry rolls back completely
-    public BidSosResponse create(CreateBidRequest request) {
+  /** WORKFLOW: A mechanic submits a price bid to help a stranded driver. */
+  @Override
+  @Transactional // Ensures data safety: if any step crashes, the entire database entry rolls back
+  // completely
+  public BidSosResponse create(CreateBidRequest request) {
 
-        // 1. SAFETY CHECK: Verify the targeted SOS request ticket actually exists
-        SosRequest sosRequest = sosRequestRepository.findById(request.sosId())
-                .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + request.sosId()));
+    // 1. SAFETY CHECK: Verify the targeted SOS request ticket actually exists
+    SosRequest sosRequest =
+        sosRequestRepository
+            .findById(request.sosId())
+            .orElseThrow(
+                () -> new EntityNotFoundException("SOS request not found: " + request.sosId()));
 
-        // 2. SAFETY CHECK: Bids can only be submitted if the ticket is still open and waiting (PENDING)
-        if (sosRequest.getStatus() != SosStatus.PENDING) {
-            throw new IllegalStateException("Bids can only be placed on PENDING requests");
-        }
-
-        // 3. SAFETY CHECK: Check if the timeline window to place bids has already expired
-        if (sosRequest.getBiddingExpiresAt() != null &&
-                java.time.LocalDateTime.now().isAfter(sosRequest.getBiddingExpiresAt())) {
-            throw new IllegalStateException("Bidding window has closed for this SOS request");
-        }
-
-        // 4. SAFETY CHECK: Verify the mechanic profile exists and is currently online/on-duty
-        Mechanic mechanic = mechanicRepository.findById(request.mechanicId())
-                .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
-        if (!Boolean.TRUE.equals(mechanic.getAvailableStatus())) {
-            throw new IllegalStateException("Mechanic is not available: " + request.mechanicId());
-        }
-
-        // 5. SAFETY CHECK: Prevent the same mechanic from sending spam or double bidding on a single ticket
-        if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(request.sosId(), request.mechanicId())) {
-            throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
-        }
-
-        // Start structuring the database entity record using Lombok's Builder pattern
-        BidSos.BidSosBuilder bidBuilder = BidSos.builder()
-                .price(request.price())
-                .sosRequest(sosRequest)
-                .mechanic(mechanic);
-
-        // MAPS COMPUTATION: Fetch real road routing metrics if the mechanic's current GPS is captured
-        if (mechanic.getCurrentLocation() != null) {
-            DistanceInfo info = googleMapsService.getDistanceInfo(
-                    mechanic.getCurrentLocation(), sosRequest.getLocation());
-            if (info != null) {
-                bidBuilder
-                        .estimatedDistanceM(info.distanceMeters())
-                        .estimatedDurationS(info.durationSeconds())
-                        .estimatedDistanceText(info.distanceText())
-                        .estimatedDurationText(info.durationText());
-            }
-        }
-
-        // Save the compiled Bid object into the PostgreSQL database table
-        BidSos savedBid = bidSosRepository.save(bidBuilder.build());
-
-        // KAFKA FAN-OUT: Publish the creation event to sync down other microservices
-        sosEventProducer.publishBidCreated(new BidCreatedEvent(
-                savedBid.getBidId(), sosRequest.getSosId(), mechanic.getMechanicId(),
-                savedBid.getPrice(),
-                savedBid.getEstimatedDistanceM(), savedBid.getEstimatedDurationS(),
-                savedBid.getEstimatedDistanceText(), savedBid.getEstimatedDurationText(),
-                savedBid.getBidAt()
-        ));
-
-        // PUSH NOTIFICATION: Alert the user/driver's device immediately that a new quote has arrived
-        sosEventProducer.publishNotification(new SosNotificationEvent(
-                "BID_RECEIVED", sosRequest.getUser().getUserId(), "USER", sosRequest.getSosId(),
-                "A mechanic placed a bid", "Check the new bid on your request"
-        ));
-
-        BidSosResponse response = bidSosMapper.toResponse(savedBid);
-
-        // The bidding window is 250 seconds. Without this the driver's list only changed when they
-        // pulled to refresh, so the push notification was telling them about a bid the screen in
-        // front of them could not show. Sent on the driver's private queue, not a topic — a
-        // per-SOS broadcast would hand every bidder their competitors' prices.
-        messagingTemplate.convertAndSendToUser(
-                sosRequest.getUser().getUserId().toString(), "/queue/sos-updates",
-                Map.of("type", "BID_RECEIVED", "sosId", sosRequest.getSosId(), "bid", response)
-        );
-
-        return response;
+    // 2. SAFETY CHECK: Bids can only be submitted if the ticket is still open and waiting (PENDING)
+    if (sosRequest.getStatus() != SosStatus.PENDING) {
+      throw new IllegalStateException("Bids can only be placed on PENDING requests");
     }
 
-    /**
-     * WORKFLOW: Returns a list of all bids submitted for a specific SOS ticket, sorted by filter type.
-     */
-    // Sorting is done in-memory because the fields (estimatedDistanceM, ratingAvg) span
-    // multiple tables and in-DB sorting would require additional joins or subqueries.
-    @Override
-    @Transactional(readOnly = true) // Optimization: Tells the DB this is a read-only query (no data writes)
-    public List<BidSosResponse> getBySosRequest(UUID sosId, BidSortFilter sortBy, UUID callerId) {
-        SosRequest sos = sosRequestRepository.findById(sosId)
-                .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
-
-        List<BidSos> found = bidSosRepository.findBySosRequestSosId(sosId);
-        // A mechanic asking about someone else's SOS gets their own bid and nothing more; the full
-        // list would hand them every rival's price. Non-participants see an empty list rather than
-        // a 403, which would confirm the sosId is real.
-        if (!sos.getUser().getUserId().equals(callerId)) {
-            found = found.stream()
-                    .filter(bid -> bid.getMechanic().getMechanicId().equals(callerId))
-                    .toList();
-        }
-
-        List<BidSosResponse> bids = bidSosMapper.toResponseList(found);
-        if (sortBy == null) return bids;
-
-        // Apply in-memory Stream sorting based on the user's selected preference tab
-        return switch (sortBy) {
-            case NEAREST -> bids.stream()
-                    .sorted(Comparator.comparing(BidSosResponse::estimatedDistanceM,
-                            Comparator.nullsLast(Comparator.naturalOrder()))) // Nearest meters first, empty metrics last
-                    .toList();
-            case CHEAPEST -> bids.stream()
-                    .sorted(Comparator.comparing(BidSosResponse::price)) // Lowest price tag first
-                    .toList();
-            case TOP_RATED -> bids.stream()
-                    .sorted(Comparator.comparing(
-                            r -> r.mechanic() != null && r.mechanic().avgRate() != null
-                                    ? r.mechanic().avgRate() : BigDecimal.ZERO,
-                            Comparator.<BigDecimal>naturalOrder().reversed()))
-                    .toList();
-        };
+    // 3. SAFETY CHECK: Check if the timeline window to place bids has already expired
+    if (sosRequest.getBiddingExpiresAt() != null
+        && java.time.LocalDateTime.now().isAfter(sosRequest.getBiddingExpiresAt())) {
+      throw new IllegalStateException("Bidding window has closed for this SOS request");
     }
 
-    @Override
-    @Transactional(readOnly = true)
-    public Page<BidSosResponse> getByMechanic(UUID mechanicId, Pageable pageable) {
-        return bidSosRepository.findByMechanicMechanicId(mechanicId, pageable)
-                .map(bidSosMapper::toResponse);
+    // 4. SAFETY CHECK: Verify the mechanic profile exists and is currently online/on-duty
+    Mechanic mechanic =
+        mechanicRepository
+            .findById(request.mechanicId())
+            .orElseThrow(
+                () -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
+    if (!Boolean.TRUE.equals(mechanic.getAvailableStatus())) {
+      throw new IllegalStateException("Mechanic is not available: " + request.mechanicId());
     }
 
-    /**
-     * WORKFLOW: Processes a driver's decision to ACCEPT or REJECT a mechanic's bid.
-     */
-    @Override
-    @Transactional
-    public BidSosResponse updateStatus(UUID bidId, UpdateBidStatusRequest request) {
-
-        // Mechanics are blocked from using this endpoint to back out; they must use the cancel endpoint
-        if (request.status() == BidStatus.CANCELLED) {
-            throw new IllegalStateException("Use the cancel endpoint for mechanic-initiated cancellation");
-        }
-
-        BidSos bid = bidSosRepository.findById(bidId)
-                .orElseThrow(() -> new EntityNotFoundException("Bid not found: " + bidId));
-
-        // SECURITY CHECK: Ensure that the person executing this call is the actual owner who created the SOS ticket
-        UUID sosOwnerId = bid.getSosRequest().getUser().getUserId();
-        if (!sosOwnerId.equals(request.userId())) {
-            throw new AccessDeniedException("You can only respond to bids on your own SOS request");
-        }
-
-        // Commit the status change (e.g., ACCEPTED) to the database
-        bid.setStatus(request.status());
-        bid.setRespondedAt(LocalDateTime.now());
-        bidSosRepository.save(bid);
-
-        // --- DOMINO EFFECT: IF THE BID WAS ACCEPTED ---
-        if (request.status() == BidStatus.ACCEPTED) {
-
-            // 1. AUTO-REJECT RUNNERS UP: Reject all other competing bids for this ticket so those mechanics can work elsewhere
-            List<BidSos> rejectedBids = autoRejectOtherBids(bid);
-
-            // 2. TICKET STATE TRANSITION: Lock down the core SOS Request state from PENDING to ACCEPTED
-            SosRequest sos = bid.getSosRequest();
-            sos.setStatus(SosStatus.ACCEPTED);
-            sosRequestRepository.save(sos);
-
-            Mechanic mechanic = bid.getMechanic();
-            UUID userId = sos.getUser().getUserId();
-
-            // Structure a message payload packed with targeted GPS directions
-            BidAcceptedEvent acceptedEvent = new BidAcceptedEvent(
-                    bid.getBidId(), sos.getSosId(), mechanic.getMechanicId(), userId,
-                    sos.getLocation().getY(), sos.getLocation().getX(), LocalDateTime.now()
-            );
-
-            // 3. BROADCAST KAFKA EVENT: Broadcasts the data pipeline update system-wide
-            sosEventProducer.publishBidAccepted(acceptedEvent);
-
-            // 4. LIVE WEBSOCKET ALERT: Fires a message directly to the winning mechanic's app screen to update their map routing
-            messagingTemplate.convertAndSendToUser(
-                    mechanic.getMechanicId().toString(), "/queue/sos-updates", acceptedEvent
-            );
-
-            // 5. PUSH NOTIFICATION (WINNER): Pop-up alert telling the chosen mechanic to hit the road
-            sosEventProducer.publishNotification(new SosNotificationEvent(
-                    "BID_ACCEPTED", mechanic.getMechanicId(), "MECHANIC", sos.getSosId(),
-                    "Your bid was accepted", "Head to the user location now"
-            ));
-
-            // 6. PUSH NOTIFICATIONS (LOSERS): Send polite "not selected" alerts to all the runners-up mechanics
-            if (!rejectedBids.isEmpty()) {
-                List<UUID> rejectedBidIds = rejectedBids.stream().map(BidSos::getBidId).toList();
-                sosEventProducer.publishBidRejected(new BidRejectedEvent(sos.getSosId(), rejectedBidIds));
-                rejectedBids.forEach(rejected -> {
-                    sosEventProducer.publishNotification(new SosNotificationEvent(
-                            "BID_REJECTED", rejected.getMechanic().getMechanicId(), "MECHANIC", sos.getSosId(),
-                            "Another mechanic was selected", "Your bid was not selected for this request"
-                    ));
-                    // The winner already gets a socket message; the losers only got a push, so their
-                    // open bid screen kept showing a live auction that had already been decided.
-                    // Their own bid id and nothing else — the winning price is not theirs to see.
-                    messagingTemplate.convertAndSendToUser(
-                            rejected.getMechanic().getMechanicId().toString(), "/queue/sos-updates",
-                            Map.of("type", "BID_REJECTED", "sosId", sos.getSosId(),
-                                    "bidId", rejected.getBidId())
-                    );
-                });
-            }
-        }
-
-        return bidSosMapper.toResponse(bid);
+    // 5. SAFETY CHECK: Prevent the same mechanic from sending spam or double bidding on a single
+    // ticket
+    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(
+        request.sosId(), request.mechanicId())) {
+      throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
     }
 
-    /**
-     * WORKFLOW: A mechanic withdraws their bid before a driver accepts it.
-     */
-    @Override
-    @Transactional
-    public BidSosResponse cancel(UUID bidId, UUID mechanicId) {
-        BidSos bid = bidSosRepository.findById(bidId)
-                .orElseThrow(() -> new EntityNotFoundException("Bid not found: " + bidId));
+    // Start structuring the database entity record using Lombok's Builder pattern
+    BidSos.BidSosBuilder bidBuilder =
+        BidSos.builder().price(request.price()).sosRequest(sosRequest).mechanic(mechanic);
 
-        // SECURITY CHECK: Verify that the mechanic trying to cancel the bid is the actual creator of the bid
-        if (!bid.getMechanic().getMechanicId().equals(mechanicId)) {
-            throw new AccessDeniedException("You can only cancel your own bid");
-        }
-        // SAFETY CHECK: A mechanic can only withdraw a bid if it's still pending (not yet accepted or rejected)
-        if (bid.getStatus() != BidStatus.PENDING) {
-            throw new IllegalStateException("Only PENDING bids can be cancelled, current status: " + bid.getStatus());
-        }
-
-        // Set status to CANCELLED in the database
-        bid.setStatus(BidStatus.CANCELLED);
-        bid.setRespondedAt(LocalDateTime.now());
-        bidSosRepository.save(bid);
-
-        SosRequest sos = bid.getSosRequest();
-
-        // Notify the system ecosystem about the cancellation event via Kafka
-        sosEventProducer.publishBidCancelled(new BidCancelledEvent(
-                bid.getBidId(), sos.getSosId(), mechanicId, bid.getRespondedAt()
-        ));
-        // PUSH NOTIFICATION: Alert the driver that a mechanic has withdrawn their quote proposal
-        sosEventProducer.publishNotification(new SosNotificationEvent(
-                "BID_CANCELLED", sos.getUser().getUserId(), "USER", sos.getSosId(),
-                "A bid was withdrawn", "A mechanic withdrew their bid on your request"
-        ));
-
-        // Take the withdrawn bid off the driver's screen. Accepting a bid that no longer exists
-        // wastes the one resource nobody has during a breakdown, which is time.
-        messagingTemplate.convertAndSendToUser(
-                sos.getUser().getUserId().toString(), "/queue/sos-updates",
-                Map.of("type", "BID_CANCELLED", "sosId", sos.getSosId(), "bidId", bid.getBidId())
-        );
-
-        return bidSosMapper.toResponse(bid);
+    // MAPS COMPUTATION: Fetch real road routing metrics if the mechanic's current GPS is captured
+    if (mechanic.getCurrentLocation() != null) {
+      DistanceInfo info =
+          googleMapsService.getDistanceInfo(
+              mechanic.getCurrentLocation(), sosRequest.getLocation());
+      if (info != null) {
+        bidBuilder
+            .estimatedDistanceM(info.distanceMeters())
+            .estimatedDurationS(info.durationSeconds())
+            .estimatedDistanceText(info.distanceText())
+            .estimatedDurationText(info.durationText());
+      }
     }
 
-    // When the user accepts one bid, all other PENDING bids on the same SOS must be
-    // rejected immediately so those mechanics know they're free to take other jobs.
-    private List<BidSos> autoRejectOtherBids(BidSos acceptedBid) {
-        UUID sosId = acceptedBid.getSosRequest().getSosId();
+    // Save the compiled Bid object into the PostgreSQL database table
+    BidSos savedBid = bidSosRepository.save(bidBuilder.build());
 
-        // Pull all other bids matching this SOS ID that are still stuck in a 'PENDING' status state
-        List<BidSos> pendingBids = bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING);
+    // KAFKA FAN-OUT: Publish the creation event to sync down other microservices
+    sosEventProducer.publishBidCreated(
+        new BidCreatedEvent(
+            savedBid.getBidId(),
+            sosRequest.getSosId(),
+            mechanic.getMechanicId(),
+            savedBid.getPrice(),
+            savedBid.getEstimatedDistanceM(),
+            savedBid.getEstimatedDurationS(),
+            savedBid.getEstimatedDistanceText(),
+            savedBid.getEstimatedDurationText(),
+            savedBid.getBidAt()));
 
-        // Loop through and flip them all to REJECTED status states
-        pendingBids.forEach(b -> b.setStatus(BidStatus.REJECTED));
-        
-        // Update them collectively via batch saving
-        bidSosRepository.saveAll(pendingBids);
-        return pendingBids;
+    // PUSH NOTIFICATION: Alert the user/driver's device immediately that a new quote has arrived
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "BID_RECEIVED",
+            sosRequest.getUser().getUserId(),
+            "USER",
+            sosRequest.getSosId(),
+            "A mechanic placed a bid",
+            "Check the new bid on your request"));
+
+    BidSosResponse response = bidSosMapper.toResponse(savedBid);
+
+    // The bidding window is 250 seconds. Without this the driver's list only changed when they
+    // pulled to refresh, so the push notification was telling them about a bid the screen in
+    // front of them could not show. Sent on the driver's private queue, not a topic — a
+    // per-SOS broadcast would hand every bidder their competitors' prices.
+    messagingTemplate.convertAndSendToUser(
+        sosRequest.getUser().getUserId().toString(),
+        "/queue/sos-updates",
+        Map.of("type", "BID_RECEIVED", "sosId", sosRequest.getSosId(), "bid", response));
+
+    return response;
+  }
+
+  /**
+   * WORKFLOW: Returns a list of all bids submitted for a specific SOS ticket, sorted by filter
+   * type.
+   */
+  // Sorting is done in-memory because the fields (estimatedDistanceM, ratingAvg) span
+  // multiple tables and in-DB sorting would require additional joins or subqueries.
+  @Override
+  @Transactional(
+      readOnly = true) // Optimization: Tells the DB this is a read-only query (no data writes)
+  public List<BidSosResponse> getBySosRequest(UUID sosId, BidSortFilter sortBy, UUID callerId) {
+    SosRequest sos =
+        sosRequestRepository
+            .findById(sosId)
+            .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
+
+    List<BidSos> found = bidSosRepository.findBySosRequestSosId(sosId);
+    // A mechanic asking about someone else's SOS gets their own bid and nothing more; the full
+    // list would hand them every rival's price. Non-participants see an empty list rather than
+    // a 403, which would confirm the sosId is real.
+    if (!sos.getUser().getUserId().equals(callerId)) {
+      found =
+          found.stream().filter(bid -> bid.getMechanic().getMechanicId().equals(callerId)).toList();
     }
+
+    List<BidSosResponse> bids = bidSosMapper.toResponseList(found);
+    if (sortBy == null) return bids;
+
+    // Apply in-memory Stream sorting based on the user's selected preference tab
+    return switch (sortBy) {
+      case NEAREST ->
+          bids.stream()
+              .sorted(
+                  Comparator.comparing(
+                      BidSosResponse::estimatedDistanceM,
+                      Comparator.nullsLast(
+                          Comparator.naturalOrder()))) // Nearest meters first, empty metrics last
+              .toList();
+      case CHEAPEST ->
+          bids.stream()
+              .sorted(Comparator.comparing(BidSosResponse::price)) // Lowest price tag first
+              .toList();
+      case TOP_RATED ->
+          bids.stream()
+              .sorted(
+                  Comparator.comparing(
+                      r ->
+                          r.mechanic() != null && r.mechanic().avgRate() != null
+                              ? r.mechanic().avgRate()
+                              : BigDecimal.ZERO,
+                      Comparator.<BigDecimal>naturalOrder().reversed()))
+              .toList();
+    };
+  }
+
+  @Override
+  @Transactional(readOnly = true)
+  public Page<BidSosResponse> getByMechanic(UUID mechanicId, Pageable pageable) {
+    return bidSosRepository
+        .findByMechanicMechanicId(mechanicId, pageable)
+        .map(bidSosMapper::toResponse);
+  }
+
+  /** WORKFLOW: Processes a driver's decision to ACCEPT or REJECT a mechanic's bid. */
+  @Override
+  @Transactional
+  public BidSosResponse updateStatus(UUID bidId, UpdateBidStatusRequest request) {
+
+    // Mechanics are blocked from using this endpoint to back out; they must use the cancel endpoint
+    if (request.status() == BidStatus.CANCELLED) {
+      throw new IllegalStateException(
+          "Use the cancel endpoint for mechanic-initiated cancellation");
+    }
+
+    BidSos bid =
+        bidSosRepository
+            .findById(bidId)
+            .orElseThrow(() -> new EntityNotFoundException("Bid not found: " + bidId));
+
+    // SECURITY CHECK: Ensure that the person executing this call is the actual owner who created
+    // the SOS ticket
+    UUID sosOwnerId = bid.getSosRequest().getUser().getUserId();
+    if (!sosOwnerId.equals(request.userId())) {
+      throw new AccessDeniedException("You can only respond to bids on your own SOS request");
+    }
+
+    // Commit the status change (e.g., ACCEPTED) to the database
+    bid.setStatus(request.status());
+    bid.setRespondedAt(LocalDateTime.now());
+    bidSosRepository.save(bid);
+
+    // --- DOMINO EFFECT: IF THE BID WAS ACCEPTED ---
+    if (request.status() == BidStatus.ACCEPTED) {
+
+      // 1. AUTO-REJECT RUNNERS UP: Reject all other competing bids for this ticket so those
+      // mechanics can work elsewhere
+      List<BidSos> rejectedBids = autoRejectOtherBids(bid);
+
+      // 2. TICKET STATE TRANSITION: Lock down the core SOS Request state from PENDING to ACCEPTED
+      SosRequest sos = bid.getSosRequest();
+      sos.setStatus(SosStatus.ACCEPTED);
+      sosRequestRepository.save(sos);
+
+      Mechanic mechanic = bid.getMechanic();
+      UUID userId = sos.getUser().getUserId();
+
+      // Structure a message payload packed with targeted GPS directions
+      BidAcceptedEvent acceptedEvent =
+          new BidAcceptedEvent(
+              bid.getBidId(),
+              sos.getSosId(),
+              mechanic.getMechanicId(),
+              userId,
+              sos.getLocation().getY(),
+              sos.getLocation().getX(),
+              LocalDateTime.now());
+
+      // 3. BROADCAST KAFKA EVENT: Broadcasts the data pipeline update system-wide
+      sosEventProducer.publishBidAccepted(acceptedEvent);
+
+      // 4. LIVE WEBSOCKET ALERT: Fires a message directly to the winning mechanic's app screen to
+      // update their map routing
+      messagingTemplate.convertAndSendToUser(
+          mechanic.getMechanicId().toString(), "/queue/sos-updates", acceptedEvent);
+
+      // 5. PUSH NOTIFICATION (WINNER): Pop-up alert telling the chosen mechanic to hit the road
+      sosEventProducer.publishNotification(
+          new SosNotificationEvent(
+              "BID_ACCEPTED",
+              mechanic.getMechanicId(),
+              "MECHANIC",
+              sos.getSosId(),
+              "Your bid was accepted",
+              "Head to the user location now"));
+
+      // 6. PUSH NOTIFICATIONS (LOSERS): Send polite "not selected" alerts to all the runners-up
+      // mechanics
+      if (!rejectedBids.isEmpty()) {
+        List<UUID> rejectedBidIds = rejectedBids.stream().map(BidSos::getBidId).toList();
+        sosEventProducer.publishBidRejected(new BidRejectedEvent(sos.getSosId(), rejectedBidIds));
+        rejectedBids.forEach(
+            rejected -> {
+              sosEventProducer.publishNotification(
+                  new SosNotificationEvent(
+                      "BID_REJECTED",
+                      rejected.getMechanic().getMechanicId(),
+                      "MECHANIC",
+                      sos.getSosId(),
+                      "Another mechanic was selected",
+                      "Your bid was not selected for this request"));
+              // The winner already gets a socket message; the losers only got a push, so their
+              // open bid screen kept showing a live auction that had already been decided.
+              // Their own bid id and nothing else — the winning price is not theirs to see.
+              messagingTemplate.convertAndSendToUser(
+                  rejected.getMechanic().getMechanicId().toString(),
+                  "/queue/sos-updates",
+                  Map.of(
+                      "type",
+                      "BID_REJECTED",
+                      "sosId",
+                      sos.getSosId(),
+                      "bidId",
+                      rejected.getBidId()));
+            });
+      }
+    }
+
+    return bidSosMapper.toResponse(bid);
+  }
+
+  /** WORKFLOW: A mechanic withdraws their bid before a driver accepts it. */
+  @Override
+  @Transactional
+  public BidSosResponse cancel(UUID bidId, UUID mechanicId) {
+    BidSos bid =
+        bidSosRepository
+            .findById(bidId)
+            .orElseThrow(() -> new EntityNotFoundException("Bid not found: " + bidId));
+
+    // SECURITY CHECK: Verify that the mechanic trying to cancel the bid is the actual creator of
+    // the bid
+    if (!bid.getMechanic().getMechanicId().equals(mechanicId)) {
+      throw new AccessDeniedException("You can only cancel your own bid");
+    }
+    // SAFETY CHECK: A mechanic can only withdraw a bid if it's still pending (not yet accepted or
+    // rejected)
+    if (bid.getStatus() != BidStatus.PENDING) {
+      throw new IllegalStateException(
+          "Only PENDING bids can be cancelled, current status: " + bid.getStatus());
+    }
+
+    // Set status to CANCELLED in the database
+    bid.setStatus(BidStatus.CANCELLED);
+    bid.setRespondedAt(LocalDateTime.now());
+    bidSosRepository.save(bid);
+
+    SosRequest sos = bid.getSosRequest();
+
+    // Notify the system ecosystem about the cancellation event via Kafka
+    sosEventProducer.publishBidCancelled(
+        new BidCancelledEvent(bid.getBidId(), sos.getSosId(), mechanicId, bid.getRespondedAt()));
+    // PUSH NOTIFICATION: Alert the driver that a mechanic has withdrawn their quote proposal
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "BID_CANCELLED",
+            sos.getUser().getUserId(),
+            "USER",
+            sos.getSosId(),
+            "A bid was withdrawn",
+            "A mechanic withdrew their bid on your request"));
+
+    // Take the withdrawn bid off the driver's screen. Accepting a bid that no longer exists
+    // wastes the one resource nobody has during a breakdown, which is time.
+    messagingTemplate.convertAndSendToUser(
+        sos.getUser().getUserId().toString(),
+        "/queue/sos-updates",
+        Map.of("type", "BID_CANCELLED", "sosId", sos.getSosId(), "bidId", bid.getBidId()));
+
+    return bidSosMapper.toResponse(bid);
+  }
+
+  // When the user accepts one bid, all other PENDING bids on the same SOS must be
+  // rejected immediately so those mechanics know they're free to take other jobs.
+  private List<BidSos> autoRejectOtherBids(BidSos acceptedBid) {
+    UUID sosId = acceptedBid.getSosRequest().getSosId();
+
+    // Pull all other bids matching this SOS ID that are still stuck in a 'PENDING' status state
+    List<BidSos> pendingBids =
+        bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING);
+
+    // Loop through and flip them all to REJECTED status states
+    pendingBids.forEach(b -> b.setStatus(BidStatus.REJECTED));
+
+    // Update them collectively via batch saving
+    bidSosRepository.saveAll(pendingBids);
+    return pendingBids;
+  }
 }

@@ -8,7 +8,7 @@ import org.mapstruct.Mapping;
 @Mapper(componentModel = "spring")
 public interface SosMediaMapper {
 
-    // url is a presigned S3 GET URL, generated fresh on read — not a stored field
-    @Mapping(target = "url", ignore = true)
-    SosMediaResponse toResponse(SosMedia sosMedia);
+  // url is a presigned S3 GET URL, generated fresh on read — not a stored field
+  @Mapping(target = "url", ignore = true)
+  SosMediaResponse toResponse(SosMedia sosMedia);
 }
