@@ -74,17 +74,6 @@ medusa:
   base-url: ${MEDUSA_BASE_URL}
   public-key: ${MEDUSA_PUBLIC_KEY}
 
-sso:
-  # Everything up to and including the version segment — the mount differs per environment:
-  #   local     http://localhost:4000/api
-  #   deployed  https://sso.<env>.autofik.com/api/v1
-  # The paths below it (/user/profile, /mechanic/profile, /user/vehicles/{id}) are identical
-  # everywhere, so the difference stays in configuration rather than in code.
-  base-url: ${SSO_BASE_URL}
-  # Opens verify-token and nothing else. The profile and vehicle reads are scoped to the calling
-  # user and present that user's own bearer instead.
-  publishable-api-key: ${SSO_PUBLISHABLE_API_KEY}
-
 sos:
   arrival:
     # A mechanic may only mark ARRIVED when their last known position is within this many metres

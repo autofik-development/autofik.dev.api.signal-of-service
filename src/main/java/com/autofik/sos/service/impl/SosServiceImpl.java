@@ -216,10 +216,9 @@ public class SosServiceImpl implements SosService {
 
     String problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
 
-    // Both rows are projections of SSO, created here on first use. The vehicle read is scoped
-    // by SSO to the calling user, so it doubles as the ownership check: unverified, a driver
-    // could file a breakdown against a stranger's car and hand a mechanic the wrong plate.
-    // This has to happen inside the request — the caller's bearer exists nowhere else.
+    // Both rows are projections of SSO. ponytail: no SSO round-trip for today's test (see
+    // SsoProjection) — the vehicle lookup checks local ownership instead of SSO's per-user
+    // scoping, so a driver still can't file a breakdown against a stranger's car.
     User user = ssoProjection.user(request.userId());
     Vehicle vehicle = ssoProjection.vehicle(request.vehicleId(), user);
     SosRequest sos =
@@ -436,6 +435,15 @@ public class SosServiceImpl implements SosService {
     // approve or reject the completion of anyone else's job.
     if (!history.getSosRequest().getUser().getUserId().equals(request.userId())) {
       throw new AccessDeniedException("You can only respond to your own SOS request");
+    }
+
+    // A decided history entry cannot be decided again. ACCEPTED-then-ACCEPTED is incidentally
+    // blocked by validateTransition below once the sos is already COMPLETED, but ACCEPTED-then-
+    // REJECTED (or the reverse) is not — without this, the outcome could be flipped after the
+    // fact, silently re-notifying the mechanic.
+    if (history.getApprovedStatus() != ApprovedStatus.PENDING_APPROVAL) {
+      throw new IllegalStateException(
+          "This completion request was already " + history.getApprovedStatus());
     }
 
     history.setApprovedStatus(request.approvedStatus());
