@@ -16,11 +16,11 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Looks up the local projection of a User/Mechanic/Vehicle that SSO otherwise owns.
  *
- * <p>ponytail: no SSO round-trip — mobile is calling this service directly for today's test with
- * no gateway in front to hand it a bearer token, so every id here must already exist locally
- * (seeded via scripts/seed.sh, or created through POST /api/v1/mechanics) or the request fails
- * clearly instead of guessing. Restore the SSO verify+fetch call (git history: SsoClient,
- * SsoProfile, SsoVehicle) once the gateway is back and a real bearer is available again.
+ * <p>ponytail: no SSO round-trip — mobile is calling this service directly for today's test with no
+ * gateway in front to hand it a bearer token, so every id here must already exist locally (seeded
+ * via scripts/seed.sh, or created through POST /api/v1/mechanics) or the request fails clearly
+ * instead of guessing. Restore the SSO verify+fetch call (git history: SsoClient, SsoProfile,
+ * SsoVehicle) once the gateway is back and a real bearer is available again.
  */
 @Component
 @RequiredArgsConstructor

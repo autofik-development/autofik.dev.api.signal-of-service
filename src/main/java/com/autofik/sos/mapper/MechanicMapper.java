@@ -16,8 +16,7 @@ public interface MechanicMapper {
       expression = "java(mechanic.getRate() != null ? mechanic.getRate().getRatingAvg() : null)")
   @Mapping(
       target = "rateCount",
-      expression =
-          "java(mechanic.getRate() != null ? mechanic.getRate().getRatingCount() : null)")
+      expression = "java(mechanic.getRate() != null ? mechanic.getRate().getRatingCount() : null)")
   // currentLocation is a JTS Point: X = longitude, Y = latitude (WGS-84)
   @Mapping(
       target = "latitude",
