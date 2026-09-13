@@ -235,6 +235,14 @@ public class BidServiceImpl implements BidService {
       throw new AccessDeniedException("You can only respond to bids on your own SOS request");
     }
 
+    // A bid already responded to cannot be responded to again — without this, re-accepting an
+    // ACCEPTED bid re-runs the entire domino effect below (duplicate Kafka events, duplicate
+    // push notifications, duplicate WebSocket messages) on every retry or double-tap.
+    if (bid.getStatus() != BidStatus.PENDING) {
+      throw new IllegalStateException(
+          "Only PENDING bids can be responded to, current status: " + bid.getStatus());
+    }
+
     // Commit the status change (e.g., ACCEPTED) to the database
     bid.setStatus(request.status());
     bid.setRespondedAt(LocalDateTime.now());

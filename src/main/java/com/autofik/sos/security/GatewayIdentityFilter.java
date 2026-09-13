@@ -47,9 +47,9 @@ public class GatewayIdentityFilter extends OncePerRequestFilter {
       try {
         UUID id = UUID.fromString(user != null ? user : mechanic);
         String role = user != null ? ROLE_USER : ROLE_MECHANIC;
-        // The bearer goes in the credentials slot: SSO's profile and vehicle endpoints are
-        // scoped to the calling user, so the projection reads need the caller's own token
-        // and there is no service-to-service equivalent. Never log this value.
+        // The bearer goes in the credentials slot. ponytail: unused now that SsoProjection
+        // does local-only lookups (no SSO round-trip) — kept for when that call comes back.
+        // Never log this value.
         UsernamePasswordAuthenticationToken auth =
             new UsernamePasswordAuthenticationToken(
                 id,

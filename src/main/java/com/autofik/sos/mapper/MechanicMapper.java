@@ -9,8 +9,14 @@ import org.mapstruct.Mapping;
 @Mapper(componentModel = "spring")
 public interface MechanicMapper {
 
-  @Mapping(target = "avgRate", ignore = true)
-  @Mapping(target = "rateCount", ignore = true)
+  // mechanic.rate is populated by FeedbackServiceImpl.recalculateMechanicRating on every new
+  // feedback; null until the mechanic has at least one.
+  @Mapping(
+      target = "avgRate",
+      expression = "java(mechanic.getRate() != null ? mechanic.getRate().getRatingAvg() : null)")
+  @Mapping(
+      target = "rateCount",
+      expression = "java(mechanic.getRate() != null ? mechanic.getRate().getRatingCount() : null)")
   // currentLocation is a JTS Point: X = longitude, Y = latitude (WGS-84)
   @Mapping(
       target = "latitude",
