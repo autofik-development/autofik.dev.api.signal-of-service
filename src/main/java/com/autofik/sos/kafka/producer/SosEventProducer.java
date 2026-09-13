@@ -107,9 +107,6 @@ public class SosEventProducer {
   }
 
   public void publishOneSignalPushFailed(OneSignalPushFailedEvent event) {
-    kafkaTemplate.send(
-            KafkaConfig.TOPIC_SOS_DLQ,
-            event.recipientId().toString(),
-    event);
+    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_DLQ, event.recipientId().toString(), event);
   }
 }

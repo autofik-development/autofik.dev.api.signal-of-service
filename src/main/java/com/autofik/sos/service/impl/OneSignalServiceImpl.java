@@ -7,7 +7,6 @@ import com.onesignal.client.ApiException;
 import com.onesignal.client.api.DefaultApi;
 import com.onesignal.client.model.LanguageStringMap;
 import com.onesignal.client.model.Notification;
-
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -76,25 +75,14 @@ public class OneSignalServiceImpl implements OneSignalService {
           e.getCode(),
           e.getResponseBody());
       sosEventProducer.publishOneSignalPushFailed(
-              new OneSignalPushFailedEvent(
-                      recipientId,
-                      e.getCode(),
-                      e.getResponseBody(),
-              LocalDateTime.now())
-      );
+          new OneSignalPushFailedEvent(
+              recipientId, e.getCode(), e.getResponseBody(), LocalDateTime.now()));
     } catch (Exception e) {
       // Generic System Failure: Protects the application thread against connection timeouts or
       // structural execution faults
       log.warn("OneSignal push failed recipient={}: {}", recipientId, e.getMessage());
       sosEventProducer.publishOneSignalPushFailed(
-              new OneSignalPushFailedEvent(
-                      recipientId,
-                      null,
-                      e.getMessage(),
-                      LocalDateTime.now()
-              )
-      );
+          new OneSignalPushFailedEvent(recipientId, null, e.getMessage(), LocalDateTime.now()));
     }
   }
-
 }
