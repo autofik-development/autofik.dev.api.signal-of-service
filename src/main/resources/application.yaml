@@ -10,6 +10,15 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      # Default max (10) queues behind the STOMP inbound pool (32-64 threads, see
+      # WebSocketConfig) once location pings and REST traffic land concurrently.
+      # 20 gives headroom without hogging Postgres's max_connections (100).
+      maximum-pool-size: ${DB_POOL_MAX}
+      minimum-idle: ${DB_POOL_MIN_IDLE}
+      # Fail fast instead of the 30s default — a stuck pool should surface as an
+      # error quickly, not hang every caller behind it.
+      connection-timeout: 5000
   jpa:
     open-in-view: false
     hibernate:
