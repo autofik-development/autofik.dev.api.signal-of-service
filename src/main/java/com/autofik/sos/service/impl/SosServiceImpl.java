@@ -288,11 +288,53 @@ public class SosServiceImpl implements SosService {
         .orElse(false);
   }
 
-  // The driver who raised it, or any mechanic who bid on it — a mechanic needs to read the SOS
-  // to decide what to bid, so visibility starts at the bid rather than at the acceptance.
+  // The driver who raised it, an existing bidder, or an eligible mechanic during the bidding
+  // window.
+  // Eligibility matched the broadcast fan-out criteria so a mechanic can inspect an SOS before
+  // bidding.
   private boolean isVisibleTo(SosRequest sos, UUID callerId) {
-    return sos.getUser().getUserId().equals(callerId)
-        || bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sos.getSosId(), callerId);
+    if (sos.getUser().getUserId().equals(callerId)) {
+      return true;
+    }
+    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sos.getSosId(), callerId)) {
+      return true;
+    }
+    if (sos.getBiddingExpiresAt() == null
+        || !LocalDateTime.now().isBefore(sos.getBiddingExpiresAt())) {
+      return false;
+    }
+    return isEligibleMechanic(sos, callerId);
+  }
+
+  private boolean isEligibleMechanic(SosRequest sos, UUID callerId) {
+    Point location = sos.getLocation();
+    if (location == null || sos.getProblemType() == null) {
+      return false;
+    }
+
+    double lat = location.getY();
+    double lng = location.getX();
+
+    int effectiveRadiusKm =
+        sos.getBroadcastRadiusKm() != null ? sos.getBroadcastRadiusKm() : DEFAULT_BROADCAST_KM;
+    String sosCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
+    List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
+
+    List<Mechanic> coarse =
+        mechanicRepository.findByH3CellsAndSkillTag(searchCells, sos.getProblemType());
+
+    if (coarse.isEmpty()) {
+      return false;
+    }
+
+    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
+
+    List<Mechanic> matched =
+        sos.getBroadcastRadiusKm() != null
+            ? mechanicRepository.filterByRadiusAndBroadcast(
+                ids, lat, lng, sos.getBroadcastRadiusKm() * 1000.0)
+            : mechanicRepository.filterByRadius(ids, lat, lng);
+    return matched.stream().anyMatch(mechanic -> mechanic.getMechanicId().equals(callerId));
   }
 
   @Override

@@ -33,6 +33,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -260,5 +261,15 @@ class SosMediaServiceImplTest {
 
     assertThat(result).hasSize(1);
     assertThat(result.get(0).url()).contains("minio.example.com");
+  }
+
+  @Test
+  void getBySosRequest_cannotView_throwsAccessDeniedException() {
+    when(sosService.canView(sosId, mechanicId)).thenReturn(false);
+
+    assertThatThrownBy(() -> sosMediaService.getBySosRequest(sosId, mechanicId))
+        .isInstanceOf(AccessDeniedException.class);
+
+    verifyNoInteractions(sosMediaRepository);
   }
 }

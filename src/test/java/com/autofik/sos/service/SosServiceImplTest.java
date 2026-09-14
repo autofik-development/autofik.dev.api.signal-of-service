@@ -28,6 +28,7 @@ import com.autofik.sos.repository.*;
 import com.autofik.sos.service.impl.SosServiceImpl;
 import jakarta.persistence.EntityNotFoundException;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -586,6 +587,54 @@ class SosServiceImplTest {
 
     assertThatThrownBy(() -> sosService.getById(sosId, stranger))
         .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void getById_eligibleMechanicWithoutBid_canViewDuringBiddingWindow() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
+
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+        .thenReturn(false);
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+        .thenReturn(List.of(mechanic));
+    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble()))
+        .thenReturn(List.of(mechanic));
+    when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
+    SosRequestResponse result = sosService.getById(sosId, mechanicId);
+    assertThat(result).isEqualTo(sosResponse);
+  }
+
+  @Test
+  void getById_mechanicOutsideRadius_cannotView() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
+
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+        .thenReturn(false);
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+        .thenReturn(List.of(mechanic));
+    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble()))
+        .thenReturn(List.of());
+
+    assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void getById_eligibleMechanicAfterBiddingExpires_cannotView() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    pendingSos.setBiddingExpiresAt(LocalDateTime.now().minusMinutes(1));
+
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+        .thenReturn(false);
+    assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+
+    verifyNoInteractions(mechanicRepository);
   }
 
   // ── proposeStatusChange ───────────────────────────────────────────────────
