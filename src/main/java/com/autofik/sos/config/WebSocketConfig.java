@@ -7,12 +7,14 @@ import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.web.socket.WebSocketHandler;
@@ -39,6 +41,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
   private boolean devInsecureHandshake;
 
   private final StompSubscriptionInterceptor subscriptionInterceptor;
+
+  @Qualifier("heartbeatTaskScheduler")
+  private final TaskScheduler heartbeatTaskScheduler;
 
   @Override
   public void registerStompEndpoints(StompEndpointRegistry registry) {
@@ -127,7 +132,10 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
   @Override
   public void configureMessageBroker(MessageBrokerRegistry config) {
     config.setApplicationDestinationPrefixes("/app");
-    config.enableSimpleBroker("/topic", "/queue");
+    config
+        .enableSimpleBroker("/topic", "/queue")
+        .setTaskScheduler(heartbeatTaskScheduler)
+        .setHeartbeatValue(new long[] {10_000, 10_000});
   }
 
   @Override

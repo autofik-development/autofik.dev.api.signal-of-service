@@ -25,4 +25,12 @@ public class SchedulerConfig {
     scheduler.setThreadNamePrefix("sos-expiry-");
     return scheduler;
   }
+
+  @Bean
+  public TaskScheduler heartbeatTaskScheduler() {
+    ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+    scheduler.setPoolSize(1);
+    scheduler.setThreadNamePrefix("stomp-heartbeat");
+    return scheduler;
+  }
 }
