@@ -1,10 +1,13 @@
 package com.autofik.sos.service.impl;
 
+import com.autofik.sos.dto.event.OneSignalPushFailedEvent;
+import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.service.OneSignalService;
 import com.onesignal.client.ApiException;
 import com.onesignal.client.api.DefaultApi;
 import com.onesignal.client.model.LanguageStringMap;
 import com.onesignal.client.model.Notification;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -19,6 +22,7 @@ import org.springframework.stereotype.Service;
 public class OneSignalServiceImpl implements OneSignalService {
 
   private final DefaultApi oneSignalApi;
+  private final SosEventProducer sosEventProducer;
 
   @Value("${onesignal.app-id}")
   private String appId;
@@ -70,10 +74,15 @@ public class OneSignalServiceImpl implements OneSignalService {
           recipientId,
           e.getCode(),
           e.getResponseBody());
+      sosEventProducer.publishOneSignalPushFailed(
+          new OneSignalPushFailedEvent(
+              recipientId, e.getCode(), e.getResponseBody(), LocalDateTime.now()));
     } catch (Exception e) {
       // Generic System Failure: Protects the application thread against connection timeouts or
       // structural execution faults
       log.warn("OneSignal push failed recipient={}: {}", recipientId, e.getMessage());
+      sosEventProducer.publishOneSignalPushFailed(
+          new OneSignalPushFailedEvent(recipientId, null, e.getMessage(), LocalDateTime.now()));
     }
   }
 }
