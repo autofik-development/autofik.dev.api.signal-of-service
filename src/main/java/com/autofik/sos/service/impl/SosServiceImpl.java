@@ -80,7 +80,8 @@ public class SosServiceImpl implements SosService {
           SosStatus.PENDING, Set.of(SosStatus.ACCEPTED, SosStatus.CANCELLED),
           SosStatus.ACCEPTED, Set.of(SosStatus.ON_THE_WAY, SosStatus.CANCELLED),
           SosStatus.ON_THE_WAY, Set.of(SosStatus.ARRIVED, SosStatus.CANCELLED),
-          SosStatus.ARRIVED, Set.of(SosStatus.COMPLETED, SosStatus.CANCELLED));
+          SosStatus.ARRIVED, Set.of(SosStatus.IN_PROGRESS, SosStatus.CANCELLED),
+          SosStatus.IN_PROGRESS, Set.of(SosStatus.COMPLETED, SosStatus.CANCELLED));
 
   // Standard SRID 4326 geometry factory for GPS tracking (WGS 84 latitude/longitude)
   private static final GeometryFactory GEOMETRY_FACTORY =
@@ -100,7 +101,12 @@ public class SosServiceImpl implements SosService {
 
   // Collection of states indicating that a customer ticket is unresolved
   private static final List<SosStatus> ACTIVE_STATUSES =
-      List.of(SosStatus.PENDING, SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED);
+      List.of(
+          SosStatus.PENDING,
+          SosStatus.ACCEPTED,
+          SosStatus.ON_THE_WAY,
+          SosStatus.ARRIVED,
+          SosStatus.IN_PROGRESS);
   private static final H3Core H3;
 
   static {
@@ -352,14 +358,16 @@ public class SosServiceImpl implements SosService {
   }
 
   // Direct status update (mechanic-initiated, no user approval needed).
-  // Only ON_THE_WAY and ARRIVED flow through here; COMPLETED requires user approval via
-  // proposeStatusChange.
+  // Only ON_THE_WAY, ARRIVED, and IN_PROGRESS flow through here; COMPLETED requires user approval
+  // via proposeStatusChange.
   @Override
   @Transactional
   public SosRequestResponse updateStatus(UUID sosId, UUID mechanicId, SosStatus toStatus) {
-    if (toStatus != SosStatus.ON_THE_WAY && toStatus != SosStatus.ARRIVED) {
+    if (toStatus != SosStatus.ON_THE_WAY
+        && toStatus != SosStatus.ARRIVED
+        && toStatus != SosStatus.IN_PROGRESS) {
       throw new IllegalStateException(
-          "Only ON_THE_WAY and ARRIVED can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
+          "Only ON_THE_WAY, ARRIVED, and IN_PROGRESS can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
     }
     SosRequest sos = findSosOrThrow(sosId);
     validateTransition(sos.getStatus(), toStatus);
@@ -384,6 +392,10 @@ public class SosServiceImpl implements SosService {
     // ON_THE_WAY is still en route; only ARRIVED ends the drive here.
     if (toStatus == SosStatus.ARRIVED) {
       routeEtaService.clear(sosId);
+    }
+
+    if (toStatus == SosStatus.IN_PROGRESS) {
+      sos.setJobStartedAt(LocalDateTime.now());
     }
 
     LocalDateTime now = LocalDateTime.now();
@@ -498,6 +510,9 @@ public class SosServiceImpl implements SosService {
       SosStatus fromStatus = sos.getStatus();
       validateTransition(fromStatus, history.getToStatus());
       sos.setStatus(history.getToStatus());
+      if (history.getToStatus() == SosStatus.COMPLETED) {
+        sos.setJobCompletedAt(LocalDateTime.now());
+      }
       sosRequestRepository.save(sos);
       routeEtaService.clear(sos.getSosId()); // COMPLETED — no drive left to count down
 
@@ -560,6 +575,15 @@ public class SosServiceImpl implements SosService {
                   sos.getSosId(),
                   "Mechanic has arrived",
                   "Your mechanic has arrived at your location"));
+      case IN_PROGRESS ->
+          sosEventProducer.publishNotification(
+              new SosNotificationEvent(
+                  "STATUS_IN_PROGRESS",
+                  userId,
+                  "USER",
+                  sos.getSosId(),
+                  "Job started",
+                  "Your mechanic has started the repair"));
       case COMPLETED -> {
         sosEventProducer.publishNotification(
             new SosNotificationEvent(
@@ -634,6 +658,9 @@ public class SosServiceImpl implements SosService {
         base.createdAt(),
         base.updatedAt(),
         base.biddingExpiresAt(),
+        base.jobStartedAt(),
+        base.jobCompletedAt(),
+        base.durationSeconds(),
         base.rebroadcastCount(),
         base.user(),
         base.vehicle(),

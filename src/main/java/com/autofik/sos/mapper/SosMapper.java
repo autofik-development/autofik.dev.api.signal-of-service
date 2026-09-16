@@ -23,7 +23,17 @@ public interface SosMapper {
   @Mapping(target = "locationAddress", source = "locationAddress")
   @Mapping(target = "broadcastRadiusKm", source = "broadcastRadiusKm")
   @Mapping(target = "mechanic", ignore = true)
+  @Mapping(target = "durationSeconds", expression = "java(durationSeconds(sosRequest))")
   SosRequestResponse toResponse(SosRequest sosRequest);
 
   List<SosRequestResponse> toResponseList(List<SosRequest> sosRequests);
+
+  // Null until both timestamps are set — job never started, or started but not yet completed.
+  default Long durationSeconds(SosRequest sosRequest) {
+    if (sosRequest.getJobStartedAt() == null || sosRequest.getJobCompletedAt() == null) {
+      return null;
+    }
+    return java.time.Duration.between(sosRequest.getJobStartedAt(), sosRequest.getJobCompletedAt())
+        .getSeconds();
+  }
 }
