@@ -130,6 +130,7 @@ class SosServiceImplTest {
             null,
             null,
             null,
+            null,
             0,
             null,
             null,

@@ -17,6 +17,8 @@ public record SosRequestResponse(
     @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime createdAt,
     @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime updatedAt,
     @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en") LocalDateTime biddingExpiresAt,
+    @JsonFormat(pattern = "MMM d yyyy, h:mm:ss a", locale = "en")
+        LocalDateTime bidDecisionExpiresAt,
     int rebroadcastCount,
     UserResponse user,
     VehicleResponse vehicle,

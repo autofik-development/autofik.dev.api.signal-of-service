@@ -66,6 +66,14 @@ public class SosRequest {
   @Column(name = "bidding_expires_at")
   private LocalDateTime biddingExpiresAt;
 
+  // A separate, per-mechanic decision countdown — display-only today, not enforced anywhere.
+  // Distinct from biddingExpiresAt (the whole ticket's deadline) even though both are 60s right
+  // now: this one answers "how long does a mechanic have to decide," biddingExpiresAt answers
+  // "when does the ticket stop accepting bids at all." Kept as separate fields so they can
+  // diverge later without conflating the two concepts again.
+  @Column(name = "bid_decision_expires_at")
+  private LocalDateTime bidDecisionExpiresAt;
+
   @Column(name = "rebroadcast_count", columnDefinition = "integer not null default 0")
   @Builder.Default
   private int rebroadcastCount = 0;
@@ -77,6 +85,8 @@ public class SosRequest {
 
   // 250 seconds (~4 min) for mechanics to respond before the request expires automatically.
   public static final int BIDDING_WINDOW_SECONDS = 250;
+  // Separate from BIDDING_WINDOW_SECONDS on purpose — see bidDecisionExpiresAt above.
+  public static final int BID_DECISION_WINDOW_SECONDS = 60;
   public static final int MAX_REBROADCAST = 3;
 
   @PrePersist
@@ -84,6 +94,7 @@ public class SosRequest {
     createdAt = LocalDateTime.now();
     updatedAt = LocalDateTime.now();
     biddingExpiresAt = createdAt.plusSeconds(BIDDING_WINDOW_SECONDS);
+    bidDecisionExpiresAt = createdAt.plusSeconds(BID_DECISION_WINDOW_SECONDS);
   }
 
   @PreUpdate
