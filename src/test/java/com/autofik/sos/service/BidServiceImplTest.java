@@ -368,7 +368,7 @@ class BidServiceImplTest {
 
   // ── live bidding pushes ───────────────────────────────────────────────────
 
-  // The bidding window is 250 seconds. A push notification about a bid the open screen cannot
+  // The bidding window is 60 seconds. A push notification about a bid the open screen cannot
   // show is not a real-time auction.
   @Test
   void create_pushesTheNewBidToTheDriver() {

@@ -15,4 +15,4 @@ public record CreateSosRequest(
     @NotNull @DecimalMin("10.41") @DecimalMax("14.69") Double latitude,
     @NotNull @DecimalMin("102.5") @DecimalMax("107.63") Double longitude,
     @NotNull UUID vehicleId,
-    @Min(5) @Max(30) Integer broadcastRadiusKm) {}
+    @Min(5) @Max(20) Integer broadcastRadiusKm) {}
