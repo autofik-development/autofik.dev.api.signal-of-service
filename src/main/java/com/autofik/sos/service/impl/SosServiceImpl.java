@@ -634,7 +634,6 @@ public class SosServiceImpl implements SosService {
         base.createdAt(),
         base.updatedAt(),
         base.biddingExpiresAt(),
-        base.bidDecisionExpiresAt(),
         base.rebroadcastCount(),
         base.user(),
         base.vehicle(),
