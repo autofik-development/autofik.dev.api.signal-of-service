@@ -58,7 +58,7 @@ public class MechanicServiceImpl implements MechanicService {
   // A job is live while the ticket is unresolved — the window in which the driver may watch
   // their mechanic approach.
   private static final List<SosStatus> ACTIVE_STATUSES =
-      List.of(SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED);
+      List.of(SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED, SosStatus.IN_PROGRESS);
   private static final H3Core H3;
 
   static {

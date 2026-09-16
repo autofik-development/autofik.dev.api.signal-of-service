@@ -11,8 +11,8 @@ import org.locationtech.jts.geom.Point;
 
 /**
  * Core domain entity for a user-submitted roadside assistance request. Lifecycle: PENDING →
- * ACCEPTED → ON_THE_WAY → ARRIVED → COMPLETED (or CANCELLED/EXPIRED). The accepted mechanic is NOT
- * stored here — resolve it via the ACCEPTED bid in BidSos.
+ * ACCEPTED → ON_THE_WAY → ARRIVED → IN_PROGRESS → COMPLETED (or CANCELLED/EXPIRED). The accepted
+ * mechanic is NOT stored here — resolve it via the ACCEPTED bid in BidSos.
  */
 @Entity
 @Table(name = "sos_request")
@@ -65,6 +65,14 @@ public class SosRequest {
   // updatable=false: the bidding window is fixed at creation time and must never change.
   @Column(name = "bidding_expires_at")
   private LocalDateTime biddingExpiresAt;
+
+  // Set when the mechanic transitions the request to IN_PROGRESS (actual repair start).
+  @Column(name = "job_started_at")
+  private LocalDateTime jobStartedAt;
+
+  // Set when the user approves the mechanic's COMPLETED proposal (actual repair end).
+  @Column(name = "job_completed_at")
+  private LocalDateTime jobCompletedAt;
 
   @Column(name = "rebroadcast_count", columnDefinition = "integer not null default 0")
   @Builder.Default

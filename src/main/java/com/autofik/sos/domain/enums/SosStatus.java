@@ -5,6 +5,7 @@ public enum SosStatus {
   ACCEPTED,
   ON_THE_WAY,
   ARRIVED,
+  IN_PROGRESS,
   COMPLETED,
   CANCELLED,
   EXPIRED

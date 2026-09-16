@@ -130,6 +130,9 @@ class SosServiceImplTest {
             null,
             null,
             null,
+            null,
+            null,
+            null,
             0,
             null,
             null,
@@ -641,19 +644,20 @@ class SosServiceImplTest {
 
   @Test
   void proposeStatusChange_validTransition_savesHistoryAndReturnsResponse() {
-    SosRequest arrivedSos =
+    // IN_PROGRESS is now mandatory before COMPLETED — ARRIVED can no longer propose it directly.
+    SosRequest inProgressSos =
         SosRequest.builder()
             .sosId(sosId)
             .problemType(resolvedKey)
-            .status(SosStatus.ARRIVED)
+            .status(SosStatus.IN_PROGRESS)
             .user(user)
             .vehicle(vehicle)
             .build();
     ProposeStatusChangeRequest request =
         new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
-    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(inProgressSos));
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    stubAssignedMechanic(arrivedSos);
+    stubAssignedMechanic(inProgressSos);
     when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
         .thenAnswer(
             inv -> {
@@ -669,10 +673,29 @@ class SosServiceImplTest {
     ArgumentCaptor<SosStatusHistory> captor = ArgumentCaptor.forClass(SosStatusHistory.class);
     verify(sosStatusHistoryRepository).save(captor.capture());
     SosStatusHistory saved = captor.getValue();
-    assertThat(saved.getFromStatus()).isEqualTo(SosStatus.ARRIVED);
+    assertThat(saved.getFromStatus()).isEqualTo(SosStatus.IN_PROGRESS);
     assertThat(saved.getToStatus()).isEqualTo(SosStatus.COMPLETED);
     assertThat(saved.getApprovedStatus()).isEqualTo(ApprovedStatus.PENDING_APPROVAL);
     assertThat(result).isEqualTo(historyResponse);
+  }
+
+  // ARRIVED can no longer skip straight to COMPLETED now that IN_PROGRESS is mandatory.
+  @Test
+  void proposeStatusChange_fromArrived_rejectedSkippingInProgress() {
+    SosRequest arrivedSos =
+        SosRequest.builder()
+            .sosId(sosId)
+            .problemType(resolvedKey)
+            .status(SosStatus.ARRIVED)
+            .user(user)
+            .vehicle(vehicle)
+            .build();
+    ProposeStatusChangeRequest request =
+        new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
+
+    assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
+        .isInstanceOf(IllegalStateException.class);
   }
 
   @Test
@@ -697,17 +720,17 @@ class SosServiceImplTest {
 
   @Test
   void proposeStatusChange_mechanicNotFound_throwsEntityNotFoundException() {
-    SosRequest arrivedSos =
+    SosRequest inProgressSos =
         SosRequest.builder()
             .sosId(sosId)
             .problemType(resolvedKey)
-            .status(SosStatus.ARRIVED)
+            .status(SosStatus.IN_PROGRESS)
             .user(user)
             .vehicle(vehicle)
             .build();
     ProposeStatusChangeRequest request =
         new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED);
-    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(arrivedSos));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(inProgressSos));
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
@@ -763,22 +786,23 @@ class SosServiceImplTest {
   }
 
   @Test
-  void approveStatusChange_completed_publishesNotificationToUserAndMechanic() {
-    SosRequest arrivedSos =
+  void approveStatusChange_completed_publishesNotificationToUserAndMechanicAndSetsJobCompletedAt() {
+    SosRequest inProgressSos =
         SosRequest.builder()
             .sosId(sosId)
             .problemType(resolvedKey)
-            .status(SosStatus.ARRIVED)
+            .status(SosStatus.IN_PROGRESS)
+            .jobStartedAt(LocalDateTime.now().minusMinutes(24))
             .user(user)
             .vehicle(vehicle)
             .build();
     SosStatusHistory history =
         SosStatusHistory.builder()
             .id(historyId)
-            .fromStatus(SosStatus.ARRIVED)
+            .fromStatus(SosStatus.IN_PROGRESS)
             .toStatus(SosStatus.COMPLETED)
             .proposedBy(mechanic)
-            .sosRequest(arrivedSos)
+            .sosRequest(inProgressSos)
             .approvedStatus(ApprovedStatus.PENDING_APPROVAL)
             .build();
     ApproveStatusChangeRequest request =
@@ -787,12 +811,36 @@ class SosServiceImplTest {
     when(sosStatusHistoryRepository.findById(historyId)).thenReturn(Optional.of(history));
     when(userRepository.findById(userId)).thenReturn(Optional.of(user));
     when(sosStatusHistoryRepository.save(history)).thenReturn(history);
-    when(sosRequestRepository.save(arrivedSos)).thenReturn(arrivedSos);
-    when(sosMapper.toResponse(arrivedSos)).thenReturn(sosResponse);
+    when(sosRequestRepository.save(inProgressSos)).thenReturn(inProgressSos);
+    when(sosMapper.toResponse(inProgressSos)).thenReturn(sosResponse);
 
     sosService.approveStatusChange(request);
 
     verify(sosEventProducer, times(2)).publishNotification(any(SosNotificationEvent.class));
+    assertThat(inProgressSos.getStatus()).isEqualTo(SosStatus.COMPLETED);
+    assertThat(inProgressSos.getJobCompletedAt()).isNotNull();
+  }
+
+  // ── IN_PROGRESS lifecycle ────────────────────────────────────────────────
+
+  @Test
+  void updateStatus_arrivedToInProgress_setsJobStartedAt() {
+    SosRequest sos = sosAt(SosStatus.ARRIVED);
+    stubUpdateStatus(sos);
+
+    sosService.updateStatus(sosId, mechanicId, SosStatus.IN_PROGRESS);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.IN_PROGRESS);
+    assertThat(sos.getJobStartedAt()).isNotNull();
+  }
+
+  // Mandatory rule: ARRIVED can no longer be set directly to COMPLETED via the mechanic-set path
+  // either — updateStatus already rejects any toStatus other than ON_THE_WAY/ARRIVED/IN_PROGRESS.
+  @Test
+  void updateStatus_completed_rejected_mustUseCompletionEndpoint() {
+    assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.COMPLETED))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("POST /api/v1/sos/{sosId}/completion");
   }
 
   @Test
