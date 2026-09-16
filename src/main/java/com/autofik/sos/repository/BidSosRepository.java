@@ -56,4 +56,10 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
    * SELECT COUNT(*) > 0 FROM bid_sos WHERE sos_id = ? AND mechanic_id = ?
    */
   boolean existsBySosRequestSosIdAndMechanicMechanicId(UUID sosId, UUID mechanicId);
+
+  /**
+   * Checks whether any bid at all exists for a SOS request, regardless of status or mechanic — used
+   * to tell a true zero-response expiry from one where bids just weren't accepted in time.
+   */
+  boolean existsBySosRequestSosId(UUID sosId);
 }

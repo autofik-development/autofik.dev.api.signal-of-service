@@ -4,8 +4,10 @@ import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
+import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -42,6 +44,18 @@ public interface SosService {
    * data on /topic/sos/{sosId}/**.
    */
   boolean canView(UUID sosId, UUID callerId);
+
+  /**
+   * Use Case: while waiting for a bid, the customer's screen shows who's actually nearby right now
+   * — live, not the frozen list from when the ticket was first broadcast. Reuses the ticket's own
+   * location, problem type, and current (possibly auto-expanded) radius, so the caller never has to
+   * reconstruct those themselves or worry about the radius having grown past whatever they
+   * originally picked.
+   *
+   * @throws jakarta.persistence.EntityNotFoundException when the caller may not see it, same rule
+   *     as {@link #getById}
+   */
+  List<MechanicResponse> getNearbyMechanics(UUID sosId, UUID callerId);
 
   /**
    * Use case: View history sos

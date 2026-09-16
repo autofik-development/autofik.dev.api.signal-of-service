@@ -79,6 +79,13 @@ public class SosRequest {
   public static final int BIDDING_WINDOW_SECONDS = 60;
   public static final int MAX_REBROADCAST = 3;
 
+  // Auto-expand ceiling for a zero-bid expiry — deliberately separate from the customer's own
+  // broadcastRadiusKm preference cap (@Max(20) in CreateSosRequest). That cap is what the
+  // customer chose; this is the system's own last-resort fallback when nobody responded, so it's
+  // allowed to search wider than the customer ever asked for.
+  public static final int AUTO_EXPAND_STEP_KM = 5;
+  public static final int AUTO_EXPAND_MAX_KM = 35;
+
   @PrePersist
   protected void onCreate() {
     createdAt = LocalDateTime.now();
