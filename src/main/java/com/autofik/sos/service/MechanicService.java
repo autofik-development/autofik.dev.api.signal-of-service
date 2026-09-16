@@ -41,7 +41,7 @@ public interface MechanicService {
    * @param lat Latitude of the search center.
    * @param lng Longitude of the search center.
    * @param problemType Optional breakdown category filter (e.g. "flat_tire"). Pass null to skip.
-   * @param radiusKm Search radius in km (5–30). Controls the H3 kRing depth.
+   * @param radiusKm Search radius in km (5–20). Controls the H3 kRing depth.
    */
   List<MechanicResponse> findAvailable(double lat, double lng, String problemType, int radiusKm);
 

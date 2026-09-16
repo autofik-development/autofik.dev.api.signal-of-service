@@ -71,12 +71,12 @@ public class SosRequest {
   private int rebroadcastCount = 0;
 
   // Optional user-defined cap on how far to broadcast this SOS. null = no limit (mechanic's
-  // service_radius_km is the only constraint). Max enforced at the DTO layer (50 km).
+  // service_radius_km is the only constraint). Max enforced at the DTO layer (20 km).
   @Column(name = "broadcast_radius_km")
   private Integer broadcastRadiusKm;
 
-  // 250 seconds (~4 min) for mechanics to respond before the request expires automatically.
-  public static final int BIDDING_WINDOW_SECONDS = 250;
+  // 60 seconds for mechanics to respond before the request expires automatically.
+  public static final int BIDDING_WINDOW_SECONDS = 60;
   public static final int MAX_REBROADCAST = 3;
 
   @PrePersist

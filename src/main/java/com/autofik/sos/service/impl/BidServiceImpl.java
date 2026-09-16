@@ -138,7 +138,7 @@ public class BidServiceImpl implements BidService {
 
     BidSosResponse response = bidSosMapper.toResponse(savedBid);
 
-    // The bidding window is 250 seconds. Without this the driver's list only changed when they
+    // The bidding window is 60 seconds. Without this the driver's list only changed when they
     // pulled to refresh, so the push notification was telling them about a bid the screen in
     // front of them could not show. Sent on the driver's private queue, not a topic — a
     // per-SOS broadcast would hand every bidder their competitors' prices.

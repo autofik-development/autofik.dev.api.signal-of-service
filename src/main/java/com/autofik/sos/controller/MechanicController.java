@@ -54,7 +54,7 @@ public class MechanicController {
   }
 
   // GET /api/mechanics/available?lat=&lng=&problemType=&radiusKm= — Find nearby available mechanics
-  // radiusKm (5–30, default 15): controls the H3 kRing search depth — matches broadcastRadiusKm on
+  // radiusKm (5–20, default 15): controls the H3 kRing search depth — matches broadcastRadiusKm on
   // SOS
   // problemType is optional: omit to search all specializations, provide to filter (e.g.,
   // "flat_tire")
@@ -64,7 +64,7 @@ public class MechanicController {
       @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
       @RequestParam @DecimalMin("102.5") @DecimalMax("107.63") double lng,
       @RequestParam(required = false) String problemType,
-      @RequestParam(defaultValue = "15") @Min(5) @Max(30) int radiusKm) {
+      @RequestParam(defaultValue = "15") @Min(5) @Max(20) int radiusKm) {
     return mechanicService.findAvailable(lat, lng, problemType, radiusKm);
   }
 
