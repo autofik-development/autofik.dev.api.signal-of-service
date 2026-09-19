@@ -135,6 +135,17 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.arrival.max-distance-meters:50}")
   private int arrivalMaxDistanceMeters;
 
+  // Auto-expand step/ceiling for a zero-bid retry — deliberately separate from the customer's own
+  // broadcastRadiusKm preference cap (@Max(20) in CreateSosRequest). That cap is what the
+  // customer chose; this is the system's own last-resort fallback when nobody responded, so it's
+  // allowed to search wider than the customer ever asked for. Configurable so the step size and
+  // ceiling can be tuned per-environment without a redeploy.
+  @Value("${sos.auto-expand.step-km:5}")
+  private int autoExpandStepKm;
+
+  @Value("${sos.auto-expand.max-km:35}")
+  private int autoExpandMaxKm;
+
   @EventListener(ApplicationReadyEvent.class)
   @Transactional
   public void expireOverduePendingRequests() {
@@ -204,8 +215,7 @@ public class SosServiceImpl implements SosService {
     UUID userId = s.getUser().getUserId();
     int currentRadiusKm =
         s.getBroadcastRadiusKm() != null ? s.getBroadcastRadiusKm() : DEFAULT_BROADCAST_KM;
-    int newRadiusKm =
-        Math.min(currentRadiusKm + SosRequest.AUTO_EXPAND_STEP_KM, SosRequest.AUTO_EXPAND_MAX_KM);
+    int newRadiusKm = Math.min(currentRadiusKm + autoExpandStepKm, autoExpandMaxKm);
 
     s.setBroadcastRadiusKm(newRadiusKm);
     s.setRebroadcastCount(s.getRebroadcastCount() + 1);
@@ -856,9 +866,8 @@ public class SosServiceImpl implements SosService {
   private int resolveStartingRadiusKm(
       double lat, double lng, String problemType, Integer requestedRadiusKm) {
     int radiusKm = requestedRadiusKm != null ? requestedRadiusKm : DEFAULT_BROADCAST_KM;
-    while (hasNoCandidates(lat, lng, problemType, radiusKm)
-        && radiusKm < SosRequest.AUTO_EXPAND_MAX_KM) {
-      radiusKm = Math.min(radiusKm + SosRequest.AUTO_EXPAND_STEP_KM, SosRequest.AUTO_EXPAND_MAX_KM);
+    while (hasNoCandidates(lat, lng, problemType, radiusKm) && radiusKm < autoExpandMaxKm) {
+      radiusKm = Math.min(radiusKm + autoExpandStepKm, autoExpandMaxKm);
     }
     return radiusKm;
   }

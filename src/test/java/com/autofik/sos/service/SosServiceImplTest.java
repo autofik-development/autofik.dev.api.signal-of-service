@@ -109,6 +109,8 @@ class SosServiceImplTest {
             .build();
     // @Value is not applied by @InjectMocks, so the gate would otherwise run against 0 metres.
     ReflectionTestUtils.setField(sosService, "arrivalMaxDistanceMeters", 50);
+    ReflectionTestUtils.setField(sosService, "autoExpandStepKm", 5);
+    ReflectionTestUtils.setField(sosService, "autoExpandMaxKm", 35);
     pendingSos =
         SosRequest.builder()
             .sosId(sosId)
@@ -570,7 +572,7 @@ class SosServiceImplTest {
     ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
     verify(sosRequestRepository, atLeastOnce()).save(captor.capture());
     assertThat(captor.getValue().getBroadcastRadiusKm())
-        .isEqualTo(SosRequest.AUTO_EXPAND_MAX_KM); // DEFAULT(15) escalated to the ceiling(35)
+        .isEqualTo(35); // DEFAULT(15) escalated to autoExpandMaxKm (set to 35 in setUp)
   }
 
   // ── getById ───────────────────────────────────────────────────────────────
