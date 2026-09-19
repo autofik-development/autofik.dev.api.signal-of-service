@@ -64,6 +64,9 @@ public class SosMediaServiceImpl implements SosMediaService {
   // decompression-bomb uploads (small file, huge declared dimensions) exhausting memory.
   private static final int MAX_SOURCE_DIMENSION = 8000;
 
+  // Photos attached to the fan-out payload sent to every nearby mechanic
+  private static final int MAX_BROADCAST_PHOTOS = 3;
+
   // JPEG compression quality metric (80%) balancing clarity and bandwidth efficiency
   private static final double JPEG_QUALITY = 0.80;
 
@@ -206,6 +209,21 @@ public class SosMediaServiceImpl implements SosMediaService {
     }
     return sosMediaRepository.findBySosRequestSosId(sosId).stream()
         .map(this::toResponseWithUrl)
+        .toList();
+  }
+
+  /**
+   * Presigned URLs for the photos attached to a ticket. Capped: a mechanic's incoming-request card
+   * shows a thumbnail or two, and every extra URL is ~500 bytes on a socket frame fanned out to
+   * every nearby mechanic.
+   */
+  @Override
+  @Transactional(readOnly = true)
+  public List<String> photoUrls(UUID sosId) {
+    return sosMediaRepository.findBySosRequestSosId(sosId).stream()
+        .filter(m -> m.getMediaType() == MediaType.PHOTO)
+        .limit(MAX_BROADCAST_PHOTOS)
+        .map(m -> presignGetUrl(m.getObjectKey()))
         .toList();
   }
 

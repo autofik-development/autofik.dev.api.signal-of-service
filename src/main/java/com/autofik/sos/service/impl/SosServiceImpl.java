@@ -32,6 +32,7 @@ import com.autofik.sos.repository.VehicleRepository;
 import com.autofik.sos.service.GoogleMapsService;
 import com.autofik.sos.service.MedusaService;
 import com.autofik.sos.service.RouteEtaService;
+import com.autofik.sos.service.SosMediaService;
 import com.autofik.sos.service.SosService;
 import com.autofik.sos.util.GeoDistance;
 import com.uber.h3core.H3Core;
@@ -50,6 +51,7 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -134,6 +136,10 @@ public class SosServiceImpl implements SosService {
   private final SimpMessagingTemplate messagingTemplate;
   private final TaskScheduler taskScheduler;
   private final StringRedisTemplate redisTemplate;
+
+  // Lazy: SosMediaServiceImpl asks this service who may see a ticket, so injecting it directly
+  // would close the cycle and fail startup.
+  private final ObjectProvider<SosMediaService> sosMediaService;
 
   // How close a mechanic must be, by road, before they may mark ARRIVED. Configurable because
   // the right value depends on the road layout: a divided boulevard can put someone standing
@@ -771,6 +777,9 @@ public class SosServiceImpl implements SosService {
                 ids, lat, lng, broadcastRadiusKm * 1000.0)
             : mechanicRepository.filterByRadius(ids, lat, lng);
 
+    // Photos are uploaded after the ticket is created, so this is empty on the first broadcast
+    // and populated on a rebroadcast — which is the attempt where the mechanic most needs to see
+    // what the job actually is before bidding.
     SosNotificationEvent notification =
         new SosNotificationEvent(
             "SOS_CREATED",
@@ -778,7 +787,8 @@ public class SosServiceImpl implements SosService {
             "MECHANIC",
             sosId,
             "New SOS request nearby",
-            "Problem: " + problemType);
+            "Problem: " + problemType,
+            sosMediaService.getObject().photoUrls(sosId));
     matched.forEach(
         m ->
             messagingTemplate.convertAndSendToUser(
