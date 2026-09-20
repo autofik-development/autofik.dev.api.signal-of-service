@@ -11,6 +11,7 @@ import com.autofik.sos.service.RouteEtaService;
 import com.autofik.sos.util.GeoDistance;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.EnumSet;
 import java.util.Set;
@@ -21,6 +22,7 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
@@ -34,8 +36,15 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   // ping in that window interpolates against the cached snapshot for free.
   private static final String ETA_LOCK_PREFIX = "sos:eta:lock:";
   private static final String ETA_CACHE_PREFIX = "sos:eta:";
-  private static final Duration REFRESH_INTERVAL = Duration.ofSeconds(30);
-  // Outlives REFRESH_INTERVAL so the snapshot is always available to interpolate against;
+
+  // Directly drives Google Distance Matrix spend — this is ~86% of Maps API cost (one call per
+  // window per active SOS). Configurable so it can be tuned against the bill without a redeploy;
+  // the displayed ETA keeps ticking smoothly between refreshes via interpolate(), so widening
+  // this is not user-visible the way it would be on a naive "poll and freeze" implementation.
+  @Value("${sos.eta.refresh-interval-seconds:30}")
+  private int refreshIntervalSeconds;
+
+  // Outlives the refresh interval so the snapshot is always available to interpolate against;
   // bounded so an abandoned job cannot pin the entry forever.
   private static final Duration CACHE_TTL = Duration.ofMinutes(15);
 
@@ -59,10 +68,20 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   // L2 fallback for both the gate and the snapshot, used only while Redis is unreachable.
   // Per-instance rather than shared, so an outage costs one Google call per window per
   // instance instead of one per ping — bounded degradation rather than none.
-  private final Cache<UUID, Boolean> localGate =
-      Caffeine.newBuilder().expireAfterWrite(REFRESH_INTERVAL).maximumSize(10_000).build();
+  // Not initialized inline: it must be sized off refreshIntervalSeconds, which @Value injects
+  // after construction — built in init() below instead.
+  private Cache<UUID, Boolean> localGate;
   private final Cache<UUID, EtaSnapshot> localSnapshots =
       Caffeine.newBuilder().expireAfterWrite(CACHE_TTL).maximumSize(10_000).build();
+
+  @PostConstruct
+  void init() {
+    localGate =
+        Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofSeconds(refreshIntervalSeconds))
+            .maximumSize(10_000)
+            .build();
+  }
 
   // Deliberately not @Transactional: refresh() makes a blocking Google call, and wrapping this
   // would hold a Postgres connection for its duration on the hottest path in the service. The
@@ -100,7 +119,10 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   private boolean shouldRefresh(UUID sosId) {
     try {
       Boolean acquired =
-          redisTemplate.opsForValue().setIfAbsent(ETA_LOCK_PREFIX + sosId, "1", REFRESH_INTERVAL);
+          redisTemplate
+              .opsForValue()
+              .setIfAbsent(
+                  ETA_LOCK_PREFIX + sosId, "1", Duration.ofSeconds(refreshIntervalSeconds));
       return Boolean.TRUE.equals(acquired);
     } catch (Exception e) {
       log.warn(

@@ -109,6 +109,8 @@ class SosServiceImplTest {
             .build();
     // @Value is not applied by @InjectMocks, so the gate would otherwise run against 0 metres.
     ReflectionTestUtils.setField(sosService, "arrivalMaxDistanceMeters", 50);
+    ReflectionTestUtils.setField(sosService, "autoExpandStepKm", 5);
+    ReflectionTestUtils.setField(sosService, "autoExpandMaxKm", 35);
     pendingSos =
         SosRequest.builder()
             .sosId(sosId)
@@ -156,6 +158,21 @@ class SosServiceImplTest {
     when(redisTemplate.opsForValue()).thenReturn(valueOps);
     when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
     when(medusaService.resolveServiceGroupKey(serviceGroupId)).thenReturn(resolvedKey);
+  }
+
+  // Mimics @UuidGenerator assigning the id synchronously on save, since create() reads
+  // sos.getSosId() off the same in-memory instance afterward (e.g. for the widened-radius
+  // notification) rather than off save()'s return value.
+  private void stubSaveAssignsSosId() {
+    when(sosRequestRepository.save(any(SosRequest.class)))
+        .thenAnswer(
+            inv -> {
+              SosRequest arg = inv.getArgument(0);
+              if (arg.getSosId() == null) {
+                arg.setSosId(sosId);
+              }
+              return arg;
+            });
   }
 
   // ── updateStatus: cached ETA invalidation ─────────────────────────────────
@@ -314,7 +331,7 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
+    stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
 
@@ -337,7 +354,7 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
+    stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
 
@@ -417,7 +434,7 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
+    stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(13.7563, 100.5018)).thenReturn("Sukhumvit Rd, Bangkok");
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
 
@@ -435,7 +452,7 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(sosRequestRepository.save(any(SosRequest.class))).thenReturn(pendingSos);
+    stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
 
@@ -491,6 +508,74 @@ class SosServiceImplTest {
 
     verify(medusaService, never()).resolveServiceGroupKey(any());
     verify(userRepository, never()).findById(any());
+  }
+
+  // ── create: starting-radius escalation (item 16a, immediate variant) ───────
+
+  @Test
+  void create_mechanicsFoundAtRequestedRadius_doesNotEscalate() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(List.of(mechanic));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
+    verify(sosRequestRepository, atLeastOnce()).save(captor.capture());
+    assertThat(captor.getValue().getBroadcastRadiusKm()).isEqualTo(15);
+    verify(sosEventProducer, never())
+        .publishNotification(argThat(n -> n.type().equals("SOS_AUTO_REBROADCAST")));
+  }
+
+  @Test
+  void create_zeroMechanicsAtRequestedRadius_escalatesOnce() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    // 1st call (resolving @15km): none. 2nd call (resolving @20km): found, stop escalating.
+    // 3rd+ calls: fanOutToNearbyMechanics's own independent lookup.
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any()))
+        .thenReturn(List.of(), List.of(mechanic), List.of(mechanic));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
+    verify(sosRequestRepository, atLeastOnce()).save(captor.capture());
+    assertThat(captor.getValue().getBroadcastRadiusKm()).isEqualTo(20); // 15 + step(5)
+    verify(sosEventProducer)
+        .publishNotification(argThat(n -> n.type().equals("SOS_AUTO_REBROADCAST")));
+  }
+
+  @Test
+  void create_noMechanicsFoundAnywhere_capsAtAutoExpandMax() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    // findByH3CellsAndSkillTag left unstubbed: Mockito's default for an unstubbed List-returning
+    // method is an empty list, i.e. "no mechanics anywhere," on every call.
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
+    verify(sosRequestRepository, atLeastOnce()).save(captor.capture());
+    assertThat(captor.getValue().getBroadcastRadiusKm())
+        .isEqualTo(35); // DEFAULT(15) escalated to autoExpandMaxKm (set to 35 in setUp)
   }
 
   // ── getById ───────────────────────────────────────────────────────────────
@@ -638,6 +723,88 @@ class SosServiceImplTest {
         .isInstanceOf(EntityNotFoundException.class);
 
     verifyNoInteractions(mechanicRepository);
+  }
+
+  // ── getNearbyMechanics ───────────────────────────────────────────────────
+
+  @Test
+  void getNearbyMechanics_owner_usesTicketsCurrentRadiusAndReturnsMappedList() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    pendingSos.setBroadcastRadiusKm(25); // already auto-expanded past the default 15
+    MechanicResponse mechanicResponse =
+        new MechanicResponse(
+            mechanicId,
+            "Bob",
+            "081",
+            "bob@fix.com",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            true,
+            null,
+            null,
+            null);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+        .thenReturn(List.of(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            anyList(), anyDouble(), anyDouble(), eq(25_000.0)))
+        .thenReturn(List.of(mechanic));
+    when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
+
+    List<MechanicResponse> result = sosService.getNearbyMechanics(sosId, userId);
+
+    assertThat(result).containsExactly(mechanicResponse);
+  }
+
+  @Test
+  void getNearbyMechanics_noRadiusSetYet_fallsBackToDefaultBroadcastKm() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    // broadcastRadiusKm left null — a legacy ticket predating the auto-expand feature.
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+        .thenReturn(List.of(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            anyList(), anyDouble(), anyDouble(), eq(15_000.0))) // DEFAULT_BROADCAST_KM
+        .thenReturn(List.of(mechanic));
+    when(mechanicMapper.toResponse(mechanic))
+        .thenReturn(
+            new MechanicResponse(
+                mechanicId,
+                "Bob",
+                "081",
+                "bob@fix.com",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                true,
+                null,
+                null,
+                null));
+
+    List<MechanicResponse> result = sosService.getNearbyMechanics(sosId, userId);
+
+    assertThat(result).hasSize(1);
+  }
+
+  @Test
+  void getNearbyMechanics_foreignCaller_throwsEntityNotFoundException() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    UUID stranger = UUID.randomUUID();
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, stranger))
+        .thenReturn(false);
+
+    assertThatThrownBy(() -> sosService.getNearbyMechanics(sosId, stranger))
+        .isInstanceOf(EntityNotFoundException.class);
+    verifyNoInteractions(mechanicMapper);
   }
 
   // ── proposeStatusChange ───────────────────────────────────────────────────
@@ -931,5 +1098,53 @@ class SosServiceImplTest {
 
     assertThatThrownBy(() -> sosService.cancel(sosId, userId))
         .isInstanceOf(IllegalStateException.class);
+  }
+
+  // ── doExpire: auto-expand on a true zero-bid expiry ─────────────────────────
+
+  @Test
+  void doExpire_zeroBidsBelowMaxRebroadcast_autoExpandsInsteadOfExpiring() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
+
+    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+    assertThat(sos.getBroadcastRadiusKm()).isEqualTo(20); // DEFAULT_BROADCAST_KM(15) + step(5)
+    assertThat(sos.getRebroadcastCount()).isEqualTo(1);
+    assertThat(sos.getBiddingExpiresAt()).isAfter(LocalDateTime.now());
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(n -> n.type().equals("SOS_AUTO_REBROADCAST") && n.sosId().equals(sosId)));
+    verify(messagingTemplate)
+        .convertAndSendToUser(eq(userId.toString()), eq("/queue/sos-updates"), any());
+    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  @Test
+  void doExpire_zeroBidsAtMaxRebroadcast_expiresInsteadOfExpandingFurther() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    sos.setRebroadcastCount(SosRequest.MAX_REBROADCAST);
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
+
+    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+    verify(sosEventProducer).publishStatusUpdated(any());
+  }
+
+  @Test
+  void doExpire_hasBidsEvenIfNoneAccepted_expiresInsteadOfAutoExpanding() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
+
+    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+    assertThat(sos.getBroadcastRadiusKm()).isNull(); // untouched — never widened
+    verify(sosEventProducer).publishStatusUpdated(any());
+    verify(sosEventProducer, never())
+        .publishNotification(argThat(n -> n.type().equals("SOS_AUTO_REBROADCAST")));
   }
 }
