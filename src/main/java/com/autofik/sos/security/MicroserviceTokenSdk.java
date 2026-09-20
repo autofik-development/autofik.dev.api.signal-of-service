@@ -10,8 +10,9 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Resolves the caller's identity from the {@code user-context} header the gateway sets on every
- * request it proxies here, instead of accepting a userId/mechanicId from the client.
+ * Resolves the caller's identity from the {@code user-context} / {@code mechanic-context} header
+ * the gateway sets on every request it proxies here, instead of accepting a userId/mechanicId from
+ * the client.
  *
  * <p>The gateway only sets this header after its own verification has already checked the caller's
  * bearer token — otp and profile verified, session active, not logged out — so a present,
@@ -41,35 +42,53 @@ public class MicroserviceTokenSdk {
    */
   public Optional<CurrentUser> resolveCurrentUser(UnaryOperator<String> headers) {
     AppHeaderContext context = AppHeaderContext.from(headers, objectMapper);
-    UserContext.User user = context.user();
+    ContextIdentity identity = context.identity();
 
-    if (user == null) {
+    if (identity == null) {
       return resolveLegacyHeaders(headers);
     }
 
-    UUID id = parseUuid(user.uuid());
+    UUID id = parseUuid(identity.uuid());
     if (id == null) {
       // The gateway named nobody. Treat it as no context rather than a rejection, so the
       // chain's own 401 stands and public routes keep working.
       return Optional.empty();
     }
 
-    if (user.loggedOut() || isInvalidTokenStatus(user.tokenStatus())) {
+    if (identity.loggedOut() || isInvalidTokenStatus(identity.tokenStatus())) {
       throw UserContextRejectedException.unauthorized("Access token is no longer valid");
     }
 
-    if (!user.otpVerified() || !user.profileVerified()) {
+    if (!identity.otpVerified() || !identity.profileVerified()) {
       throw UserContextRejectedException.forbidden("User profile is not fully verified");
     }
 
-    CallerRole role =
-        CallerRole.fromSsoRole(user.role())
-            .orElseThrow(
-                () ->
-                    UserContextRejectedException.forbidden(
-                        "Role '" + user.role() + "' is not permitted to use this service"));
+    return Optional.of(
+        new CurrentUser(id, resolveRole(identity), identity.deviceId(), context.serviceCode()));
+  }
 
-    return Optional.of(new CurrentUser(id, role, user.deviceId(), context.serviceCode()));
+  /**
+   * The role this service will act under, from the role string and from which block carried it.
+   *
+   * <p>A {@code mechanic-context} that names a driver role is not a disagreement to resolve by
+   * preferring one side: the edge is sending something it does not mean, and guessing which half is
+   * the mistake is how a driver ends up holding mechanic endpoints.
+   */
+  private static CallerRole resolveRole(ContextIdentity identity) {
+    Optional<CallerRole> declared = CallerRole.fromSsoRole(identity.role());
+    Optional<CallerRole> implied = identity.impliedRole();
+
+    if (declared.isEmpty()) {
+      return implied.orElseThrow(
+          () ->
+              UserContextRejectedException.forbidden(
+                  "Role '" + identity.role() + "' is not permitted to use this service"));
+    }
+    if (implied.isPresent() && implied.get() != declared.get()) {
+      throw UserContextRejectedException.forbidden(
+          "Role '" + identity.role() + "' does not belong in a " + implied.get() + " context");
+    }
+    return declared.get();
   }
 
   /**

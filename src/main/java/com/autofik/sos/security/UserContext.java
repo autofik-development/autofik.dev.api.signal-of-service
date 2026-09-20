@@ -2,6 +2,7 @@ package com.autofik.sos.security;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.Optional;
 
 /**
  * The {@code user-context} header the internal gateway attaches to every request it proxies here.
@@ -9,6 +10,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * <p>The gateway only writes it after its own token verification has already run, so the flags
  * below are a report of that verification — not a claim the caller gets to make. Unknown fields are
  * ignored on purpose: the gateway may add to this payload without this service needing a release.
+ *
+ * <p>Calls from the mechanic app arrive under {@code mechanic-context} instead — see {@link
+ * MechanicContext}.
  *
  * @see MicroserviceTokenSdk for what is trusted and what is rejected.
  */
@@ -23,18 +27,16 @@ public record UserContext(User user) {
       @JsonProperty("otpVerify") Boolean otpVerify,
       @JsonProperty("profileVerify") Boolean profileVerify,
       String tokenStatus,
-      @JsonProperty("isLogout") Boolean isLogout) {
+      @JsonProperty("isLogout") Boolean isLogout)
+      implements ContextIdentity {
 
-    public boolean otpVerified() {
-      return Boolean.TRUE.equals(otpVerify);
-    }
-
-    public boolean profileVerified() {
-      return Boolean.TRUE.equals(profileVerify);
-    }
-
-    public boolean loggedOut() {
-      return Boolean.TRUE.equals(isLogout);
+    /**
+     * Empty: this header serves drivers and mechanics both, so the role string is all there is to
+     * go on and a role this service has no mapping for is refused rather than defaulted.
+     */
+    @Override
+    public Optional<CallerRole> impliedRole() {
+      return Optional.empty();
     }
   }
 }

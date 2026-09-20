@@ -1,6 +1,7 @@
 package com.autofik.sos.config;
 
 import com.autofik.sos.middleware.AuthMiddleware;
+import com.autofik.sos.security.AuthMechanicArgumentResolver;
 import com.autofik.sos.security.AuthUserArgumentResolver;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +25,7 @@ public class WebConfig implements WebMvcConfigurer {
 
   private final AuthMiddleware authMiddleware;
   private final AuthUserArgumentResolver authUserArgumentResolver;
+  private final AuthMechanicArgumentResolver authMechanicArgumentResolver;
 
   @Override
   public void addCorsMappings(CorsRegistry registry) {
@@ -55,5 +57,6 @@ public class WebConfig implements WebMvcConfigurer {
   @Override
   public void addArgumentResolvers(List<HandlerMethodArgumentResolver> resolvers) {
     resolvers.add(authUserArgumentResolver);
+    resolvers.add(authMechanicArgumentResolver);
   }
 }

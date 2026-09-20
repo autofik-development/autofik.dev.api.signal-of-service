@@ -1,12 +1,15 @@
 package com.autofik.sos.middleware;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.autofik.sos.security.AuthErrorResponder;
+import com.autofik.sos.security.AuthMechanic;
+import com.autofik.sos.security.AuthMechanicArgumentResolver;
 import com.autofik.sos.security.AuthUser;
 import com.autofik.sos.security.AuthUserArgumentResolver;
 import com.autofik.sos.security.CurrentUser;
@@ -17,6 +20,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -41,7 +45,8 @@ class AuthMiddlewareTest {
               new GatewayIdentityFilter(
                   new MicroserviceTokenSdk(objectMapper), objectMapper, errorResponder))
           .addInterceptors(new AuthMiddleware(errorResponder))
-          .setCustomArgumentResolvers(new AuthUserArgumentResolver())
+          .setCustomArgumentResolvers(
+              new AuthUserArgumentResolver(), new AuthMechanicArgumentResolver())
           .build();
 
   @AfterEach
@@ -63,6 +68,18 @@ class AuthMiddlewareTest {
               + "/"
               + caller.serviceCode();
     }
+
+    @GetMapping("/api/v1/probe/mechanic-only")
+    String mechanicOnly(@AuthMechanic CurrentUser mechanic) {
+      return mechanic == null ? "anonymous" : mechanic.id() + "/" + mechanic.role();
+    }
+  }
+
+  private static String mechanicContext(String uuid) {
+    return "{\"mechanic\":{\"uuid\":\""
+        + uuid
+        + "\",\"role\":\"MECHANIC\",\"deviceId\":\"pixel-8\",\"otpVerify\":true,"
+        + "\"profileVerify\":true,\"isLogout\":false}}";
   }
 
   private static String context(String uuid, String role, String extraFields) {
@@ -139,5 +156,66 @@ class AuthMiddlewareTest {
         .perform(get("/api/v1/probe").header(GatewayIdentityFilter.MECHANIC_HEADER, id.toString()))
         .andExpect(status().isOk())
         .andExpect(content().string(id + "/MECHANIC/null/null"));
+  }
+
+  @Test
+  void mechanicContext_reachesTheHandlerAsAuthMechanic() throws Exception {
+    UUID id = UUID.randomUUID();
+
+    mockMvc
+        .perform(
+            get("/api/v1/probe/mechanic-only")
+                .header("mechanic-context", mechanicContext(id.toString())))
+        .andExpect(status().isOk())
+        .andExpect(content().string(id + "/MECHANIC"));
+  }
+
+  // The mechanic app's own header reaches the plain @AuthUser parameter too — it is the same
+  // caller, asked for without the role assertion.
+  @Test
+  void mechanicContext_alsoReachesAPlainAuthUserParameter() throws Exception {
+    UUID id = UUID.randomUUID();
+
+    mockMvc
+        .perform(
+            get("/api/v1/probe")
+                .header("mechanic-context", mechanicContext(id.toString()))
+                .header("service-code", "SOS"))
+        .andExpect(status().isOk())
+        .andExpect(content().string(id + "/MECHANIC/pixel-8/SOS"));
+  }
+
+  // The whole point of the annotation: a verified driver is still not allowed here, and finds out
+  // before the handler body runs rather than from a check the handler forgot to write.
+  @Test
+  void driver_isRefusedAMechanicOnlyRoute() throws Exception {
+    String driver = context(UUID.randomUUID().toString(), "USER", "\"isLogout\":false");
+
+    assertThatThrownBy(
+            () ->
+                mockMvc.perform(get("/api/v1/probe/mechanic-only").header("user-context", driver)))
+        .hasRootCauseInstanceOf(AccessDeniedException.class);
+  }
+
+  // A garage account is a mechanic, on this route as everywhere else.
+  @Test
+  void garageAccount_reachesAMechanicOnlyRoute() throws Exception {
+    UUID id = UUID.randomUUID();
+    String garage = context(id.toString(), "GARAGE", "\"isLogout\":false");
+
+    mockMvc
+        .perform(get("/api/v1/probe/mechanic-only").header("user-context", garage))
+        .andExpect(status().isOk())
+        .andExpect(content().string(id + "/MECHANIC"));
+  }
+
+  // Nobody at all is the middleware's own 401, not the resolver's 403: the two mean different
+  // things to the app, and only one of them is fixed by logging in again.
+  @Test
+  void noContext_isTurnedAwayFromAMechanicOnlyRouteToo() throws Exception {
+    mockMvc
+        .perform(get("/api/v1/probe/mechanic-only"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.message").value("Missing or invalid user context"));
   }
 }

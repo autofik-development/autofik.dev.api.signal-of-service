@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.autofik.sos.controller.HealthController;
 import com.autofik.sos.middleware.AuthMiddleware;
 import com.autofik.sos.security.AuthErrorResponder;
+import com.autofik.sos.security.AuthMechanicArgumentResolver;
 import com.autofik.sos.security.AuthUserArgumentResolver;
 import com.autofik.sos.security.GatewayIdentityFilter;
 import com.autofik.sos.security.MicroserviceTokenSdk;
@@ -31,6 +32,7 @@ import org.springframework.test.web.servlet.MockMvc;
   SecurityConfig.class,
   AuthMiddleware.class,
   AuthUserArgumentResolver.class,
+  AuthMechanicArgumentResolver.class,
   AuthErrorResponder.class,
   MicroserviceTokenSdk.class,
   GatewayIdentityFilter.class
