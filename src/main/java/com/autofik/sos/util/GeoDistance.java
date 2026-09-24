@@ -9,11 +9,10 @@ package com.autofik.sos.util;
  */
 public final class GeoDistance {
 
-  private static final double EARTH_RADIUS_M = 6_371_000;
-
   private GeoDistance() {}
 
-  public static double haversineMeters(double lat1, double lng1, double lat2, double lng2) {
+  public static double haversineMeters(
+      double lat1, double lng1, double lat2, double lng2, double earthRadiusM) {
     double dLat = Math.toRadians(lat2 - lat1);
     double dLng = Math.toRadians(lng2 - lng1);
     double a =
@@ -22,6 +21,6 @@ public final class GeoDistance {
                 * Math.cos(Math.toRadians(lat2))
                 * Math.sin(dLng / 2)
                 * Math.sin(dLng / 2);
-    return EARTH_RADIUS_M * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return earthRadiusM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 }

@@ -73,6 +73,9 @@ class MechanicServiceImplTest {
   void setUp() {
     valueOps = mock(ValueOperations.class);
     lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    org.springframework.test.util.ReflectionTestUtils.setField(mechanicService, "h3Resolution", 7);
+    org.springframework.test.util.ReflectionTestUtils.setField(
+        mechanicService, "h3CenterToCenterKm", 2.114);
     // Default: throttle allows Postgres write on every ping
     lenient()
         .when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))
@@ -361,7 +364,7 @@ class MechanicServiceImplTest {
     when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).thenReturn(sosId);
     when(objectMapper.writeValueAsString(any())).thenReturn("{}");
     when(routeEtaService.currentEta(sosId, LAT, LNG))
-        .thenReturn(new EtaInfo(4200, 3900, "4.2 km", "1 hr 5 min", false));
+        .thenReturn(new EtaInfo(4200, 3900, "4.2 km", "1 hr 5 min"));
     doThrow(new RuntimeException("pub/sub down"))
         .when(redisTemplate)
         .convertAndSend(anyString(), anyString());

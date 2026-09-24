@@ -113,6 +113,13 @@ class SosServiceImplTest {
     ReflectionTestUtils.setField(sosService, "arrivalMaxDistanceMeters", 50);
     ReflectionTestUtils.setField(sosService, "autoExpandStepKm", 5);
     ReflectionTestUtils.setField(sosService, "autoExpandMaxKm", 35);
+    ReflectionTestUtils.setField(sosService, "h3Resolution", 7);
+    ReflectionTestUtils.setField(sosService, "h3CenterToCenterKm", 2.114);
+    ReflectionTestUtils.setField(sosService, "earthRadiusM", 6_371_000d);
+    ReflectionTestUtils.setField(sosService, "defaultBroadcastKm", 15);
+    ReflectionTestUtils.setField(sosService, "biddingWindowSeconds", 60);
+    ReflectionTestUtils.setField(sosService, "maxRebroadcast", 3);
+    ReflectionTestUtils.setField(sosService, "createCooldownSeconds", 60);
     // Broadcast payload carries photo URLs; the mocked bean returns an empty list.
     lenient().when(sosMediaService.getObject()).thenReturn(sosMediaServiceBean);
     pendingSos =
@@ -773,7 +780,7 @@ class SosServiceImplTest {
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
         .thenReturn(List.of(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
-            anyList(), anyDouble(), anyDouble(), eq(15_000.0))) // DEFAULT_BROADCAST_KM
+            anyList(), anyDouble(), anyDouble(), eq(15_000.0))) // sos.broadcast.default-km
         .thenReturn(List.of(mechanic));
     when(mechanicMapper.toResponse(mechanic))
         .thenReturn(
@@ -1114,7 +1121,7 @@ class SosServiceImplTest {
     ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
 
     assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
-    assertThat(sos.getBroadcastRadiusKm()).isEqualTo(20); // DEFAULT_BROADCAST_KM(15) + step(5)
+    assertThat(sos.getBroadcastRadiusKm()).isEqualTo(20); // default-km(15) + step(5)
     assertThat(sos.getRebroadcastCount()).isEqualTo(1);
     assertThat(sos.getBiddingExpiresAt()).isAfter(LocalDateTime.now());
     verify(sosEventProducer, never()).publishStatusUpdated(any());
@@ -1129,7 +1136,7 @@ class SosServiceImplTest {
   @Test
   void doExpire_zeroBidsAtMaxRebroadcast_expiresInsteadOfExpandingFurther() {
     SosRequest sos = sosAt(SosStatus.PENDING);
-    sos.setRebroadcastCount(SosRequest.MAX_REBROADCAST);
+    sos.setRebroadcastCount(3); // sos.bidding.max-rebroadcast
     when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
 
     ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);

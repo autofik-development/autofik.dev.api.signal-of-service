@@ -51,24 +51,23 @@ import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignReques
 @RequiredArgsConstructor
 public class SosMediaServiceImpl implements SosMediaService {
 
-  // Presigned URL expiration window
-  private static final Duration PLAYBACK_URL_TTL = Duration.ofMinutes(15);
-
-  // Strict upload file size ceiling (10MB)
-  private static final long MAX_SIZE_BYTES = 10L * 1024 * 1024;
+  // Strict upload file size ceiling. Same env var drives spring.servlet.multipart limits.
+  @Value("${sos.media.max-upload-mb:10}")
+  private long maxUploadMb;
 
   // Target maximum dimension bounding box for resized images — sized for mobile
   // viewing, not print/zoom detail
-  private static final int MAX_IMAGE_DIMENSION = 1280;
+  @Value("${sos.media.max-image-dimension:1280}")
+  private int maxImageDimension;
+
   // Hard ceiling on source pixel dimensions, checked before decode. Guards against
   // decompression-bomb uploads (small file, huge declared dimensions) exhausting memory.
-  private static final int MAX_SOURCE_DIMENSION = 8000;
+  @Value("${sos.media.max-source-dimension:8000}")
+  private int maxSourceDimension;
 
-  // Photos attached to the fan-out payload sent to every nearby mechanic
-  private static final int MAX_BROADCAST_PHOTOS = 3;
-
-  // JPEG compression quality metric (80%) balancing clarity and bandwidth efficiency
-  private static final double JPEG_QUALITY = 0.80;
+  // JPEG compression quality (0.0-1.0) balancing clarity and bandwidth efficiency
+  @Value("${sos.media.jpeg-quality:0.80}")
+  private double jpegQuality;
 
   // Strict whitelist of permitted MIME types mapped to their uniform extensions
   private static final Map<String, String> ALLOWED_CONTENT_TYPES =
@@ -88,6 +87,14 @@ public class SosMediaServiceImpl implements SosMediaService {
 
   @Value("${aws.s3.bucket}")
   private String bucket;
+
+  // Photos attached to the fan-out payload sent to every nearby mechanic
+  // Presigned URL expiration window. Broadcast photo links stop working after this.
+  @Value("${aws.s3.presign-ttl-minutes:15}")
+  private int presignTtlMinutes;
+
+  @Value("${sos.broadcast.max-photos:3}")
+  private int maxBroadcastPhotos;
 
   /**
    * Validates, processes, compresses, and uploads an SOS emergency media file. Inserts metadata
@@ -113,9 +120,8 @@ public class SosMediaServiceImpl implements SosMediaService {
 
     // Phase 1: Basic validation filters
     validateContentType(file.getContentType());
-    if (file.getSize() > MAX_SIZE_BYTES) {
-      throw new IllegalArgumentException(
-          "File exceeds the " + (MAX_SIZE_BYTES / (1024 * 1024)) + " MB limit");
+    if (file.getSize() > maxUploadMb * 1024 * 1024) {
+      throw new IllegalArgumentException("File exceeds the " + maxUploadMb + " MB limit");
     }
 
     // Phase 2: Domain Entity Verification
@@ -222,7 +228,7 @@ public class SosMediaServiceImpl implements SosMediaService {
   public List<String> photoUrls(UUID sosId) {
     return sosMediaRepository.findBySosRequestSosId(sosId).stream()
         .filter(m -> m.getMediaType() == MediaType.PHOTO)
-        .limit(MAX_BROADCAST_PHOTOS)
+        .limit(maxBroadcastPhotos)
         .map(m -> presignGetUrl(m.getObjectKey()))
         .toList();
   }
@@ -275,25 +281,25 @@ public class SosMediaServiceImpl implements SosMediaService {
   private byte[] compressToJpeg(byte[] raw) throws IOException {
     Dimension size = readDimensions(raw);
     // Pre-decode safety check: intercepts malicious payloads attempting to exhaust JVM memory
-    if (size.width > MAX_SOURCE_DIMENSION || size.height > MAX_SOURCE_DIMENSION) {
+    if (size.width > maxSourceDimension || size.height > maxSourceDimension) {
       throw new IllegalArgumentException(
           "Image dimensions "
               + size.width
               + "x"
               + size.height
               + " exceed the "
-              + MAX_SOURCE_DIMENSION
+              + maxSourceDimension
               + "x"
-              + MAX_SOURCE_DIMENSION
+              + maxSourceDimension
               + " limit");
     }
     var builder =
         Thumbnails.of(new ByteArrayInputStream(raw))
-            .outputQuality(JPEG_QUALITY)
+            .outputQuality(jpegQuality)
             .outputFormat("jpeg");
-    if (size.width > MAX_IMAGE_DIMENSION || size.height > MAX_IMAGE_DIMENSION) {
+    if (size.width > maxImageDimension || size.height > maxImageDimension) {
       // Scales down proportionately to fit within max bounds
-      builder.size(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION).keepAspectRatio(true);
+      builder.size(maxImageDimension, maxImageDimension).keepAspectRatio(true);
     } else {
       // Already within bounds — re-encode as JPEG without upscaling.
       builder.scale(1.0);
@@ -340,7 +346,7 @@ public class SosMediaServiceImpl implements SosMediaService {
   private String presignGetUrl(String objectKey) {
     GetObjectPresignRequest presignRequest =
         GetObjectPresignRequest.builder()
-            .signatureDuration(PLAYBACK_URL_TTL)
+            .signatureDuration(Duration.ofMinutes(presignTtlMinutes))
             .getObjectRequest(GetObjectRequest.builder().bucket(bucket).key(objectKey).build())
             .build();
     return s3Presigner.presignGetObject(presignRequest).url().toString();

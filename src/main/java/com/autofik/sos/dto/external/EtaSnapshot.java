@@ -11,5 +11,4 @@ public record EtaSnapshot(
     double originLat,
     double originLng,
     double destLat,
-    double destLng,
-    boolean estimated) {}
+    double destLng) {}

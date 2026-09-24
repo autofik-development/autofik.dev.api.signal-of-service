@@ -82,6 +82,11 @@ class SosMediaServiceImplTest {
   @BeforeEach
   void setUp() throws Exception {
     ReflectionTestUtils.setField(sosMediaService, "bucket", "test-bucket");
+    ReflectionTestUtils.setField(sosMediaService, "presignTtlMinutes", 15);
+    ReflectionTestUtils.setField(sosMediaService, "maxSourceDimension", 8000);
+    ReflectionTestUtils.setField(sosMediaService, "maxUploadMb", 10L);
+    ReflectionTestUtils.setField(sosMediaService, "maxImageDimension", 1280);
+    ReflectionTestUtils.setField(sosMediaService, "jpegQuality", 0.80);
     // Participation is covered by SosServiceImplTest; here every caller is a legitimate party.
     lenient().when(sosService.canView(any(), any())).thenReturn(true);
 

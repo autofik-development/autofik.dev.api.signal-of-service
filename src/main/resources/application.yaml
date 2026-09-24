@@ -18,7 +18,7 @@ spring:
       minimum-idle: ${DB_POOL_MIN_IDLE}
       # Fail fast instead of the 30s default — a stuck pool should surface as an
       # error quickly, not hang every caller behind it.
-      connection-timeout: 5000
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:5000}
   jpa:
     open-in-view: false
     hibernate:
@@ -28,8 +28,9 @@ spring:
       hibernate:
   servlet:
     multipart:
-      max-file-size: 10MB
-      max-request-size: 10MB
+      # Same env var as sos.media.max-upload-mb so the two limits can't drift.
+      max-file-size: ${SOS_MEDIA_MAX_UPLOAD_MB:10}MB
+      max-request-size: ${SOS_MEDIA_MAX_UPLOAD_MB:10}MB
   data:
     redis:
       host: ${REDIS_HOST}
@@ -37,7 +38,7 @@ spring:
       # Fail fast instead of Lettuce's 60s default — a slow/unresponsive (not fully down) Redis
       # should hit the Kafka fallback (see RedisLocationListenerConfig) quickly, not after a
       # minute-long stall per command.
-      timeout: 5000ms
+      timeout: ${REDIS_TIMEOUT_MS:5000}ms
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     admin:
@@ -51,7 +52,7 @@ spring:
         spring.json.add.type.headers: false
         enable.idempotence: true
     consumer:
-      group-id: sos-location-group
+      group-id: ${KAFKA_CONSUMER_GROUP_ID:sos-location-group}
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
@@ -69,11 +70,13 @@ google:
     
 aws:
   s3:
-    endpoint: ${S3_ENDPOINT}
+    endpoint: ${S3_ENDPOINT:https://fsgw.evauto24.com/}
     access-key: ${S3_ACCESS_KEY}
     secret-key: ${S3_SECRET_KEY}
-    region: ${S3_REGION}
-    bucket: ${S3_BUCKET_NAME}
+    region: ${S3_REGION:us-east-1}
+    bucket: ${S3_BUCKET_NAME:autofik-sos-api}
+    # How long presigned photo URLs (upload responses and mechanic broadcasts) stay valid.
+    presign-ttl-minutes: ${S3_PRESIGN_TTL_MINUTES:15}
 
 server:
   port: ${SERVER_PORT}
@@ -92,13 +95,15 @@ kafka:
     # 1 is correct only for this repo's single-broker dev Kafka (see project CLAUDE.md). A
     # multi-broker SIT/prod cluster needs at least 3 for real durability — set via env there.
     replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
+    # Partitions per app-managed topic. Kafka can only increase this on an existing topic.
+    partitions: ${KAFKA_TOPIC_PARTITIONS:3}
 
 sos:
   arrival:
     # A mechanic may only mark ARRIVED when their last known position is within this many metres
     # of the SOS. Measured against current_location in Postgres — never against coordinates sent
     # with the request, which the mechanic controls and could simply set to the customer's.
-    # Note current_location is written at most once per 10s, so a fast-moving mechanic's stored
+    # Note current_location is written at most once per sos.location.pg-sync-seconds (10s default), so a fast-moving mechanic's stored
     # position can lag their real one; raise this if legitimate arrivals are being rejected.
     max-distance-meters: ${SOS_ARRIVAL_MAX_DISTANCE_M:50}
   auto-expand:
@@ -115,6 +120,43 @@ sos:
     # at typical usage) — lower for tighter live-ETA accuracy, raise to cut cost. The displayed
     # ETA keeps updating smoothly between refreshes either way (see RouteEtaServiceImpl#interpolate).
     refresh-interval-seconds: ${SOS_ETA_REFRESH_INTERVAL_SECONDS:30}
+    # Lifetime of the cached ETA snapshot. Must outlive refresh-interval-seconds so pings between
+    # refreshes always have a snapshot to interpolate against.
+    cache-ttl-minutes: ${SOS_ETA_CACHE_TTL_MINUTES:15}
+  location:
+    # Mechanic GPS is written to Postgres at most once per this many seconds (Redis/Kafka carry
+    # every ping). Lower = fresher current_location for the ARRIVED proximity check, more DB writes.
+    pg-sync-seconds: ${MECHANIC_LOCATION_PG_SYNC_SECONDS:10}
+  h3:
+    # WARNING: every stored mechanic current_h3_index was computed at this resolution. Changing it
+    # breaks nearby-mechanic search until all rows are recomputed. center-to-center-km must match
+    # the resolution (2.114 km is correct only for resolution 7).
+    resolution: ${SOS_H3_RESOLUTION:7}
+    center-to-center-km: ${SOS_H3_CENTER_TO_CENTER_KM:2.114}
+  geo:
+    # Mean Earth radius for straight-line (haversine) distance fallbacks.
+    earth-radius-m: ${SOS_EARTH_RADIUS_M:6371000}
+  media:
+    # Max source image width/height in pixels, checked before decode. Security guard against
+    # decompression-bomb uploads; raising it increases worst-case memory per upload.
+    max-source-dimension: ${SOS_MEDIA_MAX_SOURCE_DIMENSION:8000}
+    max-upload-mb: ${SOS_MEDIA_MAX_UPLOAD_MB:10}
+    # Stored photos are resized to fit this box, then re-encoded at this JPEG quality (0.0-1.0).
+    max-image-dimension: ${SOS_MEDIA_MAX_IMAGE_DIMENSION:1280}
+    jpeg-quality: ${SOS_MEDIA_JPEG_QUALITY:0.80}
+  broadcast:
+    # Max photos attached to each mechanic fan-out. Each one is a fresh S3 presign per broadcast,
+    # so raising this adds presign work and payload size on every create/rebroadcast.
+    max-photos: ${SOS_BROADCAST_MAX_PHOTOS:3}
+    # Starting radius (km) when the customer doesn't set broadcastRadiusKm.
+    default-km: ${SOS_DEFAULT_BROADCAST_KM:15}
+  bidding:
+    # Seconds mechanics have to bid per broadcast attempt, and max rebroadcasts per ticket.
+    window-seconds: ${SOS_BIDDING_WINDOW_SECONDS:60}
+    max-rebroadcast: ${SOS_MAX_REBROADCAST:3}
+  create:
+    # Minimum gap between two SOS creations by the same user.
+    cooldown-seconds: ${SOS_CREATE_COOLDOWN_SECONDS:60}
 
 logging:
   level:
