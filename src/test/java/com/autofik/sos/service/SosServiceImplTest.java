@@ -73,6 +73,8 @@ class SosServiceImplTest {
   @Mock TaskScheduler taskScheduler;
   @Mock StringRedisTemplate redisTemplate;
   @Mock ValueOperations<String, String> valueOps;
+  @Mock org.springframework.beans.factory.ObjectProvider<SosMediaService> sosMediaService;
+  @Mock SosMediaService sosMediaServiceBean;
 
   @InjectMocks SosServiceImpl sosService;
 
@@ -111,6 +113,8 @@ class SosServiceImplTest {
     ReflectionTestUtils.setField(sosService, "arrivalMaxDistanceMeters", 50);
     ReflectionTestUtils.setField(sosService, "autoExpandStepKm", 5);
     ReflectionTestUtils.setField(sosService, "autoExpandMaxKm", 35);
+    // Broadcast payload carries photo URLs; the mocked bean returns an empty list.
+    lenient().when(sosMediaService.getObject()).thenReturn(sosMediaServiceBean);
     pendingSos =
         SosRequest.builder()
             .sosId(sosId)
