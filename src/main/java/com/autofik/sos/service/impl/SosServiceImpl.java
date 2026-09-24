@@ -147,6 +147,17 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.arrival.max-distance-meters:50}")
   private int arrivalMaxDistanceMeters;
 
+  // Auto-expand step/ceiling for a zero-bid retry — deliberately separate from the customer's own
+  // broadcastRadiusKm preference cap (@Max(20) in CreateSosRequest). That cap is what the
+  // customer chose; this is the system's own last-resort fallback when nobody responded, so it's
+  // allowed to search wider than the customer ever asked for. Configurable so the step size and
+  // ceiling can be tuned per-environment without a redeploy.
+  @Value("${sos.auto-expand.step-km:5}")
+  private int autoExpandStepKm;
+
+  @Value("${sos.auto-expand.max-km:35}")
+  private int autoExpandMaxKm;
+
   @EventListener(ApplicationReadyEvent.class)
   @Transactional
   public void expireOverduePendingRequests() {
@@ -169,8 +180,17 @@ public class SosServiceImpl implements SosService {
   }
 
   private void doExpire(SosRequest s) {
-    s.setStatus(SosStatus.EXPIRED);
     UUID sosId = s.getSosId();
+    // A true zero-response expiry auto-widens the search instead of leaving the customer stuck;
+    // a ticket that already has bids (even unaccepted ones) is a decision for the customer, not
+    // the system, so it still goes terminal below.
+    if (!bidSosRepository.existsBySosRequestSosId(sosId)
+        && s.getRebroadcastCount() < SosRequest.MAX_REBROADCAST) {
+      autoExpandAndRebroadcast(s);
+      return;
+    }
+
+    s.setStatus(SosStatus.EXPIRED);
     UUID userId = s.getUser().getUserId();
     sosEventProducer.publishStatusUpdated(
         new SosStatusUpdatedEvent(
@@ -197,6 +217,70 @@ public class SosServiceImpl implements SosService {
             retriesLeft,
             "attemptsLeft",
             SosRequest.MAX_REBROADCAST - s.getRebroadcastCount()));
+  }
+
+  // Zero bids at expiry: widen the net and try again automatically, instead of the customer
+  // having to notice the ticket died and tap manual retry. Status stays PENDING throughout — this
+  // never surfaces as EXPIRED, it just quietly casts a wider net.
+  private void autoExpandAndRebroadcast(SosRequest s) {
+    UUID sosId = s.getSosId();
+    UUID userId = s.getUser().getUserId();
+    int currentRadiusKm =
+        s.getBroadcastRadiusKm() != null ? s.getBroadcastRadiusKm() : DEFAULT_BROADCAST_KM;
+    int newRadiusKm = Math.min(currentRadiusKm + autoExpandStepKm, autoExpandMaxKm);
+
+    s.setBroadcastRadiusKm(newRadiusKm);
+    s.setRebroadcastCount(s.getRebroadcastCount() + 1);
+    s.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(SosRequest.BIDDING_WINDOW_SECONDS));
+    // Previous window's route estimate (if any) no longer applies to a freshly widened search.
+    routeEtaService.clear(sosId);
+
+    int attemptsLeft = SosRequest.MAX_REBROADCAST - s.getRebroadcastCount();
+    messagingTemplate.convertAndSendToUser(
+        userId.toString(),
+        "/queue/sos-updates",
+        Map.of(
+            "type",
+            "SOS_AUTO_REBROADCAST",
+            "sosId",
+            sosId,
+            "newRadiusKm",
+            newRadiusKm,
+            "rebroadcastCount",
+            s.getRebroadcastCount(),
+            "attemptsLeft",
+            attemptsLeft));
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "SOS_AUTO_REBROADCAST",
+            userId,
+            "USER",
+            sosId,
+            "Widening search area",
+            "No mechanic responded yet — searching a wider area (" + newRadiusKm + " km)."));
+
+    fanOutToNearbyMechanics(
+        sosId, s.getLocation().getY(), s.getLocation().getX(), s.getProblemType(), newRadiusKm);
+
+    scheduleBiddingExpiry(s);
+  }
+
+  // Same "we're already casting a wider net" message the zero-bid expiry retry sends above —
+  // used at ticket creation too, so the customer isn't left wondering why their ticket just sat
+  // there before the very first broadcast even went out.
+  private void notifyRadiusWidened(UUID sosId, UUID userId, int newRadiusKm) {
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "SOS_AUTO_REBROADCAST",
+            userId,
+            "USER",
+            sosId,
+            "Widening search area",
+            "Few mechanics registered nearby — searching within " + newRadiusKm + " km."));
+    messagingTemplate.convertAndSendToUser(
+        userId.toString(),
+        "/queue/sos-updates",
+        Map.of("type", "SOS_AUTO_REBROADCAST", "sosId", sosId, "newRadiusKm", newRadiusKm));
   }
 
   /**
@@ -233,6 +317,12 @@ public class SosServiceImpl implements SosService {
     // scoping, so a driver still can't file a breakdown against a stranger's car.
     User user = ssoProjection.user(request.userId());
     Vehicle vehicle = ssoProjection.vehicle(request.vehicleId(), user);
+    // Escalate the starting radius up front if nobody's even nearby at the requested one —
+    // otherwise the ticket would broadcast into an empty area and sit for the full 60s window
+    // before the zero-bid expiry path (autoExpandAndRebroadcast) ever notices.
+    int startingRadiusKm =
+        resolveStartingRadiusKm(
+            request.latitude(), request.longitude(), problemTypeKey, request.broadcastRadiusKm());
     SosRequest sos =
         SosRequest.builder()
             .problemType(problemTypeKey)
@@ -240,11 +330,20 @@ public class SosServiceImpl implements SosService {
             .location(
                 GEOMETRY_FACTORY.createPoint(
                     new Coordinate(request.longitude(), request.latitude())))
-            .broadcastRadiusKm(request.broadcastRadiusKm())
+            .broadcastRadiusKm(startingRadiusKm)
             .user(user)
             .vehicle(vehicle)
             .build();
     sosRequestRepository.save(sos);
+
+    // Tell the customer up front if we already had to widen past their requested/default radius
+    // — otherwise they see a ticket sitting quietly and have no idea the system is already
+    // trying harder on their behalf, same concern the expiry-based widening already covers.
+    int requestedOrDefaultKm =
+        request.broadcastRadiusKm() != null ? request.broadcastRadiusKm() : DEFAULT_BROADCAST_KM;
+    if (startingRadiusKm > requestedOrDefaultKm) {
+      notifyRadiusWidened(sos.getSosId(), user.getUserId(), startingRadiusKm);
+    }
 
     // Geocode coordinates asynchronously to map a readable address
     String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
@@ -268,11 +367,7 @@ public class SosServiceImpl implements SosService {
 
     // Spatial dispatch step to find target mechanics
     fanOutToNearbyMechanics(
-        sos.getSosId(),
-        request.latitude(),
-        request.longitude(),
-        problemTypeKey,
-        request.broadcastRadiusKm());
+        sos.getSosId(), request.latitude(), request.longitude(), problemTypeKey, startingRadiusKm);
 
     // Queue automated closing of the auction window if no responses come through
     scheduleBiddingExpiry(sos);
@@ -289,6 +384,42 @@ public class SosServiceImpl implements SosService {
       throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
     return toResponseWithMechanic(sos);
+  }
+
+  // Live view for the customer's "waiting for a bid" screen — reuses the ticket's own location,
+  // problem type, and current (possibly auto-expanded) radius, so mobile never has to reconstruct
+  // those itself or hit the customer-facing @Max(20) cap on GET /mechanics/available once a
+  // ticket's radius has auto-expanded past it.
+  @Override
+  @Transactional(readOnly = true)
+  public List<MechanicResponse> getNearbyMechanics(UUID sosId, UUID callerId) {
+    SosRequest sos = findSosOrThrow(sosId);
+    if (!isVisibleTo(sos, callerId)) {
+      throw new EntityNotFoundException("SOS request not found: " + sosId);
+    }
+
+    Point location = sos.getLocation();
+    int radiusKm =
+        sos.getBroadcastRadiusKm() != null ? sos.getBroadcastRadiusKm() : DEFAULT_BROADCAST_KM;
+    return findMatchedMechanics(location.getY(), location.getX(), sos.getProblemType(), radiusKm)
+        .stream()
+        .map(mechanicMapper::toResponse)
+        .toList();
+  }
+
+  // Read-only H3 + skill-tag + radius match, identical criteria to isEligibleMechanic/
+  // fanOutToNearbyMechanics but without their notification side effects — safe to call from a
+  // GET.
+  private List<Mechanic> findMatchedMechanics(
+      double lat, double lng, String problemType, int radiusKm) {
+    String sosCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
+    List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
+    List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
+    if (coarse.isEmpty()) {
+      return coarse;
+    }
+    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
+    return mechanicRepository.filterByRadiusAndBroadcast(ids, lat, lng, radiusKm * 1000.0);
   }
 
   @Override
@@ -761,6 +892,25 @@ public class SosServiceImpl implements SosService {
   // Stage 1 (H3 index): fast B-tree scan to get candidates in nearby hex cells.
   // Stage 2 (PostGIS): exact ST_DWithin check against each mechanic's service_radius_m.
   // recipientId=null in the notification signals a fan-out (no specific OneSignal push).
+  // Escalates the starting radius if the requested one finds zero mechanic candidates at all
+  // (by H3 cell, ignoring exact-distance filtering) — a synchronous, pre-broadcast check,
+  // distinct from the later expiry-based auto-expand (autoExpandAndRebroadcast) which handles
+  // "mechanics exist but nobody bid in time." Does not consume a rebroadcastCount attempt.
+  private int resolveStartingRadiusKm(
+      double lat, double lng, String problemType, Integer requestedRadiusKm) {
+    int radiusKm = requestedRadiusKm != null ? requestedRadiusKm : DEFAULT_BROADCAST_KM;
+    while (hasNoCandidates(lat, lng, problemType, radiusKm) && radiusKm < autoExpandMaxKm) {
+      radiusKm = Math.min(radiusKm + autoExpandStepKm, autoExpandMaxKm);
+    }
+    return radiusKm;
+  }
+
+  private boolean hasNoCandidates(double lat, double lng, String problemType, int radiusKm) {
+    String sosCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
+    List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
+    return mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType).isEmpty();
+  }
+
   private void fanOutToNearbyMechanics(
       UUID sosId, double lat, double lng, String problemType, Integer broadcastRadiusKm) {
     int effectiveRadiusKm = broadcastRadiusKm != null ? broadcastRadiusKm : DEFAULT_BROADCAST_KM;

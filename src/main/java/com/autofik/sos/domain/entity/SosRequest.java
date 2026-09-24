@@ -87,6 +87,10 @@ public class SosRequest {
   public static final int BIDDING_WINDOW_SECONDS = 60;
   public static final int MAX_REBROADCAST = 3;
 
+  // Auto-expand step/ceiling moved to sos.auto-expand.* config (see SosServiceImpl) so they're
+  // tunable per-environment without a redeploy — entities aren't Spring beans, so @Value can't
+  // live here.
+
   @PrePersist
   protected void onCreate() {
     createdAt = LocalDateTime.now();

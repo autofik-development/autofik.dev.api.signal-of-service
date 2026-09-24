@@ -26,6 +26,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -57,6 +58,10 @@ class RouteEtaServiceImplTest {
   void setUp() {
     valueOps = mock(ValueOperations.class);
     lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    // @Value is not applied by @InjectMocks, and localGate is now built in @PostConstruct off
+    // that injected value — set it directly, then invoke init() same as Spring would.
+    ReflectionTestUtils.setField(routeEtaService, "refreshIntervalSeconds", 30);
+    ReflectionTestUtils.invokeMethod(routeEtaService, "init");
   }
 
   private SosRequest sosAt(SosStatus status) {

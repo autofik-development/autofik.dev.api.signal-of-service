@@ -87,6 +87,12 @@ medusa:
   base-url: ${MEDUSA_BASE_URL}
   public-key: ${MEDUSA_PUBLIC_KEY}
 
+kafka:
+  topic:
+    # 1 is correct only for this repo's single-broker dev Kafka (see project CLAUDE.md). A
+    # multi-broker SIT/prod cluster needs at least 3 for real durability — set via env there.
+    replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
+
 sos:
   arrival:
     # A mechanic may only mark ARRIVED when their last known position is within this many metres
@@ -95,6 +101,20 @@ sos:
     # Note current_location is written at most once per 10s, so a fast-moving mechanic's stored
     # position can lag their real one; raise this if legitimate arrivals are being rejected.
     max-distance-meters: ${SOS_ARRIVAL_MAX_DISTANCE_M:50}
+  auto-expand:
+    # Step size and ceiling for widening the broadcast radius on a zero-bid retry. Deliberately
+    # separate from the customer's own broadcastRadiusKm preference cap (@Max(20) in
+    # CreateSosRequest) — this is the system's own last-resort fallback, allowed to search wider
+    # than the customer ever asked for.
+    step-km: ${SOS_AUTO_EXPAND_STEP_KM:5}
+    max-km: ${SOS_AUTO_EXPAND_MAX_KM:35}
+  eta:
+    # How often a mechanic's location ping is allowed to trigger a real Google Distance Matrix
+    # call while ACCEPTED/ON_THE_WAY; every other ping in the window interpolates against the
+    # cached snapshot for free. This is the single biggest driver of Maps API spend (~86% of it
+    # at typical usage) — lower for tighter live-ETA accuracy, raise to cut cost. The displayed
+    # ETA keeps updating smoothly between refreshes either way (see RouteEtaServiceImpl#interpolate).
+    refresh-interval-seconds: ${SOS_ETA_REFRESH_INTERVAL_SECONDS:30}
 
 logging:
   level:
