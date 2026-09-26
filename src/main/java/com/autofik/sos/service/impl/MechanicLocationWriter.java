@@ -14,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,7 +32,10 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 public class MechanicLocationWriter {
 
-  private static final int H3_RESOLUTION = 7;
+  // Must stay 7 unless every stored current_h3_index is recomputed — see sos.h3.resolution.
+  @Value("${sos.h3.resolution:7}")
+  private int h3Resolution;
+
   private static final GeometryFactory GEOMETRY_FACTORY =
       new GeometryFactory(new PrecisionModel(), 4326);
   private static final H3Core H3;
@@ -45,7 +49,9 @@ public class MechanicLocationWriter {
   }
 
   private static final String PG_SYNC_KEY_PREFIX = "mechanic:pg-sync:";
-  private static final Duration PG_SYNC_INTERVAL = Duration.ofSeconds(10);
+
+  @Value("${sos.location.pg-sync-seconds:10}")
+  private int pgSyncSeconds;
 
   private final MechanicRepository mechanicRepository;
   private final BidSosRepository bidSosRepository;
@@ -76,7 +82,7 @@ public class MechanicLocationWriter {
         .orElse(null);
   }
 
-  // Postgres is the durable store. Redis throttle key limits writes to once per PG_SYNC_INTERVAL.
+  // Postgres is the durable store. Redis throttle key limits writes to once per pgSyncSeconds.
   // When Redis is down the throttle key is unavailable, so every ping falls through to Postgres —
   // keeping the snapshot current during an outage.
   // Returns true when this ping actually wrote to Postgres, letting callers hang other
@@ -87,7 +93,7 @@ public class MechanicLocationWriter {
       Boolean throttle =
           redisTemplate
               .opsForValue()
-              .setIfAbsent(PG_SYNC_KEY_PREFIX + mechanicId, "1", PG_SYNC_INTERVAL);
+              .setIfAbsent(PG_SYNC_KEY_PREFIX + mechanicId, "1", Duration.ofSeconds(pgSyncSeconds));
       shouldPersist = Boolean.TRUE.equals(throttle);
     } catch (Exception e) {
       log.warn(
@@ -103,7 +109,7 @@ public class MechanicLocationWriter {
               .findById(mechanicId)
               .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
       mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
-      mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, H3_RESOLUTION));
+      mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, h3Resolution));
       mechanicRepository.save(mechanic);
     } else if (!mechanicRepository.existsById(mechanicId)) {
       throw new EntityNotFoundException("Mechanic not found: " + mechanicId);

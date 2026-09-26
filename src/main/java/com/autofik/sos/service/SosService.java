@@ -110,7 +110,7 @@ public interface SosService {
 
   /**
    * Use case: re-opens an EXPIRED SOS request and re-broadcasts to nearby mechanics. Capped at
-   * MAX_REBROADCAST attempts; throws TooManyRequestsException when exhausted.
+   * sos.bidding.max-rebroadcast attempts; throws TooManyRequestsException when exhausted.
    *
    * @param sosId identify the target SOS
    * @param userId security check — only the owner can rebroadcast

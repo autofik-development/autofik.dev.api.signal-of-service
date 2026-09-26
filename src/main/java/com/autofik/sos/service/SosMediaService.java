@@ -29,4 +29,11 @@ public interface SosMediaService {
    * historical rescue job.
    */
   List<SosMediaResponse> getBySosRequest(UUID sosId, UUID callerId);
+
+  /**
+   * Use Case: Presigned URLs for the photos on a ticket, for the mechanic broadcast payload. *
+   * Unlike {@link #getBySosRequest} this performs no visibility check — the caller has already
+   * decided who receives them (the fan-out only reaches mechanics eligible to bid).
+   */
+  List<String> photoUrls(UUID sosId);
 }

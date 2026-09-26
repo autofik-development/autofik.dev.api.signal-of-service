@@ -36,7 +36,9 @@ public class KafkaConfig {
   public static final String TOPIC_SOS_NOTIFICATION = "sos.notification";
   public static final String TOPIC_SOS_MEDIA_UPLOADED = "sos.media.uploaded";
 
-  private static final int PARTITION_COUNT = 3;
+  // Partitions per app-managed topic; caps consumer parallelism per topic.
+  @Value("${kafka.topic.partitions:3}")
+  private int partitionCount;
 
   // 1 is correct only for this repo's single-broker dev Kafka (see CLAUDE.md) — a multi-broker
   // SIT/prod cluster needs 3 for real durability. Configurable per-environment so this doesn't
@@ -75,7 +77,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosCreatedTopic() {
     return TopicBuilder.name(TOPIC_SOS_CREATED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -83,7 +85,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosBidCreatedTopic() {
     return TopicBuilder.name(TOPIC_SOS_BID_CREATED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -91,7 +93,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosBidAcceptedTopic() {
     return TopicBuilder.name(TOPIC_SOS_BID_ACCEPTED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -99,7 +101,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosBidRejectedTopic() {
     return TopicBuilder.name(TOPIC_SOS_BID_REJECTED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -107,7 +109,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosBidCancelledTopic() {
     return TopicBuilder.name(TOPIC_SOS_BID_CANCELLED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -115,7 +117,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosStatusUpdatedTopic() {
     return TopicBuilder.name(TOPIC_SOS_STATUS_UPDATED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -128,7 +130,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic mechanicLocationUpdatedTopic() {
     return TopicBuilder.name(TOPIC_MECHANIC_LOCATION_UPDATED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -136,7 +138,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosNotificationTopic() {
     return TopicBuilder.name(TOPIC_SOS_NOTIFICATION)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
@@ -144,7 +146,7 @@ public class KafkaConfig {
   @Bean
   public NewTopic sosMediaUploadedTopic() {
     return TopicBuilder.name(TOPIC_SOS_MEDIA_UPLOADED)
-        .partitions(PARTITION_COUNT)
+        .partitions(partitionCount)
         .replicas(replicationFactor)
         .build();
   }
