@@ -147,17 +147,6 @@ class AuthMiddlewareTest {
     assertThat(response.getStatus()).isEqualTo(200);
   }
 
-  // The legacy headers carry an id and nothing else; the handler must still get a usable caller.
-  @Test
-  void legacyHeader_stillReachesTheHandler() throws Exception {
-    UUID id = UUID.randomUUID();
-
-    mockMvc
-        .perform(get("/api/v1/probe").header(GatewayIdentityFilter.MECHANIC_HEADER, id.toString()))
-        .andExpect(status().isOk())
-        .andExpect(content().string(id + "/MECHANIC/null/null"));
-  }
-
   @Test
   void mechanicContext_reachesTheHandlerAsAuthMechanic() throws Exception {
     UUID id = UUID.randomUUID();

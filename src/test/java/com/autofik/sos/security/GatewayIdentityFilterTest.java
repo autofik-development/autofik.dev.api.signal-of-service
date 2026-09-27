@@ -6,7 +6,15 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import jakarta.servlet.FilterChain;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.Logger;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -37,18 +45,29 @@ class GatewayIdentityFilterTest {
     SecurityContextHolder.clearContext();
   }
 
-  private Authentication authenticateWith(String userHeader, String mechanicHeader)
-      throws Exception {
+  /** A fully verified block naming {@code uuid}, as the gateway sends it. */
+  private static String verified(String key, String uuid) {
+    return "{\""
+        + key
+        + "\":{\"uuid\":\""
+        + uuid
+        + "\",\"otpVerify\":true,\"profileVerify\":true"
+        + (key.equals("user") ? ",\"role\":\"USER\"" : "")
+        + "}}";
+  }
+
+  private Authentication authenticateWith(String userId, String mechanicId) throws Exception {
     MockHttpServletRequest request = new MockHttpServletRequest();
-    if (userHeader != null) request.addHeader(GatewayIdentityFilter.USER_HEADER, userHeader);
-    if (mechanicHeader != null)
-      request.addHeader(GatewayIdentityFilter.MECHANIC_HEADER, mechanicHeader);
+    if (userId != null)
+      request.addHeader(AppHeaderContext.USER_CONTEXT_HEADER, verified("user", userId));
+    if (mechanicId != null)
+      request.addHeader(AppHeaderContext.MECHANIC_CONTEXT_HEADER, verified("mechanic", mechanicId));
     filter.doFilter(request, new MockHttpServletResponse(), chain);
     return SecurityContextHolder.getContext().getAuthentication();
   }
 
   @Test
-  void userHeader_authenticatesAsDriver() throws Exception {
+  void userContext_authenticatesAsDriver() throws Exception {
     UUID id = UUID.randomUUID();
 
     Authentication auth = authenticateWith(id.toString(), null);
@@ -60,7 +79,7 @@ class GatewayIdentityFilterTest {
   }
 
   @Test
-  void mechanicHeader_authenticatesAsMechanic() throws Exception {
+  void mechanicContext_authenticatesAsMechanic() throws Exception {
     UUID id = UUID.randomUUID();
 
     Authentication auth = authenticateWith(null, id.toString());
@@ -76,10 +95,10 @@ class GatewayIdentityFilterTest {
     assertThat(authenticateWith(null, null)).isNull();
   }
 
-  // Both headers means the edge is misconfigured. Guessing which one is real is how an
-  // impersonation hole gets shipped.
+  // Two contexts naming different people means the edge is misconfigured. Guessing which one is
+  // real is how an impersonation hole gets shipped.
   @Test
-  void bothHeaders_leavesRequestUnauthenticated() throws Exception {
+  void conflictingContexts_leaveRequestUnauthenticated() throws Exception {
     assertThat(authenticateWith(UUID.randomUUID().toString(), UUID.randomUUID().toString()))
         .isNull();
   }
@@ -93,7 +112,8 @@ class GatewayIdentityFilterTest {
   @Test
   void carriesCallerBearerAsCredentials() throws Exception {
     MockHttpServletRequest request = new MockHttpServletRequest();
-    request.addHeader(GatewayIdentityFilter.USER_HEADER, UUID.randomUUID().toString());
+    request.addHeader(
+        AppHeaderContext.USER_CONTEXT_HEADER, verified("user", UUID.randomUUID().toString()));
     request.addHeader("Authorization", "Bearer abc123");
 
     filter.doFilter(request, new MockHttpServletResponse(), chain);
@@ -180,5 +200,73 @@ class GatewayIdentityFilterTest {
 
     assertThat(response.getStatus()).isEqualTo(200);
     verify(chain).doFilter(request, response);
+  }
+
+  /**
+   * An unusable header answers the same 401 as no header, so the log line is the only way to tell
+   * the two apart. It must name the header and never echo its value, which names the user.
+   */
+  @Test
+  void unusableContext_logsWhichHeaderArrivedButNotItsValue() throws Exception {
+    List<String> logged = captureWarnings(() -> filterWithContext("{not json"));
+
+    assertThat(logged)
+        .singleElement()
+        .asString()
+        .contains("user-context")
+        .doesNotContain("not json");
+  }
+
+  // The gateway never sends these; they must not identify anyone, and must stay silent.
+  @Test
+  void legacyHeaders_noLongerAuthenticate() throws Exception {
+    MockHttpServletRequest request = new MockHttpServletRequest();
+    request.addHeader("X-User-Id", UUID.randomUUID().toString());
+    request.addHeader("X-Mechanic-Id", UUID.randomUUID().toString());
+
+    filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+  }
+
+  @Test
+  void noContext_logsNothing() throws Exception {
+    List<String> logged =
+        captureWarnings(
+            () ->
+                filter.doFilter(
+                    new MockHttpServletRequest(), new MockHttpServletResponse(), chain));
+
+    assertThat(logged).isEmpty();
+  }
+
+  private interface Action {
+    void run() throws Exception;
+  }
+
+  private static List<String> captureWarnings(Action action) throws Exception {
+    List<String> messages = new CopyOnWriteArrayList<>();
+    AbstractAppender appender =
+        new AbstractAppender("capture", null, null, true, Property.EMPTY_ARRAY) {
+          @Override
+          public void append(LogEvent event) {
+            if (event.getLevel() == Level.WARN) {
+              messages.add(event.getMessage().getFormattedMessage());
+            }
+          }
+        };
+    appender.start();
+    Logger logger = (Logger) LogManager.getLogger(GatewayIdentityFilter.class);
+    // Without Spring, log4j2-spring.xml never loads and Log4j's default config drops WARN.
+    Level previous = logger.getLevel();
+    logger.setLevel(Level.WARN);
+    logger.addAppender(appender);
+    try {
+      action.run();
+    } finally {
+      logger.removeAppender(appender);
+      logger.setLevel(previous);
+    }
+    return messages;
   }
 }

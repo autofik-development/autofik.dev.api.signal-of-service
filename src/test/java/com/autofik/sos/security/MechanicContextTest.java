@@ -155,20 +155,6 @@ class MechanicContextTest {
     assertThat(caller.role()).isEqualTo(CallerRole.MECHANIC);
   }
 
-  // The verified context wins: the legacy header carries no verification at all.
-  @Test
-  void mechanicContext_winsOverLegacyHeaders() {
-    CurrentUser caller =
-        sdk.resolveCurrentUser(
-                headers(
-                    Map.of(
-                        AppHeaderContext.MECHANIC_CONTEXT_HEADER, mechanicContext(Map.of()),
-                        GatewayIdentityFilter.MECHANIC_HEADER, UUID.randomUUID().toString())))
-            .orElseThrow();
-
-    assertThat(caller.id()).isEqualTo(ID);
-  }
-
   // Both blocks, same person: the mechanic claim is the more specific one.
   @Test
   void bothBlocksNamingOnePerson_resolveAsTheMechanic() {

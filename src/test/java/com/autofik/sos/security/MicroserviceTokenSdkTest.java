@@ -170,52 +170,12 @@ class MicroserviceTokenSdkTest {
         .isEmpty();
   }
 
+  // Only user-context / mechanic-context identify a caller; the gateway sends nothing else.
   @Test
-  void legacyUserHeader_stillResolves() {
-    Optional<CurrentUser> caller =
-        sdk.resolveCurrentUser(headers(Map.of(GatewayIdentityFilter.USER_HEADER, ID.toString())));
-
-    assertThat(caller)
-        .get()
-        .extracting(CurrentUser::id, CurrentUser::role)
-        .containsExactly(ID, CallerRole.USER);
-  }
-
-  @Test
-  void legacyMechanicHeader_stillResolves() {
-    Optional<CurrentUser> caller =
-        sdk.resolveCurrentUser(
-            headers(Map.of(GatewayIdentityFilter.MECHANIC_HEADER, ID.toString())));
-
-    assertThat(caller).get().extracting(CurrentUser::role).isEqualTo(CallerRole.MECHANIC);
-  }
-
-  // Both legacy headers means the edge is misconfigured. Guessing which one is real is how an
-  // impersonation hole gets shipped.
-  @Test
-  void bothLegacyHeaders_leaveTheCallerAnonymous() {
+  void legacyHeaders_noLongerResolve() {
     assertThat(
             sdk.resolveCurrentUser(
-                headers(
-                    Map.of(
-                        GatewayIdentityFilter.USER_HEADER, UUID.randomUUID().toString(),
-                        GatewayIdentityFilter.MECHANIC_HEADER, UUID.randomUUID().toString()))))
+                headers(Map.of("X-User-Id", ID.toString(), "X-Mechanic-Id", ID.toString()))))
         .isEmpty();
-  }
-
-  // The verified context wins: the legacy header carries no verification at all.
-  @Test
-  void userContext_winsOverLegacyHeaders() {
-    CurrentUser caller =
-        sdk.resolveCurrentUser(
-                headers(
-                    Map.of(
-                        AppHeaderContext.USER_CONTEXT_HEADER,
-                            userContext(Map.of("role", "MECHANIC")),
-                        GatewayIdentityFilter.USER_HEADER, UUID.randomUUID().toString())))
-            .orElseThrow();
-
-    assertThat(caller.id()).isEqualTo(ID);
-    assertThat(caller.role()).isEqualTo(CallerRole.MECHANIC);
   }
 }

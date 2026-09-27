@@ -35,15 +35,13 @@ import tools.jackson.databind.ObjectMapper;
 @Slf4j
 public class GatewayIdentityFilter extends OncePerRequestFilter {
 
-  /** ponytail: pre-{@code user-context} headers — see MicroserviceTokenSdk#resolveLegacyHeaders. */
-  public static final String USER_HEADER = "X-User-Id";
-
-  public static final String MECHANIC_HEADER = "X-Mechanic-Id";
-
   /** Kept as aliases so callers and tests do not have to know about {@link CallerRole}. */
   public static final String ROLE_USER = CallerRole.USER.authority();
 
   public static final String ROLE_MECHANIC = CallerRole.MECHANIC.authority();
+
+  private static final List<String> IDENTITY_HEADERS =
+      List.of(AppHeaderContext.USER_CONTEXT_HEADER, AppHeaderContext.MECHANIC_CONTEXT_HEADER);
 
   private final MicroserviceTokenSdk tokenSdk;
   private final ObjectMapper objectMapper;
@@ -62,8 +60,30 @@ public class GatewayIdentityFilter extends OncePerRequestFilter {
       return;
     }
 
-    caller.ifPresent(user -> authenticate(user, request));
+    if (caller.isPresent()) {
+      authenticate(caller.get(), request);
+    } else {
+      logUnusableContext(request);
+    }
     chain.doFilter(request, response);
+  }
+
+  /**
+   * The chain answers 401 without saying why, and from the outside a header that arrived but named
+   * nobody — broken JSON, a uuid that is not one, an empty value — looks exactly like no header at
+   * all. Names which headers came, never their values.
+   */
+  private static void logUnusableContext(HttpServletRequest request) {
+    List<String> present =
+        IDENTITY_HEADERS.stream().filter(name -> request.getHeader(name) != null).toList();
+    if (!present.isEmpty()) {
+      log.warn(
+          "Unusable identity context on {} {}: headers {} arrived but named nobody (malformed"
+              + " JSON, invalid uuid, or empty value)",
+          request.getMethod(),
+          request.getRequestURI(),
+          present);
+    }
   }
 
   private void authenticate(CurrentUser caller, HttpServletRequest request) {

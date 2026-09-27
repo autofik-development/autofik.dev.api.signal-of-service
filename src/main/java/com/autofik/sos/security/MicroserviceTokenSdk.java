@@ -45,7 +45,9 @@ public class MicroserviceTokenSdk {
     ContextIdentity identity = context.identity();
 
     if (identity == null) {
-      return resolveLegacyHeaders(headers);
+      // The gateway sends user-context or mechanic-context and nothing else. No context is no
+      // caller — there is no second header to fall back to.
+      return Optional.empty();
     }
 
     UUID id = parseUuid(identity.uuid());
@@ -89,33 +91,6 @@ public class MicroserviceTokenSdk {
           "Role '" + identity.role() + "' does not belong in a " + implied.get() + " context");
     }
     return declared.get();
-  }
-
-  /**
-   * The identity headers APISIX wrote before {@code user-context} existed.
-   *
-   * <p>ponytail: drop this once every environment's gateway sends {@code user-context}. Until then
-   * dropping it would lock out whatever is still routed the old way, and a mechanic mid-job is not
-   * who should discover that.
-   *
-   * <p>Exactly one of the two must be present. Both means the edge is misconfigured and the request
-   * is left anonymous rather than guessed at — neither identity is more trustworthy than the other.
-   */
-  private Optional<CurrentUser> resolveLegacyHeaders(UnaryOperator<String> headers) {
-    String user = headers.apply(GatewayIdentityFilter.USER_HEADER);
-    String mechanic = headers.apply(GatewayIdentityFilter.MECHANIC_HEADER);
-
-    if ((user == null) == (mechanic == null)) {
-      return Optional.empty();
-    }
-
-    UUID id = parseUuid(user != null ? user : mechanic);
-    if (id == null) {
-      return Optional.empty();
-    }
-
-    CallerRole role = user != null ? CallerRole.USER : CallerRole.MECHANIC;
-    return Optional.of(new CurrentUser(id, role, null, null));
   }
 
   private static boolean isInvalidTokenStatus(String tokenStatus) {

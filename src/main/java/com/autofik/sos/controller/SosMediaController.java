@@ -1,14 +1,13 @@
 package com.autofik.sos.controller;
 
 import com.autofik.sos.dto.response.SosMediaResponse;
-import com.autofik.sos.security.GatewayIdentityFilter;
+import com.autofik.sos.security.AuthUser;
+import com.autofik.sos.security.CurrentUser;
 import com.autofik.sos.service.SosMediaService;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -31,22 +30,17 @@ public class SosMediaController {
   @PostMapping(consumes = "multipart/form-data")
   @ResponseStatus(HttpStatus.CREATED)
   public SosMediaResponse upload(
-      @PathVariable UUID sosId, @RequestParam MultipartFile file, Authentication caller) {
-    UUID callerId = (UUID) caller.getPrincipal();
-    boolean isMechanic =
-        caller.getAuthorities().stream()
-            .anyMatch(a -> GatewayIdentityFilter.ROLE_MECHANIC.equals(a.getAuthority()));
-    return isMechanic
-        ? sosMediaService.upload(sosId, file, null, callerId)
-        : sosMediaService.upload(sosId, file, callerId, null);
+      @PathVariable UUID sosId, @RequestParam MultipartFile file, @AuthUser CurrentUser caller) {
+    return caller.isMechanic()
+        ? sosMediaService.upload(sosId, file, null, caller.id())
+        : sosMediaService.upload(sosId, file, caller.id(), null);
   }
 
   // GET /api/sos/{sosId}/media — Retrieve all media files attached to a SOS ticket
   // Each response includes a presigned S3 URL valid for 15 minutes
   // Same visibility rule as reading the SOS itself.
   @GetMapping
-  public List<SosMediaResponse> getBySos(
-      @PathVariable UUID sosId, @AuthenticationPrincipal UUID callerId) {
-    return sosMediaService.getBySosRequest(sosId, callerId);
+  public List<SosMediaResponse> getBySos(@PathVariable UUID sosId, @AuthUser CurrentUser caller) {
+    return sosMediaService.getBySosRequest(sosId, caller.id());
   }
 }
