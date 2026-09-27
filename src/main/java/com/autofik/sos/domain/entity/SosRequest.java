@@ -83,15 +83,14 @@ public class SosRequest {
   @Column(name = "broadcast_radius_km")
   private Integer broadcastRadiusKm;
 
-  // 60 seconds for mechanics to respond before the request expires automatically.
-  public static final int BIDDING_WINDOW_SECONDS = 60;
-  public static final int MAX_REBROADCAST = 3;
+  // Bidding window, max rebroadcast and auto-expand step/ceiling live in sos.bidding.* and
+  // sos.auto-expand.* config (see SosServiceImpl) — entities aren't Spring beans, so @Value can't
+  // live here. biddingExpiresAt is therefore set by the service, not in onCreate().
 
   @PrePersist
   protected void onCreate() {
     createdAt = LocalDateTime.now();
     updatedAt = LocalDateTime.now();
-    biddingExpiresAt = createdAt.plusSeconds(BIDDING_WINDOW_SECONDS);
   }
 
   @PreUpdate

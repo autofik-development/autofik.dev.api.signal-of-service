@@ -9,7 +9,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 /**
  * Access to the identity {@link GatewayIdentityFilter} resolved for the current request.
  *
- * <p>Controllers normally take {@code @AuthenticationPrincipal UUID} directly; this is for the
+ * <p>Controllers normally take {@code @AuthUser} / {@code @AuthMechanic} directly; this is for the
  * places that cannot — a service that needs the caller's bearer or role, or a legacy request field
  * that has to be checked against the real identity before it is deleted next release.
  */

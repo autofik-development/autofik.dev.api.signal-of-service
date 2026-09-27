@@ -4,6 +4,7 @@ import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
+import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import com.autofik.sos.security.AuthMechanic;
@@ -12,6 +13,7 @@ import com.autofik.sos.security.Caller;
 import com.autofik.sos.security.CurrentUser;
 import com.autofik.sos.service.SosService;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -69,6 +71,14 @@ public class SosController {
   @GetMapping("/{sosId}")
   public SosRequestResponse getById(@PathVariable UUID sosId, @AuthUser CurrentUser caller) {
     return sosService.getById(sosId, caller.id());
+  }
+
+  // GET /api/v1/sos/{sosId}/nearby-mechanics — Live list of mechanics eligible for this ticket
+  // right now, for the "waiting for a bid" screen. Same visibility rule as reading the SOS itself.
+  @GetMapping("/{sosId}/nearby-mechanics")
+  public List<MechanicResponse> getNearbyMechanics(
+      @PathVariable UUID sosId, @AuthUser CurrentUser caller) {
+    return sosService.getNearbyMechanics(sosId, caller.id());
   }
 
   // PATCH /api/v1/sos/{sosId}/status — Mechanic sets ON_THE_WAY or ARRIVED (no approval needed)

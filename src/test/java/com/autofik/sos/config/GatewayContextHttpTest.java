@@ -332,6 +332,10 @@ class GatewayContextHttpTest {
         // either role
         route("GET /sos", get("/api/v1/sos"), "BOTH"),
         route("GET /sos/{id}", get("/api/v1/sos/" + ANY), "BOTH"),
+        route(
+            "GET /sos/{id}/nearby-mechanics",
+            get("/api/v1/sos/" + ANY + "/nearby-mechanics"),
+            "BOTH"),
         route("GET /bids/sos/{id}", get("/api/v1/bids/sos/" + ANY), "BOTH"),
         route("GET /mechanics/{id}/location", get(m + "/location"), "BOTH"),
         route("GET /sos/{id}/media", get("/api/v1/sos/" + ANY + "/media"), "BOTH"));

@@ -26,6 +26,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -57,6 +58,12 @@ class RouteEtaServiceImplTest {
   void setUp() {
     valueOps = mock(ValueOperations.class);
     lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    // @Value is not applied by @InjectMocks, and localGate is now built in @PostConstruct off
+    // that injected value — set it directly, then invoke init() same as Spring would.
+    ReflectionTestUtils.setField(routeEtaService, "refreshIntervalSeconds", 30);
+    ReflectionTestUtils.setField(routeEtaService, "cacheTtlMinutes", 15);
+    ReflectionTestUtils.setField(routeEtaService, "earthRadiusM", 6_371_000d);
+    ReflectionTestUtils.invokeMethod(routeEtaService, "init");
   }
 
   private SosRequest sosAt(SosStatus status) {
@@ -76,8 +83,7 @@ class RouteEtaServiceImplTest {
                 START_LAT,
                 START_LNG,
                 DEST_LAT,
-                DEST_LNG,
-                false));
+                DEST_LNG));
   }
 
   // ── refresh path ──────────────────────────────────────────────────────────
@@ -94,25 +100,28 @@ class RouteEtaServiceImplTest {
     assertThat(eta).isNotNull();
     assertThat(eta.remainingDistanceM()).isEqualTo(5200);
     assertThat(eta.remainingDurationS()).isEqualTo(3900);
-    assertThat(eta.estimated()).isFalse();
     // Text is rebuilt server-side rather than reusing Google's wording.
     assertThat(eta.remainingDurationText()).isEqualTo("1 hr 5 min");
     assertThat(eta.remainingDistanceText()).isEqualTo("5.2 km");
   }
 
   @Test
-  void currentEta_whenMapsUnavailable_fallsBackToStraightLineMarkedEstimated() {
+  void currentEta_whenMapsUnavailable_returnsNullAndCachesNothing() {
     when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosAt(SosStatus.ON_THE_WAY)));
     when(googleMapsService.getDistanceInfo(any(), any())).thenReturn(null);
 
-    EtaInfo eta = routeEtaService.currentEta(sosId, START_LAT, START_LNG);
+    assertThat(routeEtaService.currentEta(sosId, START_LAT, START_LNG)).isNull();
+    verify(valueOps, never()).set(anyString(), anyString(), any(Duration.class));
+  }
 
-    assertThat(eta).isNotNull();
-    assertThat(eta.estimated()).isTrue();
-    // ~5.4 km great-circle inflated by the 1.35 winding factor.
-    assertThat(eta.remainingDistanceM()).isBetween(6_500L, 8_000L);
-    assertThat(eta.remainingDurationS()).isPositive();
+  @Test
+  void currentEta_withinWindowAfterMapsFailure_returnsNullWithoutRetryingMaps() {
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
+    when(valueOps.get(anyString())).thenReturn(null);
+
+    assertThat(routeEtaService.currentEta(sosId, START_LAT, START_LNG)).isNull();
+    verifyNoInteractions(googleMapsService);
   }
 
   @Test

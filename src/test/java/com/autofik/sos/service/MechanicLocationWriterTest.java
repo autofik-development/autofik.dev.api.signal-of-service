@@ -48,6 +48,8 @@ class MechanicLocationWriterTest {
   void setUp() {
     valueOps = mock(ValueOperations.class);
     lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    org.springframework.test.util.ReflectionTestUtils.setField(writer, "pgSyncSeconds", 10);
+    org.springframework.test.util.ReflectionTestUtils.setField(writer, "h3Resolution", 7);
     // Default: throttle allows Postgres write on every ping
     lenient()
         .when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))

@@ -11,6 +11,7 @@ import com.autofik.sos.service.RouteEtaService;
 import com.autofik.sos.util.GeoDistance;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import java.util.EnumSet;
 import java.util.Set;
@@ -21,6 +22,7 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
@@ -34,15 +36,21 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   // ping in that window interpolates against the cached snapshot for free.
   private static final String ETA_LOCK_PREFIX = "sos:eta:lock:";
   private static final String ETA_CACHE_PREFIX = "sos:eta:";
-  private static final Duration REFRESH_INTERVAL = Duration.ofSeconds(30);
-  // Outlives REFRESH_INTERVAL so the snapshot is always available to interpolate against;
-  // bounded so an abandoned job cannot pin the entry forever.
-  private static final Duration CACHE_TTL = Duration.ofMinutes(15);
 
-  // Used only when the Maps API yields nothing (no key configured, quota exhausted,
-  // or no drivable route). Rough by construction — flagged as estimated in the response.
-  private static final double FALLBACK_SPEED_KMH = 25.0;
-  private static final double ROAD_WINDING_FACTOR = 1.35;
+  // Directly drives Google Distance Matrix spend — this is ~86% of Maps API cost (one call per
+  // window per active SOS). Configurable so it can be tuned against the bill without a redeploy;
+  // the displayed ETA keeps ticking smoothly between refreshes via interpolate(), so widening
+  // this is not user-visible the way it would be on a naive "poll and freeze" implementation.
+  @Value("${sos.eta.refresh-interval-seconds:30}")
+  private int refreshIntervalSeconds;
+
+  @Value("${sos.geo.earth-radius-m:6371000}")
+  private double earthRadiusM;
+
+  // Outlives the refresh interval so the snapshot is always available to interpolate against;
+  // bounded so an abandoned job cannot pin the entry forever.
+  @Value("${sos.eta.cache-ttl-minutes:15}")
+  private int cacheTtlMinutes;
 
   private static final GeometryFactory GEOMETRY_FACTORY =
       new GeometryFactory(new PrecisionModel(), 4326);
@@ -59,10 +67,24 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   // L2 fallback for both the gate and the snapshot, used only while Redis is unreachable.
   // Per-instance rather than shared, so an outage costs one Google call per window per
   // instance instead of one per ping — bounded degradation rather than none.
-  private final Cache<UUID, Boolean> localGate =
-      Caffeine.newBuilder().expireAfterWrite(REFRESH_INTERVAL).maximumSize(10_000).build();
-  private final Cache<UUID, EtaSnapshot> localSnapshots =
-      Caffeine.newBuilder().expireAfterWrite(CACHE_TTL).maximumSize(10_000).build();
+  // Not initialized inline: both caches are sized off @Value fields, which are injected
+  // after construction — built in init() below instead.
+  private Cache<UUID, Boolean> localGate;
+  private Cache<UUID, EtaSnapshot> localSnapshots;
+
+  @PostConstruct
+  void init() {
+    localGate =
+        Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofSeconds(refreshIntervalSeconds))
+            .maximumSize(10_000)
+            .build();
+    localSnapshots =
+        Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofMinutes(cacheTtlMinutes))
+            .maximumSize(10_000)
+            .build();
+  }
 
   // Deliberately not @Transactional: refresh() makes a blocking Google call, and wrapping this
   // would hold a Postgres connection for its duration on the hottest path in the service. The
@@ -76,8 +98,9 @@ public class RouteEtaServiceImpl implements RouteEtaService {
     // Google result. No database read and no API cost.
     if (!shouldRefresh(sosId)) {
       EtaSnapshot cached = readSnapshot(sosId);
-      if (cached != null) return interpolate(cached, mechanicLat, mechanicLng);
-      // Cache expired ahead of the gate — fall through and refresh anyway.
+      // No snapshot inside the window means the last Google call returned nothing. Report no
+      // ETA until the gate reopens rather than retrying Google on every ping.
+      return cached == null ? null : interpolate(cached, mechanicLat, mechanicLng);
     }
 
     return refresh(sosId, mechanicLat, mechanicLng);
@@ -100,7 +123,10 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   private boolean shouldRefresh(UUID sosId) {
     try {
       Boolean acquired =
-          redisTemplate.opsForValue().setIfAbsent(ETA_LOCK_PREFIX + sosId, "1", REFRESH_INTERVAL);
+          redisTemplate
+              .opsForValue()
+              .setIfAbsent(
+                  ETA_LOCK_PREFIX + sosId, "1", Duration.ofSeconds(refreshIntervalSeconds));
       return Boolean.TRUE.equals(acquired);
     } catch (Exception e) {
       log.warn(
@@ -124,21 +150,20 @@ public class RouteEtaServiceImpl implements RouteEtaService {
     Point destination = sos.getLocation();
     Point origin = GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat));
     DistanceInfo info = googleMapsService.getDistanceInfo(origin, destination);
+    // No key, quota exhausted, or no drivable route: show no ETA rather than a made-up one.
+    if (info == null) return null;
 
     EtaSnapshot snapshot =
-        (info != null)
-            ? new EtaSnapshot(
-                info.distanceMeters(),
-                info.durationSeconds(),
-                lat,
-                lng,
-                destination.getY(),
-                destination.getX(),
-                false)
-            : straightLineSnapshot(lat, lng, destination);
+        new EtaSnapshot(
+            info.distanceMeters(),
+            info.durationSeconds(),
+            lat,
+            lng,
+            destination.getY(),
+            destination.getX());
 
     writeSnapshot(sosId, snapshot);
-    return toInfo(snapshot.distanceMeters(), snapshot.durationSeconds(), snapshot.estimated());
+    return toInfo(snapshot.distanceMeters(), snapshot.durationSeconds());
   }
 
   /**
@@ -162,24 +187,17 @@ public class RouteEtaServiceImpl implements RouteEtaService {
     double after = haversineMeters(lat, lng, snapshot.destLat(), snapshot.destLng());
 
     // Snapshot taken essentially at the destination — nothing meaningful left to scale.
-    if (before < 1.0) return toInfo(0, 0, snapshot.estimated());
+    if (before < 1.0) return toInfo(0, 0);
 
     double remainingRatio = after / before;
     long remainingDistance = Math.round(snapshot.distanceMeters() * remainingRatio);
     long remainingDuration = Math.round(snapshot.durationSeconds() * remainingRatio);
 
-    return toInfo(remainingDistance, remainingDuration, snapshot.estimated());
+    return toInfo(remainingDistance, remainingDuration);
   }
 
-  private EtaSnapshot straightLineSnapshot(double lat, double lng, Point destination) {
-    double straight = haversineMeters(lat, lng, destination.getY(), destination.getX());
-    long meters = Math.round(straight * ROAD_WINDING_FACTOR);
-    long seconds = Math.round(meters / (FALLBACK_SPEED_KMH * 1000 / 3600));
-    return new EtaSnapshot(meters, seconds, lat, lng, destination.getY(), destination.getX(), true);
-  }
-
-  private EtaInfo toInfo(long meters, long seconds, boolean estimated) {
-    return new EtaInfo(meters, seconds, formatDistance(meters), formatDuration(seconds), estimated);
+  private EtaInfo toInfo(long meters, long seconds) {
+    return new EtaInfo(meters, seconds, formatDistance(meters), formatDuration(seconds));
   }
 
   // --- Snapshot storage: Redis primary, in-process fallback, never throws to the caller ---
@@ -202,7 +220,10 @@ public class RouteEtaServiceImpl implements RouteEtaService {
     try {
       redisTemplate
           .opsForValue()
-          .set(ETA_CACHE_PREFIX + sosId, objectMapper.writeValueAsString(snapshot), CACHE_TTL);
+          .set(
+              ETA_CACHE_PREFIX + sosId,
+              objectMapper.writeValueAsString(snapshot),
+              Duration.ofMinutes(cacheTtlMinutes));
     } catch (Exception e) {
       log.warn("Failed caching ETA snapshot for SOS {}: {}", sosId, e.getMessage());
     }
@@ -226,7 +247,7 @@ public class RouteEtaServiceImpl implements RouteEtaService {
     return meters < 1000 ? meters + " m" : String.format("%.1f km", meters / 1000.0);
   }
 
-  private static double haversineMeters(double lat1, double lng1, double lat2, double lng2) {
-    return GeoDistance.haversineMeters(lat1, lng1, lat2, lng2);
+  private double haversineMeters(double lat1, double lng1, double lat2, double lng2) {
+    return GeoDistance.haversineMeters(lat1, lng1, lat2, lng2, earthRadiusM);
   }
 }

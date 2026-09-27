@@ -18,7 +18,8 @@ public interface RouteEtaService {
    * @param mechanicLat the mechanic's current latitude
    * @param mechanicLng the mechanic's current longitude
    * @return current progress, or null when the SOS is not en route (ARRIVED, cancelled, completed,
-   *     or not found) — callers should treat null as "no ETA to show".
+   *     or not found) or Google Maps returned no route — callers should treat null as "no ETA to
+   *     show".
    */
   EtaInfo currentEta(UUID sosId, double mechanicLat, double mechanicLng);
 

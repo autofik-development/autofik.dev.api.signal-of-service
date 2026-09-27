@@ -36,6 +36,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.PrecisionModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -47,10 +48,15 @@ import tools.jackson.databind.ObjectMapper;
 @Slf4j
 public class MechanicServiceImpl implements MechanicService {
 
-  private static final int H3_RESOLUTION = 7;
+  // Must stay 7 unless every stored current_h3_index is recomputed — see sos.h3.resolution.
+  @Value("${sos.h3.resolution:7}")
+  private int h3Resolution;
+
   // Center-to-center distance between adjacent resolution-7 cells ≈ edge × √3 ≈ 2.114 km.
   // Matches the constant in SosServiceImpl so both fan-out and availability use the same formula.
-  private static final double H3_R7_CENTER_TO_CENTER_KM = 2.114;
+  @Value("${sos.h3.center-to-center-km:2.114}")
+  private double h3CenterToCenterKm;
+
   private static final GeometryFactory GEOMETRY_FACTORY =
       new GeometryFactory(new PrecisionModel(), 4326);
   // The service is Cambodia-only — see the coordinate bounds on the controller.
@@ -210,7 +216,7 @@ public class MechanicServiceImpl implements MechanicService {
       double lat, double lng, String problemType, int radiusKm) {
     boolean needsSkills = problemType != null && !problemType.isBlank();
 
-    String centerCell = H3.geoToH3Address(lat, lng, H3_RESOLUTION);
+    String centerCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(centerCell, ringRadiusFor(radiusKm));
 
     List<Mechanic> stage1 = mechanicRepository.findByH3Cells(searchCells);
@@ -254,8 +260,8 @@ public class MechanicServiceImpl implements MechanicService {
     return mechanicMapper.toResponseList(result);
   }
 
-  private static int ringRadiusFor(int radiusKm) {
-    return (int) Math.ceil(radiusKm / H3_R7_CENTER_TO_CENTER_KM) + 1;
+  private int ringRadiusFor(int radiusKm) {
+    return (int) Math.ceil(radiusKm / h3CenterToCenterKm) + 1;
   }
 
   // Convenience overload — delegates so both entry points share one broadcast decision.
