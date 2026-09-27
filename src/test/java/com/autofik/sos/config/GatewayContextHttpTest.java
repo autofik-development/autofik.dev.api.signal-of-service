@@ -31,6 +31,7 @@ import com.autofik.sos.service.SosService;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -100,24 +101,23 @@ class GatewayContextHttpTest {
   /** name, headers, expected status, expected message (null = none), id the controller acts for. */
   static Stream<Arguments> cases() {
     return Stream.of(
-        Arguments.of("no context", Map.of(), 401, "Missing or invalid user context", null),
-        Arguments.of("valid driver", Map.of("user-context", user("USER", OK)), 200, null, DRIVER),
-        Arguments.of(
+        testCase("no context", Map.of(), 401, "Missing or invalid user context", null),
+        testCase("valid driver", Map.of("user-context", user("USER", OK)), 200, null, DRIVER),
+        testCase(
             "valid mechanic, no role",
             Map.of("mechanic-context", mechanic(MECHANIC, null)),
             200,
             null,
             MECHANIC),
-        Arguments.of(
+        testCase(
             "mechanic block inside user-context",
             Map.of("user-context", mechanic(MECHANIC, "MECHANIC")),
             200,
             null,
             MECHANIC),
-        Arguments.of("GARAGE role", Map.of("user-context", user("GARAGE", OK)), 200, null, DRIVER),
-        Arguments.of(
-            "CUSTOMER role", Map.of("user-context", user("CUSTOMER", OK)), 200, null, DRIVER),
-        Arguments.of(
+        testCase("GARAGE role", Map.of("user-context", user("GARAGE", OK)), 200, null, DRIVER),
+        testCase("CUSTOMER role", Map.of("user-context", user("CUSTOMER", OK)), 200, null, DRIVER),
+        testCase(
             "logged out",
             Map.of(
                 "user-context",
@@ -125,13 +125,13 @@ class GatewayContextHttpTest {
             401,
             "Access token is no longer valid",
             null),
-        Arguments.of(
+        testCase(
             "token expired",
             Map.of("user-context", user("USER", OK.replace("active", "expired"))),
             401,
             "Access token is no longer valid",
             null),
-        Arguments.of(
+        testCase(
             "otp not verified",
             Map.of(
                 "user-context",
@@ -139,7 +139,7 @@ class GatewayContextHttpTest {
             403,
             "User profile is not fully verified",
             null),
-        Arguments.of(
+        testCase(
             "profile not verified",
             Map.of(
                 "user-context",
@@ -147,61 +147,61 @@ class GatewayContextHttpTest {
             403,
             "User profile is not fully verified",
             null),
-        Arguments.of(
+        testCase(
             "unknown role ADMIN",
             Map.of("user-context", user("ADMIN", OK)),
             403,
             "Role 'ADMIN' is not permitted to use this service",
             null),
-        Arguments.of(
+        testCase(
             "driver role in mechanic-context",
             Map.of("mechanic-context", mechanic(MECHANIC, "USER")),
             403,
             "Role 'USER' does not belong in a MECHANIC context",
             null),
-        Arguments.of(
+        testCase(
             "conflicting ids",
             Map.of("user-context", user("USER", OK), "mechanic-context", mechanic(MECHANIC, null)),
             401,
             "Conflicting identity context",
             null),
-        Arguments.of(
+        testCase(
             "same id in both headers",
             Map.of("user-context", user("USER", OK), "mechanic-context", mechanic(DRIVER, null)),
             200,
             null,
             DRIVER),
-        Arguments.of(
+        testCase(
             "malformed JSON",
             Map.of("user-context", "{not json"),
             401,
             "Missing or invalid user context",
             null),
-        Arguments.of(
+        testCase(
             "uuid not a UUID",
             Map.of("user-context", block("user", "not-a-uuid", "USER", OK)),
             401,
             "Missing or invalid user context",
             null),
-        Arguments.of(
+        testCase(
             "legacy X-User-Id is ignored",
             Map.of("X-User-Id", DRIVER),
             401,
             "Missing or invalid user context",
             null),
-        Arguments.of(
+        testCase(
             "legacy X-Mechanic-Id is ignored",
             Map.of("X-Mechanic-Id", MECHANIC),
             401,
             "Missing or invalid user context",
             null),
-        Arguments.of(
+        testCase(
             "both legacy headers",
             Map.of("X-User-Id", DRIVER, "X-Mechanic-Id", MECHANIC),
             401,
             "Missing or invalid user context",
             null),
-        Arguments.of(
+        testCase(
             "empty X-Mechanic-Id (the Postman bug)",
             Map.of("X-Mechanic-Id", ""),
             401,
@@ -209,10 +209,15 @@ class GatewayContextHttpTest {
             null));
   }
 
-  @ParameterizedTest(name = "{0} -> {2}")
+  /** The case name travels as the display name of the headers, so the test needn't take it. */
+  private static Arguments testCase(
+      String name, Map<String, String> headers, int status, String message, String actsFor) {
+    return Arguments.of(Named.of(name, headers), status, message, actsFor);
+  }
+
+  @ParameterizedTest(name = "{0} -> {1}")
   @MethodSource("cases")
-  void gatewayContext(
-      String name, Map<String, String> headers, int status, String message, String actsFor)
+  void gatewayContext(Map<String, String> headers, int status, String message, String actsFor)
       throws Exception {
     MockHttpServletRequestBuilder request = get("/api/v1/sos");
     headers.forEach(request::header);
@@ -342,20 +347,18 @@ class GatewayContextHttpTest {
   }
 
   private static Arguments route(String name, MockHttpServletRequestBuilder request, String who) {
-    return Arguments.of(name, request.contentType(MediaType.APPLICATION_JSON), who);
+    return Arguments.of(Named.of(name, request.contentType(MediaType.APPLICATION_JSON)), who);
   }
 
   @ParameterizedTest(name = "{0} as driver")
   @MethodSource("routes")
-  void routeAsDriver(String name, MockHttpServletRequestBuilder request, String who)
-      throws Exception {
+  void routeAsDriver(MockHttpServletRequestBuilder request, String who) throws Exception {
     expectRoleOutcome(request.header("user-context", DRIVER_HEADER), !who.equals("MECHANIC"));
   }
 
   @ParameterizedTest(name = "{0} as mechanic")
   @MethodSource("routes")
-  void routeAsMechanic(String name, MockHttpServletRequestBuilder request, String who)
-      throws Exception {
+  void routeAsMechanic(MockHttpServletRequestBuilder request, String who) throws Exception {
     expectRoleOutcome(request.header("mechanic-context", MECHANIC_HEADER), !who.equals("USER"));
   }
 
