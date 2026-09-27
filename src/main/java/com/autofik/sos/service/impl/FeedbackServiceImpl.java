@@ -6,8 +6,10 @@ import com.autofik.sos.domain.entity.MechanicRate;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.enums.SosStatus;
+import com.autofik.sos.dto.event.RatingUpdateEvent;
 import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
+import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.FeedbackMapper;
 import com.autofik.sos.repository.FeedbackRepository;
 import com.autofik.sos.repository.MechanicRateRepository;
@@ -15,8 +17,6 @@ import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.FeedbackService;
-import com.autofik.sos.dto.event.RatingUpdateEvent;
-import com.autofik.sos.kafka.producer.SosEventProducer;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -151,10 +151,7 @@ public class FeedbackServiceImpl implements FeedbackService {
     mechanicRateRepository.save(rate);
 
     RatingUpdateEvent event =
-            new RatingUpdateEvent(
-                    mechanic.getMechanicId(),
-                    avg,
-                    feedbacks.size());
+        new RatingUpdateEvent(mechanic.getMechanicId(), avg, feedbacks.size());
 
     sosEventProducer.publishRatingUpdated(event);
   }

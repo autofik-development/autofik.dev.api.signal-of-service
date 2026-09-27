@@ -97,11 +97,8 @@ public class SosEventProducer {
     kafkaTemplate.send(KafkaConfig.TOPIC_SOS_NOTIFICATION, key, event);
   }
 
-  public void publishRatingUpdated(RatingUpdateEvent event){
-    kafkaTemplate.send(
-            KafkaConfig.TOPIC_MECHANIC_RATE,
-            event.mechanicId().toString(),
-    event);
+  public void publishRatingUpdated(RatingUpdateEvent event) {
+    kafkaTemplate.send(KafkaConfig.TOPIC_MECHANIC_RATE, event.mechanicId().toString(), event);
   }
 
   public void publishOneSignalPushFailed(OneSignalPushFailedEvent event) {

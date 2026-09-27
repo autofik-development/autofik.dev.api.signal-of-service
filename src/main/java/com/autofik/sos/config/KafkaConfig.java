@@ -145,11 +145,11 @@ public class KafkaConfig {
   }
 
   @Bean
-  public NewTopic mechanicRateTopic(){
+  public NewTopic mechanicRateTopic() {
     return TopicBuilder.name(TOPIC_MECHANIC_RATE)
-            .partitions(PARTITION_COUNT)
-            .replicas(REPLICATION_FACTOR)
-            .build();
+        .partitions(PARTITION_COUNT)
+        .replicas(REPLICATION_FACTOR)
+        .build();
   }
 
   @Bean

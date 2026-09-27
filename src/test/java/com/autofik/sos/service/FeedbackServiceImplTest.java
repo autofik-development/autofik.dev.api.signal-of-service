@@ -14,6 +14,7 @@ import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.entity.Vehicle;
 import com.autofik.sos.domain.enums.SosStatus;
+import com.autofik.sos.dto.event.RatingUpdateEvent;
 import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
 import com.autofik.sos.kafka.producer.SosEventProducer;
@@ -24,7 +25,6 @@ import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.impl.FeedbackServiceImpl;
-import com.autofik.sos.dto.event.RatingUpdateEvent;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.util.List;
@@ -133,42 +133,41 @@ class FeedbackServiceImplTest {
   }
 
   @Test
-  void create_publishesRatingUpdatedEvent(){
+  void create_publishesRatingUpdatedEvent() {
     CreateFeedbackRequest request =
-            new CreateFeedbackRequest(
-                    userId, mechanicId, sosId, BigDecimal.valueOf(4.5), "Great service");
+        new CreateFeedbackRequest(
+            userId, mechanicId, sosId, BigDecimal.valueOf(4.5), "Great service");
     Feedback secondFeedback =
-            Feedback.builder()
-                    .id(UUID.randomUUID())
-                    .rating(BigDecimal.valueOf(3.5))
-                    .user(user)
-                    .mechanic(mechanic)
-                    .sosRequest(completedSos)
-                    .build();
+        Feedback.builder()
+            .id(UUID.randomUUID())
+            .rating(BigDecimal.valueOf(3.5))
+            .user(user)
+            .mechanic(mechanic)
+            .sosRequest(completedSos)
+            .build();
 
-            when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
-            when(userRepository.findById(userId)).thenReturn(Optional.of(user));
-            when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-            when(feedbackRepository.save(any(Feedback.class))).thenReturn(feedback);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(feedbackRepository.save(any(Feedback.class))).thenReturn(feedback);
 
-            when(feedbackRepository.findByMechanicMechanicId(mechanicId))
-                    .thenReturn(List.of(feedback, secondFeedback));
+    when(feedbackRepository.findByMechanicMechanicId(mechanicId))
+        .thenReturn(List.of(feedback, secondFeedback));
 
-            when(mechanicRateRepository.findByMechanic(mechanic)).thenReturn(Optional.empty());
-            when(feedbackMapper.toResponse(feedback)).thenReturn(feedbackResponse);
+    when(mechanicRateRepository.findByMechanic(mechanic)).thenReturn(Optional.empty());
+    when(feedbackMapper.toResponse(feedback)).thenReturn(feedbackResponse);
 
-            feedbackService.create(request);
+    feedbackService.create(request);
 
-            ArgumentCaptor<RatingUpdateEvent> captor =
-                    ArgumentCaptor.forClass(RatingUpdateEvent.class);
+    ArgumentCaptor<RatingUpdateEvent> captor = ArgumentCaptor.forClass(RatingUpdateEvent.class);
 
-            verify(sosEventProducer).publishRatingUpdated(captor.capture());
+    verify(sosEventProducer).publishRatingUpdated(captor.capture());
 
-            RatingUpdateEvent event = captor.getValue();
+    RatingUpdateEvent event = captor.getValue();
 
-            assertThat(event.mechanicId()).isEqualTo(mechanicId);
-            assertThat(event.avgRate()).isEqualByComparingTo(BigDecimal.valueOf(4.0));
-            assertThat(event.ratingCount()).isEqualTo(2);
+    assertThat(event.mechanicId()).isEqualTo(mechanicId);
+    assertThat(event.avgRate()).isEqualByComparingTo(BigDecimal.valueOf(4.0));
+    assertThat(event.ratingCount()).isEqualTo(2);
   }
 
   @Test
@@ -272,26 +271,20 @@ class FeedbackServiceImplTest {
   }
 
   @Test
-  void create_doesNotPublishRatingUpdatedEventWhenNoFeedbacks(){
+  void create_doesNotPublishRatingUpdatedEventWhenNoFeedbacks() {
     CreateFeedbackRequest request =
-            new CreateFeedbackRequest(
-                    userId,
-                    mechanicId,
-                    sosId,
-                    BigDecimal.valueOf(4.5),
-                    "Create service");
+        new CreateFeedbackRequest(
+            userId, mechanicId, sosId, BigDecimal.valueOf(4.5), "Create service");
 
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
     when(userRepository.findById(userId)).thenReturn(Optional.of(user));
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(feedbackRepository.save(any(Feedback.class))).thenReturn(feedback);
-    when(feedbackRepository.findByMechanicMechanicId(mechanicId))
-            .thenReturn(List.of());
+    when(feedbackRepository.findByMechanicMechanicId(mechanicId)).thenReturn(List.of());
     when(feedbackMapper.toResponse(feedback)).thenReturn(feedbackResponse);
 
     feedbackService.create(request);
 
-    verify(sosEventProducer, never())
-            .publishRatingUpdated(any(RatingUpdateEvent.class));
+    verify(sosEventProducer, never()).publishRatingUpdated(any(RatingUpdateEvent.class));
   }
 }
