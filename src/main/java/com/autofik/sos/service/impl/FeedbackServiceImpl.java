@@ -15,6 +15,8 @@ import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.FeedbackService;
+import com.autofik.sos.dto.event.RatingUpdateEvent;
+import com.autofik.sos.kafka.producer.SosEventProducer;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -38,6 +40,7 @@ public class FeedbackServiceImpl implements FeedbackService {
   private final MechanicRepository mechanicRepository;
   private final MechanicRateRepository mechanicRateRepository;
   private final FeedbackMapper feedbackMapper;
+  private final SosEventProducer sosEventProducer;
 
   /** WORKFLOW: A driver submits a review rating and comment text for their completed rescue job. */
   @Override
@@ -147,8 +150,12 @@ public class FeedbackServiceImpl implements FeedbackService {
     rate.setRatingCount(feedbacks.size());
     mechanicRateRepository.save(rate);
 
-    // TODO: publish avg_rate + rating_count back to SSO via Kafka after saving.
-    // Confirm topic name with SSO team before implementing.
-    // See SosEventProducer for the existing producer pattern to follow.
+    RatingUpdateEvent event =
+            new RatingUpdateEvent(
+                    mechanic.getMechanicId(),
+                    avg,
+                    feedbacks.size());
+
+    sosEventProducer.publishRatingUpdated(event);
   }
 }

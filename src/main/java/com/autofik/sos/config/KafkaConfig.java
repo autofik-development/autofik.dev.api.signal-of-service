@@ -34,6 +34,7 @@ public class KafkaConfig {
   public static final String TOPIC_MECHANIC_LOCATION_UPDATED = "mechanic.location.updated";
   public static final String TOPIC_SOS_NOTIFICATION = "sos.notification";
   public static final String TOPIC_SOS_MEDIA_UPLOADED = "sos.media.uploaded";
+  public static final String TOPIC_MECHANIC_RATE = "mechanicRate";
 
   private static final int PARTITION_COUNT = 3;
   private static final short REPLICATION_FACTOR = 1;
@@ -141,6 +142,14 @@ public class KafkaConfig {
         .partitions(PARTITION_COUNT)
         .replicas(REPLICATION_FACTOR)
         .build();
+  }
+
+  @Bean
+  public NewTopic mechanicRateTopic(){
+    return TopicBuilder.name(TOPIC_MECHANIC_RATE)
+            .partitions(PARTITION_COUNT)
+            .replicas(REPLICATION_FACTOR)
+            .build();
   }
 
   @Bean
