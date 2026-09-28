@@ -33,6 +33,8 @@ jobs:
       # (or Testcontainers) when wiring bugs start slipping through.
       - name: Run tests
         run: ./mvnw -B test -Dtest='!SosApplicationTests'
+        env:
+          SPRING_PROFILES_ACTIVE: test
 
       - name: Upload test reports
         if: failure()
