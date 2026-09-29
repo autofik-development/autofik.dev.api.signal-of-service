@@ -12,6 +12,6 @@ logging:
 websocket:
   # Lets the handshake fall back to a caller-supplied ?clientId= and serves /test-ws.html, because
   # a browser cannot set headers on a WebSocket upgrade and the test console has no other way to
-  # identify itself. This is the exact impersonation hole the X-User-Id contract closes, so it
+  # identify itself. This is the exact impersonation hole the user-context contract closes, so it
   # exists in this profile only — never in test, prod, or anything an app can reach.
   dev-insecure-handshake: true

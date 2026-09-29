@@ -5,7 +5,10 @@ import com.autofik.sos.dto.request.CreateMechanicSkillRequest;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.MechanicSkillResponse;
+import com.autofik.sos.security.AuthMechanic;
+import com.autofik.sos.security.AuthUser;
 import com.autofik.sos.security.Caller;
+import com.autofik.sos.security.CurrentUser;
 import com.autofik.sos.service.MechanicService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
@@ -17,7 +20,6 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -43,8 +45,8 @@ public class MechanicController {
   @PostMapping
   @ResponseStatus(HttpStatus.CREATED)
   public MechanicResponse create(
-      @Valid @RequestBody CreateMechanicRequest request, @AuthenticationPrincipal UUID callerId) {
-    return mechanicService.create(request, callerId);
+      @Valid @RequestBody CreateMechanicRequest request, @AuthMechanic CurrentUser mechanic) {
+    return mechanicService.create(request, mechanic.id());
   }
 
   // GET /api/mechanics/{mechanicId} — Fetch a single mechanic profile by ID
@@ -76,8 +78,8 @@ public class MechanicController {
   public MechanicSkillResponse addSkill(
       @PathVariable UUID mechanicId,
       @Valid @RequestBody CreateMechanicSkillRequest request,
-      @AuthenticationPrincipal UUID callerId) {
-    Caller.mustMatch(callerId, mechanicId);
+      @AuthMechanic CurrentUser mechanic) {
+    Caller.mustMatch(mechanic.id(), mechanicId);
     return mechanicService.addSkill(mechanicId, request);
   }
 
@@ -94,8 +96,8 @@ public class MechanicController {
       @PathVariable UUID mechanicId,
       @PathVariable UUID skillId,
       @Valid @RequestBody CreateMechanicSkillRequest request,
-      @AuthenticationPrincipal UUID callerId) {
-    Caller.mustMatch(callerId, mechanicId);
+      @AuthMechanic CurrentUser mechanic) {
+    Caller.mustMatch(mechanic.id(), mechanicId);
     return mechanicService.updateSkill(mechanicId, skillId, request);
   }
 
@@ -106,8 +108,8 @@ public class MechanicController {
   public void deleteSkill(
       @PathVariable UUID mechanicId,
       @PathVariable UUID skillId,
-      @AuthenticationPrincipal UUID callerId) {
-    Caller.mustMatch(callerId, mechanicId);
+      @AuthMechanic CurrentUser mechanic) {
+    Caller.mustMatch(mechanic.id(), mechanicId);
     mechanicService.deleteSkill(mechanicId, skillId);
   }
 
@@ -121,8 +123,8 @@ public class MechanicController {
       @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
       @RequestParam @DecimalMin("102.5") @DecimalMax("107.63") double lng,
       @RequestParam(required = false) UUID sosId,
-      @AuthenticationPrincipal UUID callerId) {
-    Caller.mustMatch(callerId, mechanicId);
+      @AuthMechanic CurrentUser mechanic) {
+    Caller.mustMatch(mechanic.id(), mechanicId);
     mechanicService.updateLocation(mechanicId, lat, lng, sosId);
   }
 
@@ -133,8 +135,8 @@ public class MechanicController {
   // Readable by that mechanic, and by a driver they are currently on a job for.
   @GetMapping("/{mechanicId}/location")
   public MechanicLocationResponse getCurrentLocation(
-      @PathVariable UUID mechanicId, @AuthenticationPrincipal UUID callerId) {
-    return mechanicService.getCurrentLocation(mechanicId, callerId);
+      @PathVariable UUID mechanicId, @AuthUser CurrentUser caller) {
+    return mechanicService.getCurrentLocation(mechanicId, caller.id());
   }
 
   // PATCH /api/mechanics/{mechanicId}/availability?available= — Toggle mechanic online/offline
@@ -143,8 +145,8 @@ public class MechanicController {
   public MechanicResponse setAvailability(
       @PathVariable UUID mechanicId,
       @RequestParam boolean available,
-      @AuthenticationPrincipal UUID callerId) {
-    Caller.mustMatch(callerId, mechanicId);
+      @AuthMechanic CurrentUser mechanic) {
+    Caller.mustMatch(mechanic.id(), mechanicId);
     return mechanicService.setAvailability(mechanicId, available);
   }
 }

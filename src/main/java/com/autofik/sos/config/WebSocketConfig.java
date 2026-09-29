@@ -1,9 +1,13 @@
 package com.autofik.sos.config;
 
-import com.autofik.sos.security.GatewayIdentityFilter;
+import com.autofik.sos.security.CallerRole;
+import com.autofik.sos.security.CurrentUser;
+import com.autofik.sos.security.MicroserviceTokenSdk;
+import com.autofik.sos.security.UserContextRejectedException;
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -42,6 +46,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
   private final StompSubscriptionInterceptor subscriptionInterceptor;
 
+  private final MicroserviceTokenSdk tokenSdk;
+
   @Qualifier("heartbeatTaskScheduler")
   private final TaskScheduler heartbeatTaskScheduler;
 
@@ -58,55 +64,35 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                   ServerHttpResponse response,
                   WebSocketHandler wsHandler,
                   Map<String, Object> attributes) {
-                // Same headers as the REST filter, written by APISIX on the upgrade request.
-                // The old ?clientId= is gone: it was chosen by the caller, so connecting as
-                // someone else was enough to read their private queue.
-                String user = request.getHeaders().getFirst(GatewayIdentityFilter.USER_HEADER);
-                String mechanic =
-                    request.getHeaders().getFirst(GatewayIdentityFilter.MECHANIC_HEADER);
+                // Same contract as the REST filter — the gateway writes user-context on the
+                // upgrade too. The old ?clientId= is gone: it was chosen by the caller, so
+                // connecting as someone else was enough to read their private queue.
+                Optional<CurrentUser> caller;
+                try {
+                  caller = tokenSdk.resolveCurrentUser(name -> request.getHeaders().getFirst(name));
+                } catch (UserContextRejectedException rejected) {
+                  log.warn("Rejected WebSocket upgrade: {}", rejected.getMessage());
+                  return false; // 403 on the upgrade
+                }
 
                 // Local development only. A browser cannot set headers on a WebSocket
                 // handshake, so test-ws.html has no way to identify itself; this lets it
                 // name itself instead. That is precisely the impersonation hole the header
                 // contract exists to close, which is why it is off unless asked for and
                 // logs a warning at startup when it is not.
-                if (devInsecureHandshake && user == null && mechanic == null) {
-                  String clientId =
-                      UriComponentsBuilder.fromUri(request.getURI())
-                          .build()
-                          .getQueryParams()
-                          .getFirst("clientId");
-                  String role =
-                      UriComponentsBuilder.fromUri(request.getURI())
-                          .build()
-                          .getQueryParams()
-                          .getFirst("role");
-                  if (clientId != null && !clientId.isBlank()) {
-                    log.warn(
-                        "Insecure dev handshake: accepting caller-supplied clientId={}", clientId);
-                    if ("mechanic".equalsIgnoreCase(role)) {
-                      mechanic = clientId;
-                    } else {
-                      user = clientId;
-                    }
-                  }
+                if (caller.isEmpty() && devInsecureHandshake) {
+                  caller = devCallerFromQuery(request);
                 }
 
-                if ((user == null) == (mechanic == null)) return false;
-                try {
-                  UUID id = UUID.fromString(user != null ? user : mechanic);
-                  String role =
-                      user != null
-                          ? GatewayIdentityFilter.ROLE_USER
-                          : GatewayIdentityFilter.ROLE_MECHANIC;
-                  attributes.put(
-                      CALLER_ATTRIBUTE,
-                      new UsernamePasswordAuthenticationToken(
-                          id, null, List.of(new SimpleGrantedAuthority(role))));
-                  return true;
-                } catch (IllegalArgumentException malformedUuid) {
-                  return false; // 403 on the upgrade
-                }
+                if (caller.isEmpty()) return false;
+
+                attributes.put(
+                    CALLER_ATTRIBUTE,
+                    new UsernamePasswordAuthenticationToken(
+                        caller.get().id(),
+                        null,
+                        List.of(new SimpleGrantedAuthority(caller.get().authority()))));
+                return true;
               }
 
               @Override
@@ -127,6 +113,29 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                 return (Principal) attributes.get(CALLER_ATTRIBUTE);
               }
             });
+  }
+
+  /**
+   * The caller-supplied {@code ?clientId=&role=} fallback, for the local test console only. See
+   * SecurityConfig — this is off unless websocket.dev-insecure-handshake is explicitly set.
+   */
+  private Optional<CurrentUser> devCallerFromQuery(ServerHttpRequest request) {
+    var query = UriComponentsBuilder.fromUri(request.getURI()).build().getQueryParams();
+    String clientId = query.getFirst("clientId");
+    if (clientId == null || clientId.isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      UUID id = UUID.fromString(clientId.trim());
+      CallerRole role =
+          "mechanic".equalsIgnoreCase(query.getFirst("role"))
+              ? CallerRole.MECHANIC
+              : CallerRole.USER;
+      log.warn("Insecure dev handshake: accepting caller-supplied clientId={}", clientId);
+      return Optional.of(new CurrentUser(id, role, null, null));
+    } catch (IllegalArgumentException malformedUuid) {
+      return Optional.empty();
+    }
   }
 
   @Override
