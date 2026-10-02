@@ -129,6 +129,8 @@ sos:
     # Newly reached mechanics beyond this cap (nearest first) get the offer without an estimate.
     # Google allows at most 25 origins per request. 0 disables the Google call.
     offer-max-mechanics: ${SOS_ETA_OFFER_MAX_MECHANICS:25}
+    # A stored offer estimate older than this is re-fetched on the next fan-out (mechanic has moved).
+    offer-estimate-max-age-seconds: ${SOS_ETA_OFFER_ESTIMATE_MAX_AGE_SECONDS:300}
   location:
     # Mechanic GPS is written to Postgres at most once per this many seconds (Redis/Kafka carry
     # every ping). Lower = fresher current_location for the ARRIVED proximity check, more DB writes.
