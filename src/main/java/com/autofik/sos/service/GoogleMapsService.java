@@ -1,6 +1,7 @@
 package com.autofik.sos.service;
 
 import com.autofik.sos.dto.external.DistanceInfo;
+import java.util.List;
 import org.locationtech.jts.geom.Point;
 
 /**
@@ -28,4 +29,15 @@ public interface GoogleMapsService {
    *     strings ("5.2 km", "12 mins").
    */
   DistanceInfo getDistanceInfo(Point origin, Point destination);
+
+  /**
+   * Use case: driving distance/time from several mechanics to one SOS in a single request.
+   *
+   * @param origins the mechanics' positions (Google allows at most 25 per request)
+   * @param destination the SOS location
+   * @return one entry per origin, in order; an entry is null when no route exists for that origin.
+   *     The whole result is null when the call fails or no key is configured — callers must treat
+   *     that as "no estimate", never as an error.
+   */
+  List<DistanceInfo> getDistanceInfos(List<Point> origins, Point destination);
 }

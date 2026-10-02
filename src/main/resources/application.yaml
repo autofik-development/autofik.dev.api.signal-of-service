@@ -123,6 +123,12 @@ sos:
     # Lifetime of the cached ETA snapshot. Must outlive refresh-interval-seconds so pings between
     # refreshes always have a snapshot to interpolate against.
     cache-ttl-minutes: ${SOS_ETA_CACHE_TTL_MINUTES:15}
+    # Real road distance/time shown to each mechanic in the job offer, before they bid. One
+    # Distance Matrix request per fan-out, billed per mechanic (element), and only for mechanics
+    # not already given an estimate for that SOS (auto-expand/rebroadcast reuse the earlier one).
+    # Newly reached mechanics beyond this cap (nearest first) get the offer without an estimate.
+    # Google allows at most 25 origins per request. 0 disables the Google call.
+    offer-max-mechanics: ${SOS_ETA_OFFER_MAX_MECHANICS:25}
   location:
     # Mechanic GPS is written to Postgres at most once per this many seconds (Redis/Kafka carry
     # every ping). Lower = fresher current_location for the ARRIVED proximity check, more DB writes.

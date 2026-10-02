@@ -9,9 +9,12 @@ import com.google.maps.model.AddressType;
 import com.google.maps.model.DistanceMatrix;
 import com.google.maps.model.DistanceMatrixElement;
 import com.google.maps.model.DistanceMatrixElementStatus;
+import com.google.maps.model.DistanceMatrixRow;
 import com.google.maps.model.GeocodingResult;
 import com.google.maps.model.LatLng;
 import com.google.maps.model.TravelMode;
+import java.util.ArrayList;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Point;
@@ -92,6 +95,44 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
       log.warn(
           "Distance matrix failed (origin={}, destination={}): {}",
           origin,
+          destination,
+          e.getMessage());
+      return null;
+    }
+  }
+
+  /** WORKFLOW: One Distance Matrix request for many origins and a single destination. */
+  @Override
+  public List<DistanceInfo> getDistanceInfos(List<Point> origins, Point destination) {
+    if (origins.isEmpty()) return List.of();
+    try {
+      LatLng[] from =
+          origins.stream().map(p -> new LatLng(p.getY(), p.getX())).toArray(LatLng[]::new);
+      DistanceMatrix matrix =
+          DistanceMatrixApi.newRequest(geoApiContext)
+              .origins(from)
+              .destinations(new LatLng(destination.getY(), destination.getX()))
+              .mode(TravelMode.DRIVING)
+              .await();
+
+      // One row per origin, each with a single element (the one destination).
+      List<DistanceInfo> result = new ArrayList<>(origins.size());
+      for (DistanceMatrixRow row : matrix.rows) {
+        DistanceMatrixElement element = row.elements[0];
+        result.add(
+            element.status != DistanceMatrixElementStatus.OK
+                ? null
+                : new DistanceInfo(
+                    element.distance.inMeters,
+                    element.duration.inSeconds,
+                    element.distance.humanReadable,
+                    element.duration.humanReadable));
+      }
+      return result;
+    } catch (Exception e) {
+      log.warn(
+          "Distance matrix failed ({} origins, destination={}): {}",
+          origins.size(),
           destination,
           e.getMessage());
       return null;

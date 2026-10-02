@@ -12,6 +12,7 @@ import com.autofik.sos.dto.event.SosCreatedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
 import com.autofik.sos.dto.external.DistanceInfo;
+import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
@@ -41,6 +42,8 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -103,6 +106,10 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.geo.earth-radius-m:6371000}")
   private double earthRadiusM;
 
+  // How many of the nearest mechanics get a real (billed) distance/time in the job offer.
+  @Value("${sos.eta.offer-max-mechanics:25}")
+  private int offerMaxMechanics;
+
   // Default broadcast radius used for fan-out when the SOS request has no user-defined limit.
   @Value("${sos.broadcast.default-km:15}")
   private int defaultBroadcastKm;
@@ -116,6 +123,14 @@ public class SosServiceImpl implements SosService {
   private int maxRebroadcast;
 
   private static final String SOS_COOLDOWN_KEY_PREFIX = "sos:cooldown:";
+
+  // Per-SOS memory of which mechanics already got a (billed) offer estimate. Outlives the bidding
+  // window plus every rebroadcast attempt; bounded so abandoned tickets do not pin the key.
+  private static final String OFFER_ETA_KEY_PREFIX = "sos:offer-eta:";
+  private static final Duration OFFER_ETA_TTL = Duration.ofHours(1);
+
+  // Google's Distance Matrix limit on origins per request.
+  private static final int MAX_MATRIX_ORIGINS = 25;
 
   // Minimum gap between two SOS creations by the same user.
   @Value("${sos.create.cooldown-seconds:60}")
@@ -525,7 +540,9 @@ public class SosServiceImpl implements SosService {
     if (toStatus != SosStatus.ON_THE_WAY
         && toStatus != SosStatus.ARRIVED
         && toStatus != SosStatus.IN_PROGRESS) {
-      throw new IllegalStateException(
+      // The requested target status is not one this endpoint accepts: a bad request (400), not a
+      // conflict with the ticket's current state.
+      throw new IllegalArgumentException(
           "Only ON_THE_WAY, ARRIVED, and IN_PROGRESS can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
     }
     SosRequest sos = findSosOrThrow(sosId);
@@ -591,7 +608,7 @@ public class SosServiceImpl implements SosService {
   public SosStatusHistoryResponse proposeStatusChange(
       UUID sosId, ProposeStatusChangeRequest request) {
     if (request.toStatus() != SosStatus.COMPLETED) {
-      throw new IllegalStateException(
+      throw new IllegalArgumentException(
           "Only COMPLETED requires customer approval. Use PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
     }
     SosRequest sos = findSosOrThrow(sosId);
@@ -955,19 +972,116 @@ public class SosServiceImpl implements SosService {
     // Photos are uploaded after the ticket is created, so this is empty on the first broadcast
     // and populated on a rebroadcast — which is the attempt where the mechanic most needs to see
     // what the job actually is before bidding.
-    SosNotificationEvent notification =
-        new SosNotificationEvent(
-            "SOS_CREATED",
-            null,
-            "MECHANIC",
-            sosId,
-            "New SOS request nearby",
-            "Problem: " + problemType,
-            sosMediaService.getObject().photoUrls(sosId));
+    List<String> photoUrls = sosMediaService.getObject().photoUrls(sosId);
+    Map<UUID, EtaInfo> estimates = offerEstimates(sosId, matched, lat, lng);
     matched.forEach(
         m ->
             messagingTemplate.convertAndSendToUser(
-                m.getMechanicId().toString(), "/queue/sos-new-request", notification));
+                m.getMechanicId().toString(),
+                "/queue/sos-new-request",
+                new SosNotificationEvent(
+                    "SOS_CREATED",
+                    null,
+                    "MECHANIC",
+                    sosId,
+                    "New SOS request nearby",
+                    "Problem: " + problemType,
+                    photoUrls,
+                    estimates.get(m.getMechanicId()))));
+  }
+
+  // Real road distance/time per mechanic for the job offer. Google bills per mechanic, so each
+  // mechanic is only ever paid for once per SOS: the estimate is remembered in Redis, and a later
+  // fan-out (auto-expand, manual rebroadcast) reuses it for mechanics already offered and asks
+  // Google only for the newly reached ones, in a single Distance Matrix request. Newly reached
+  // mechanics beyond offerMaxMechanics (nearest first) still get the offer without an estimate.
+  // A failed call or Redis outage yields no estimate for those mechanics — the offer never waits
+  // on or fails because of Maps, and a missing number is better than an invented one.
+  private Map<UUID, EtaInfo> offerEstimates(
+      UUID sosId, List<Mechanic> matched, double lat, double lng) {
+    String key = OFFER_ETA_KEY_PREFIX + sosId;
+    Map<UUID, EtaInfo> estimates = new HashMap<>(readOfferEstimates(key));
+
+    List<Mechanic> nearest =
+        matched.stream()
+            .filter(m -> m.getCurrentLocation() != null)
+            .filter(m -> !estimates.containsKey(m.getMechanicId()))
+            .sorted(
+                Comparator.comparingDouble(
+                    m ->
+                        GeoDistance.haversineMeters(
+                            m.getCurrentLocation().getY(),
+                            m.getCurrentLocation().getX(),
+                            lat,
+                            lng,
+                            earthRadiusM)))
+            .limit(Math.min(offerMaxMechanics, MAX_MATRIX_ORIGINS))
+            .toList();
+    if (nearest.isEmpty()) return estimates;
+
+    Point destination = GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat));
+    List<DistanceInfo> infos =
+        googleMapsService.getDistanceInfos(
+            nearest.stream().map(Mechanic::getCurrentLocation).toList(), destination);
+    if (infos == null || infos.size() != nearest.size()) return estimates;
+
+    Map<UUID, EtaInfo> fresh = new HashMap<>();
+    for (int i = 0; i < nearest.size(); i++) {
+      DistanceInfo d = infos.get(i);
+      if (d != null) {
+        fresh.put(
+            nearest.get(i).getMechanicId(),
+            new EtaInfo(
+                d.distanceMeters(), d.durationSeconds(), d.distanceText(), d.durationText()));
+      }
+    }
+    writeOfferEstimates(key, fresh);
+    estimates.putAll(fresh);
+    return estimates;
+  }
+
+  // Stored as mechanicId -> "meters<TAB>seconds<TAB>distanceText<TAB>durationText". Redis trouble
+  // degrades to "nobody offered yet" (one extra billed call), never to a failed broadcast.
+  private Map<UUID, EtaInfo> readOfferEstimates(String key) {
+    try {
+      Map<UUID, EtaInfo> out = new HashMap<>();
+      redisTemplate
+          .opsForHash()
+          .entries(key)
+          .forEach(
+              (k, v) -> {
+                String[] p = v.toString().split("\t", 4);
+                out.put(
+                    UUID.fromString(k.toString()),
+                    new EtaInfo(Long.parseLong(p[0]), Long.parseLong(p[1]), p[2], p[3]));
+              });
+      return out;
+    } catch (Exception e) {
+      log.warn("Could not read offer estimates {}: {}", key, e.getMessage());
+      return Map.of();
+    }
+  }
+
+  private void writeOfferEstimates(String key, Map<UUID, EtaInfo> fresh) {
+    if (fresh.isEmpty()) return;
+    try {
+      Map<String, String> entries = new HashMap<>();
+      fresh.forEach(
+          (id, e) ->
+              entries.put(
+                  id.toString(),
+                  e.remainingDistanceM()
+                      + "\t"
+                      + e.remainingDurationS()
+                      + "\t"
+                      + e.remainingDistanceText()
+                      + "\t"
+                      + e.remainingDurationText()));
+      redisTemplate.opsForHash().putAll(key, entries);
+      redisTemplate.expire(key, OFFER_ETA_TTL);
+    } catch (Exception e) {
+      log.warn("Could not store offer estimates {}: {}", key, e.getMessage());
+    }
   }
 
   // Converts a km radius into the minimum kRing depth that fully covers it at resolution 7.
