@@ -25,9 +25,11 @@ public interface FeedbackService {
    * use case: fetch the specific feedback from specified sos request
    *
    * @param sosId identify the target sos request
+   * @param callerId the authenticated caller; only the driver and the mechanic on the job may read
+   *     it, anyone else gets the same not-found as a SOS with no feedback
    * @return the matching feedback to target sos request
    */
-  FeedbackResponse getBySosRequest(UUID sosId);
+  FeedbackResponse getBySosRequest(UUID sosId, UUID callerId);
 
   /**
    * Use Case: View all historical feedback reviews left for a specific mechanic. * Why it returns a

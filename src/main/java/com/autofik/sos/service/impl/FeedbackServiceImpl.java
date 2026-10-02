@@ -5,10 +5,12 @@ import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.MechanicRate;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
+import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
 import com.autofik.sos.mapper.FeedbackMapper;
+import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.FeedbackRepository;
 import com.autofik.sos.repository.MechanicRateRepository;
 import com.autofik.sos.repository.MechanicRepository;
@@ -23,6 +25,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +40,7 @@ public class FeedbackServiceImpl implements FeedbackService {
   private final UserRepository userRepository;
   private final MechanicRepository mechanicRepository;
   private final MechanicRateRepository mechanicRateRepository;
+  private final BidSosRepository bidSosRepository;
   private final FeedbackMapper feedbackMapper;
 
   /** WORKFLOW: A driver submits a review rating and comment text for their completed rescue job. */
@@ -52,10 +56,22 @@ public class FeedbackServiceImpl implements FeedbackService {
             .orElseThrow(
                 () -> new EntityNotFoundException("SOS request not found: " + request.sosId()));
 
+    // 1b. AUTHORIZATION: only the driver who raised the SOS may review it. Checked before the
+    // status so a stranger learns nothing about someone else's ticket.
+    if (!sosRequest.getUser().getUserId().equals(request.userId())) {
+      throw new AccessDeniedException("Not your SOS request");
+    }
+
     // 2. BUSINESS RULE: Feedback cannot be left for pending, active, or canceled calls. The job
     // must be COMPLETED.
     if (sosRequest.getStatus() != SosStatus.COMPLETED) {
       throw new IllegalStateException("Feedback can only be submitted for COMPLETED requests");
+    }
+
+    // 2b. BUSINESS RULE: One review per job. Checked here for a clear 409; the unique sos_id column
+    // remains the backstop for two submissions racing past this check.
+    if (feedbackRepository.existsBySosRequestSosId(request.sosId())) {
+      throw new IllegalStateException("Feedback has already been submitted for this SOS request");
     }
 
     // 3. VALIDATION: Verify the author driver profile exists
@@ -70,6 +86,17 @@ public class FeedbackServiceImpl implements FeedbackService {
             .findById(request.mechanicId())
             .orElseThrow(
                 () -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
+
+    // 5. AUTHORIZATION: the review must be for the mechanic who actually did this job, otherwise
+    // any driver with a completed ticket could rate (and so skew the score of) any mechanic.
+    boolean assignedMechanic =
+        bidSosRepository
+            .findFirstBySosRequestSosIdAndStatus(request.sosId(), BidStatus.ACCEPTED)
+            .map(bid -> bid.getMechanic().getMechanicId().equals(request.mechanicId()))
+            .orElse(false);
+    if (!assignedMechanic) {
+      throw new AccessDeniedException("Not the mechanic assigned to this SOS request");
+    }
 
     // Map the DTO input parameters into a standard Database Entity using the Builder pattern
     Feedback feedback =
@@ -94,12 +121,20 @@ public class FeedbackServiceImpl implements FeedbackService {
   @Override
   @Transactional(
       readOnly = true) // Performance Optimization: Tells the database this is a read-only statement
-  public FeedbackResponse getBySosRequest(UUID sosId) {
-    return feedbackMapper.toResponse(
+  public FeedbackResponse getBySosRequest(UUID sosId, UUID callerId) {
+    Feedback feedback =
         feedbackRepository
             .findBySosRequestSosId(sosId)
-            .orElseThrow(
-                () -> new EntityNotFoundException("Feedback not found for SOS: " + sosId)));
+            .orElseThrow(() -> new EntityNotFoundException("Feedback not found for SOS: " + sosId));
+    // Only the two people on the job may read it. Anyone else gets the same "not found" as a SOS
+    // with no feedback, so the response does not reveal whether a given ticket was reviewed.
+    boolean participant =
+        feedback.getUser().getUserId().equals(callerId)
+            || feedback.getMechanic().getMechanicId().equals(callerId);
+    if (!participant) {
+      throw new EntityNotFoundException("Feedback not found for SOS: " + sosId);
+    }
+    return feedbackMapper.toResponse(feedback);
   }
 
   /** WORKFLOW: Returns a complete list of historical reviews written about a specific mechanic. */

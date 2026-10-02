@@ -33,4 +33,6 @@ public interface FeedbackRepository extends JpaRepository<Feedback, UUID> {
    * feedback WHERE sos_id = ?
    */
   Optional<Feedback> findBySosRequestSosId(UUID sosId);
+
+  boolean existsBySosRequestSosId(UUID sosId);
 }
