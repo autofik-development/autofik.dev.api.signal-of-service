@@ -30,6 +30,10 @@
         <java.version>21</java.version>
         <mapstruct.version>1.6.3</mapstruct.version>
         <awssdk.version>2.29.52</awssdk.version>
+        <!-- Tests tagged "integration" need Docker (Testcontainers) and are skipped by default so a
+             normal build and the PR check stay fast. Run them with: ./mvnw test -Pintegration -->
+        <it.groups></it.groups>
+        <it.excluded.groups>integration</it.excluded.groups>
     </properties>
     <dependencyManagement>
         <dependencies>
@@ -131,6 +135,27 @@
             <version>1.9.3</version>
             <scope>test</scope>
         </dependency>
+        <!-- Integration tests (-Pintegration): real Postgres/PostGIS, Redis and Kafka in Docker. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.hibernate.orm</groupId>
             <artifactId>hibernate-spatial</artifactId>
@@ -183,6 +208,14 @@
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <groups>${it.groups}</groups>
+                    <excludedGroups>${it.excluded.groups}</excludedGroups>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
@@ -254,4 +287,13 @@
         </plugins>
     </build>
 
+    <profiles>
+        <profile>
+            <id>integration</id>
+            <properties>
+                <it.groups>integration</it.groups>
+                <it.excluded.groups></it.excluded.groups>
+            </properties>
+        </profile>
+    </profiles>
 </project>
