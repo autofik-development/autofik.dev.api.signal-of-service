@@ -4,8 +4,12 @@ import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,10 +21,15 @@ import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.util.backoff.FixedBackOff;
 
 @Configuration
 public class KafkaConfig {
@@ -151,6 +160,45 @@ public class KafkaConfig {
         .build();
   }
 
+  // A bare JsonDeserializer throws while the record is being read, before any listener runs, so one
+  // malformed message fails the poll over and over and the partition never advances. This wrapper
+  // turns the failure into a null value plus a header carrying the exception and the raw bytes,
+  // which the error handler below then routes to the dead-letter topic.
+  static <T> Deserializer<T> failSafe(JsonDeserializer<T> delegate) {
+    return new ErrorHandlingDeserializer<>(delegate);
+  }
+
+  // Raw-bytes producer for the dead-letter topic: a record that failed to deserialize has no event
+  // object left to serialize, only the bytes that arrived.
+  @Bean
+  public KafkaTemplate<String, byte[]> deadLetterBytesTemplate() {
+    Map<String, Object> props = kafkaProperties.buildProducerProperties();
+    return new KafkaTemplate<>(
+        new DefaultKafkaProducerFactory<>(
+            props, new StringSerializer(), new ByteArraySerializer()));
+  }
+
+  @Bean
+  public DefaultErrorHandler kafkaErrorHandler() {
+    return deadLetterErrorHandler(deadLetterBytesTemplate(), kafkaTemplate());
+  }
+
+  // Poison pills go straight to sos.dlq (a record that cannot be deserialized is never retried);
+  // a listener that keeps throwing is retried twice, a second apart, then dead-lettered too, so a
+  // single bad record can no longer stall the partition.
+  static DefaultErrorHandler deadLetterErrorHandler(
+      KafkaOperations<String, byte[]> bytesTemplate,
+      KafkaOperations<String, Object> objectTemplate) {
+    Map<Class<?>, KafkaOperations<?, ?>> templates = new LinkedHashMap<>();
+    templates.put(byte[].class, bytesTemplate); // raw payload of a record that failed to parse
+    templates.put(Object.class, objectTemplate); // a typed event whose listener kept failing
+    // sos.dlq has one partition; the default resolver would reuse the source partition number.
+    DeadLetterPublishingRecoverer recoverer =
+        new DeadLetterPublishingRecoverer(
+            templates, (record, ex) -> new TopicPartition(TOPIC_SOS_DLQ, 0));
+    return new DefaultErrorHandler(recoverer, new FixedBackOff(1_000L, 2));
+  }
+
   @Bean
   public ConsumerFactory<String, Object> consumerFactory() {
     Map<String, Object> props = kafkaProperties.buildConsumerProperties();
@@ -158,7 +206,7 @@ public class KafkaConfig {
     // spring.kafka.consumer.properties.spring.json.* (trusted packages, default type) in
     // application.yaml is applied to this instance via JsonDeserializer#configure, which Kafka
     // invokes with the full props map even for pre-built deserializer instances.
-    JsonDeserializer<Object> valueDeserializer = new JsonDeserializer<>(kafkaObjectMapper());
+    Deserializer<Object> valueDeserializer = failSafe(new JsonDeserializer<>(kafkaObjectMapper()));
     return new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), valueDeserializer);
   }
 
@@ -167,6 +215,7 @@ public class KafkaConfig {
     ConcurrentKafkaListenerContainerFactory<String, Object> factory =
         new ConcurrentKafkaListenerContainerFactory<>();
     factory.setConsumerFactory(consumerFactory());
+    factory.setCommonErrorHandler(kafkaErrorHandler());
     return factory;
   }
 
@@ -182,7 +231,8 @@ public class KafkaConfig {
     ConcurrentKafkaListenerContainerFactory<String, SosMediaUploadedEvent> factory =
         new ConcurrentKafkaListenerContainerFactory<>();
     factory.setConsumerFactory(
-        new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), deserializer));
+        new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), failSafe(deserializer)));
+    factory.setCommonErrorHandler(kafkaErrorHandler());
     return factory;
   }
 
@@ -201,7 +251,8 @@ public class KafkaConfig {
     ConcurrentKafkaListenerContainerFactory<String, SosNotificationEvent> factory =
         new ConcurrentKafkaListenerContainerFactory<>();
     factory.setConsumerFactory(
-        new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), deserializer));
+        new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), failSafe(deserializer)));
+    factory.setCommonErrorHandler(kafkaErrorHandler());
     return factory;
   }
 }

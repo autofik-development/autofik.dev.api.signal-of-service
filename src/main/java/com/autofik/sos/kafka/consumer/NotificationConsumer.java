@@ -32,6 +32,12 @@ public class NotificationConsumer {
       groupId = "${spring.kafka.consumer.group-id}",
       containerFactory = "notificationListenerContainerFactory")
   public void consume(SosNotificationEvent event) {
+    // A null record (tombstone, or a payload that failed to deserialize) has nothing to relay.
+    // Throwing here would only make the container retry the same record.
+    if (event == null) {
+      log.warn("Ignoring null notification record");
+      return;
+    }
     // SOS_CREATED fan-out has no specific recipient — already handled by WebSocket fan-out
     // We safely bypass execution here to avoid sending individual duplicate push alerts.
     if (event.recipientId() == null) return;

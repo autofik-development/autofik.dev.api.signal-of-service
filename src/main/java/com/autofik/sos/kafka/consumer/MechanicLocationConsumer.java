@@ -21,6 +21,12 @@ public class MechanicLocationConsumer {
       topics = KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED,
       groupId = "${spring.kafka.consumer.group-id}")
   public void consume(MechanicLocationEvent event) {
+    // A null record (tombstone, or a payload that failed to deserialize) has nothing to relay.
+    // Throwing here would only make the container retry the same record.
+    if (event == null) {
+      log.warn("Ignoring null location record");
+      return;
+    }
     try {
       messagingTemplate.convertAndSend("/topic/sos/" + event.sosId() + "/location", event);
     } catch (Exception e) {
