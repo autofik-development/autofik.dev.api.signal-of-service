@@ -8,13 +8,18 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingPathVariableException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -123,6 +128,77 @@ public class GlobalExceptionHandler {
                     (a, b) -> a, // If the same parameter fails twice, keep the first message
                     LinkedHashMap::new));
     return new ErrorResponse(400, "Bad Request", "Validation failed", LocalDateTime.now(), details);
+  }
+
+  /**
+   * A database constraint rejected the write — typically a unique constraint hit by a duplicate (a
+   * second feedback on the same SOS) or by two requests racing. The caller's request conflicts with
+   * existing state, so it is a 409 rather than a server fault. Maps to HTTP 409 Conflict.
+   *
+   * <p>The message is fixed: the driver's message names the constraint, table and column.
+   */
+  @ExceptionHandler(DataIntegrityViolationException.class)
+  @ResponseStatus(HttpStatus.CONFLICT)
+  public ErrorResponse handleDataIntegrity(DataIntegrityViolationException ex) {
+    log.warn("Data integrity violation: {}", ex.getMostSpecificCause().getMessage());
+    return new ErrorResponse(
+        HttpStatus.CONFLICT.value(),
+        HttpStatus.CONFLICT.getReasonPhrase(),
+        "The request conflicts with existing data",
+        LocalDateTime.now());
+  }
+
+  /**
+   * Request body that is not valid JSON, or has the wrong type for a field (a string where a UUID
+   * or number belongs, an unknown enum value). A client mistake, not a server fault. Maps to HTTP
+   * 400 Bad Request.
+   *
+   * <p>The message is fixed rather than Jackson's, which echoes the offending input and internal
+   * class names back to the caller.
+   */
+  @ExceptionHandler(HttpMessageNotReadableException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleUnreadableBody(HttpMessageNotReadableException ex) {
+    return new ErrorResponse(400, "Bad Request", "Malformed request body", LocalDateTime.now());
+  }
+
+  /**
+   * A path variable or query parameter that cannot be converted to its declared type (a non-UUID
+   * id, an unknown enum value such as {@code ?status=NOPE}). Maps to HTTP 400 Bad Request.
+   */
+  @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+    return new ErrorResponse(
+        400,
+        "Bad Request",
+        "Invalid value for parameter '" + ex.getName() + "'",
+        LocalDateTime.now());
+  }
+
+  /**
+   * A path variable that is present but blank, so conversion yields nothing (for example a UUID
+   * segment of just a space). Maps to HTTP 400 Bad Request.
+   */
+  @ExceptionHandler(MissingPathVariableException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleMissingPathVariable(MissingPathVariableException ex) {
+    return new ErrorResponse(
+        400,
+        "Bad Request",
+        "Invalid value for path parameter '" + ex.getVariableName() + "'",
+        LocalDateTime.now());
+  }
+
+  /** A required query parameter is absent. Maps to HTTP 400 Bad Request. */
+  @ExceptionHandler(MissingServletRequestParameterException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleMissingParameter(MissingServletRequestParameterException ex) {
+    return new ErrorResponse(
+        400,
+        "Bad Request",
+        "Missing required parameter '" + ex.getParameterName() + "'",
+        LocalDateTime.now());
   }
 
   /** Handles invalid parameters passed to methods or controllers. Maps to HTTP 400 Bad Request. */

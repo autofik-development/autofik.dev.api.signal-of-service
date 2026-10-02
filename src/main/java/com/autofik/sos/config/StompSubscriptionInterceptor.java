@@ -14,6 +14,7 @@ import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 
 /**
  * Authorizes STOMP subscriptions.
@@ -25,6 +26,8 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class StompSubscriptionInterceptor implements ChannelInterceptor {
+
+  private static final AntPathMatcher ANT = new AntPathMatcher(); // same matcher the broker uses
 
   // /topic/sos/{sosId}/location and /media
   private static final Pattern SOS_TOPIC = Pattern.compile("^/topic/sos/([^/]+)/.*$");
@@ -44,7 +47,15 @@ public class StompSubscriptionInterceptor implements ChannelInterceptor {
 
   private void requireVisible(Principal caller, String destination) {
     if (destination == null) return;
-    Matcher matcher = SOS_TOPIC.matcher(destination);
+    // The simple broker treats a subscription destination as an Ant pattern, so "/topic/sos/**"
+    // would receive every SOS's frames while sailing past the per-SOS check below (it has no
+    // "/{id}/" segment to match). No client needs a wildcard: refuse them outright.
+    if (ANT.isPattern(destination)) {
+      throw new AccessDeniedException("Wildcard subscriptions are not allowed");
+    }
+    // Ant matching ignores empty segments, so "/topic//sos/{id}/location" reaches the same frames
+    // as the canonical form; check the canonical form.
+    Matcher matcher = SOS_TOPIC.matcher(destination.replaceAll("/{2,}", "/"));
     if (!matcher.matches()) return;
 
     if (caller == null) throw new AccessDeniedException("Unauthenticated subscription");

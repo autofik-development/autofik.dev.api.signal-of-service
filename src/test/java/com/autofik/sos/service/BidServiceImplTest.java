@@ -526,11 +526,11 @@ class BidServiceImplTest {
   }
 
   @Test
-  void updateStatus_cancelledStatus_throwsIllegalStateException() {
+  void updateStatus_cancelledStatus_throwsIllegalArgumentException() {
     UpdateBidStatusRequest request = new UpdateBidStatusRequest(userId, BidStatus.CANCELLED);
 
     assertThatThrownBy(() -> bidService.updateStatus(bidId, request))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("cancel endpoint");
 
     verify(bidSosRepository, never()).findById(any());

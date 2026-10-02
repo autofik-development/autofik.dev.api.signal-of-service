@@ -115,7 +115,7 @@ public class SosMediaServiceImpl implements SosMediaService {
 
     // Enforce XOR logic: An upload must strictly be tied to either a User OR a Mechanic context
     if ((userId == null) == (mechanicId == null)) {
-      throw new IllegalStateException("Exactly one of userId or mechanicId must be provided");
+      throw new IllegalArgumentException("Exactly one of userId or mechanicId must be provided");
     }
 
     // Phase 1: Basic validation filters

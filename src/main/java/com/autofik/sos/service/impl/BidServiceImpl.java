@@ -219,7 +219,8 @@ public class BidServiceImpl implements BidService {
 
     // Mechanics are blocked from using this endpoint to back out; they must use the cancel endpoint
     if (request.status() == BidStatus.CANCELLED) {
-      throw new IllegalStateException(
+      // Wrong endpoint for what was asked — a malformed request (400), not a state conflict.
+      throw new IllegalArgumentException(
           "Use the cancel endpoint for mechanic-initiated cancellation");
     }
 

@@ -184,18 +184,18 @@ class SosMediaServiceImplTest {
   }
 
   @Test
-  void upload_neitherUserNorMechanicProvided_throwsIllegalStateException() {
+  void upload_neitherUserNorMechanicProvided_throwsIllegalArgumentException() {
     assertThatThrownBy(() -> sosMediaService.upload(sosId, file, null, null))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Exactly one");
 
     verifyNoInteractions(sosRequestRepository, sosMediaRepository, s3Client);
   }
 
   @Test
-  void upload_bothUserAndMechanicProvided_throwsIllegalStateException() {
+  void upload_bothUserAndMechanicProvided_throwsIllegalArgumentException() {
     assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, mechanicId))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Exactly one");
 
     verifyNoInteractions(sosRequestRepository, sosMediaRepository, s3Client);

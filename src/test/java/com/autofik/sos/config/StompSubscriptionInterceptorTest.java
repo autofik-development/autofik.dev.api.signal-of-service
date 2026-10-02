@@ -58,6 +58,27 @@ class StompSubscriptionInterceptorTest {
     assertThat(interceptor.preSend(message, null)).isSameAs(message);
   }
 
+  /**
+   * Found by fuzzing: the simple broker treats a subscription as an Ant pattern, and these have no
+   * "/{id}/" segment for the per-SOS check to match, so they used to be waved through.
+   */
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(
+      strings = {
+        "/topic/sos/**",
+        "/topic/sos/*",
+        "/topic/sos/*/location",
+        "/topic/**",
+        "/topic/sos/?/location",
+        "/topic//sos/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/location"
+      })
+  void wildcardAndNonCanonicalDestinationsAreRefused(String destination) {
+    when(sosService.canView(any(), any())).thenReturn(false);
+
+    assertThatThrownBy(() -> interceptor.preSend(subscribe(destination, principal(callerId)), null))
+        .isInstanceOf(AccessDeniedException.class);
+  }
+
   @Test
   void outsiderMayNotSubscribeToSosTopic() {
     when(sosService.canView(sosId, callerId)).thenReturn(false);
