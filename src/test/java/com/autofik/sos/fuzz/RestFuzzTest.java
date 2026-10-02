@@ -1,9 +1,12 @@
 package com.autofik.sos.fuzz;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 import com.autofik.sos.config.SecurityConfig;
 import com.autofik.sos.config.WebConfig;
@@ -26,6 +29,7 @@ import com.autofik.sos.service.SosService;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -33,9 +37,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.RequestBuilder;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 
 /**
  * Hostile input over the real security chain and MVC config, with the services mocked out. The
@@ -154,6 +161,24 @@ class RestFuzzTest {
     return all.stream();
   }
 
+  // The endpoints added in Phase 2 are many, and each runs as both roles; fewer cases each keeps a
+  // PR build fast. A nightly run raises -Dfuzz.tries to go as deep as the original ones.
+  private static final int TRIES_PER_ENDPOINT = Math.max(30, TRIES / 4);
+
+  private static Stream<String> fewStrings() {
+    Random r = new Random(SEED + 2);
+    List<String> all = new ArrayList<>(NASTY);
+    for (int i = 0; i < TRIES_PER_ENDPOINT; i++) all.add(randomString(r));
+    return all.stream();
+  }
+
+  private static Stream<String> fewJsonBodies() {
+    Random r = new Random(SEED + 3);
+    List<String> all = new ArrayList<>(NASTY_JSON);
+    for (int i = 0; i < TRIES_PER_ENDPOINT; i++) all.add(randomString(r));
+    return all.stream();
+  }
+
   private static Stream<String> jsonBodies() {
     Random r = new Random(SEED + 1);
     List<String> all = new ArrayList<>(NASTY_JSON);
@@ -218,9 +243,158 @@ class RestFuzzTest {
     assertNo5xx(get("/api/v1/sos").header("mechanic-context", safe), header);
   }
 
+  // ── Phase 2: bids, feedback, mechanics, media ──────────────────────────────
+
+  @ParameterizedTest(name = "bid create #{index}")
+  @MethodSource("fewJsonBodies")
+  void bids_create_neverReturns5xx(String body) {
+    asBothRoles(
+        () -> post("/api/v1/bids").contentType(MediaType.APPLICATION_JSON).content(body), body);
+  }
+
+  @ParameterizedTest(name = "bid status #{index}")
+  @MethodSource("fewJsonBodies")
+  void bids_updateStatusBody_neverReturns5xx(String body) {
+    asBothRoles(
+        () ->
+            patch("/api/v1/bids/{id}/status", "22222222-2222-2222-2222-222222222222")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body),
+        body);
+  }
+
+  @ParameterizedTest(name = "bid ids #{index}")
+  @MethodSource("fewStrings")
+  void bids_badIdsAndSort_neverReturn5xx(String value) {
+    asBothRoles(() -> get("/api/v1/bids/sos/{id}", value).param("sortBy", value), value);
+    asBothRoles(() -> get("/api/v1/bids/mechanic/{id}", value), value);
+    asBothRoles(() -> patch("/api/v1/bids/{id}/status", value).content("{}"), value);
+    asBothRoles(() -> patch("/api/v1/bids/{id}/cancel", value), value);
+  }
+
+  @ParameterizedTest(name = "feedback create #{index}")
+  @MethodSource("fewJsonBodies")
+  void feedback_create_neverReturns5xx(String body) {
+    asBothRoles(
+        () -> post("/api/v1/feedback").contentType(MediaType.APPLICATION_JSON).content(body), body);
+  }
+
+  @ParameterizedTest(name = "feedback reads #{index}")
+  @MethodSource("fewStrings")
+  void feedback_badIdsAndPaging_neverReturn5xx(String value) {
+    asBothRoles(() -> get("/api/v1/feedback/sos/{id}", value), value);
+    asBothRoles(
+        () ->
+            get("/api/v1/feedback/mechanic/{id}", "33333333-3333-3333-3333-333333333333")
+                .param("page", value)
+                .param("size", value)
+                .param("sort", value),
+        value);
+    asBothRoles(() -> get("/api/v1/feedback/mechanic/{id}", value), value);
+  }
+
+  @ParameterizedTest(name = "mechanic bodies #{index}")
+  @MethodSource("fewJsonBodies")
+  void mechanics_bodies_neverReturn5xx(String body) {
+    String mech = "33333333-3333-3333-3333-333333333333";
+    asBothRoles(
+        () -> post("/api/v1/mechanics").contentType(MediaType.APPLICATION_JSON).content(body),
+        body);
+    asBothRoles(
+        () ->
+            post("/api/v1/mechanics/{id}/skills", mech)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body),
+        body);
+    asBothRoles(
+        () ->
+            put("/api/v1/mechanics/{id}/skills/{skill}", mech, mech)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body),
+        body);
+  }
+
+  @ParameterizedTest(name = "mechanic params #{index}")
+  @MethodSource("fewStrings")
+  void mechanics_badPathAndQueryParams_neverReturn5xx(String value) {
+    asBothRoles(() -> get("/api/v1/mechanics/{id}", value), value);
+    asBothRoles(() -> get("/api/v1/mechanics/{id}/skills", value), value);
+    asBothRoles(() -> get("/api/v1/mechanics/{id}/location", value), value);
+    asBothRoles(() -> delete("/api/v1/mechanics/{id}/skills/{skill}", value, value), value);
+    asBothRoles(
+        () ->
+            get("/api/v1/mechanics/available")
+                .param("lat", value)
+                .param("lng", value)
+                .param("radiusKm", value)
+                .param("problemType", value),
+        value);
+    asBothRoles(
+        () ->
+            patch("/api/v1/mechanics/{id}/location", value)
+                .param("lat", value)
+                .param("lng", value)
+                .param("sosId", value),
+        value);
+    asBothRoles(
+        () -> patch("/api/v1/mechanics/{id}/availability", value).param("available", value), value);
+  }
+
+  @ParameterizedTest(name = "media #{index}")
+  @MethodSource("fewStrings")
+  void media_badIdsAndUploads_neverReturn5xx(String value) {
+    asBothRoles(() -> get("/api/v1/sos/{id}/media", value), value);
+    // The file's name and declared type are attacker-controlled, as is its body.
+    uploadAsBothRoles(
+        () ->
+            multipart("/api/v1/sos/{id}/media", "11111111-1111-1111-1111-111111111111")
+                .file(new MockMultipartFile("file", value, value, value.getBytes())),
+        value);
+    uploadAsBothRoles(
+        () ->
+            multipart("/api/v1/sos/{id}/media", value)
+                .file(new MockMultipartFile("file", "a.jpg", "image/jpeg", new byte[0])),
+        value);
+  }
+
+  // ── transport-level mistakes: wrong method, content type, Accept ────────────
+
+  @ParameterizedTest(name = "content type #{index}")
+  @MethodSource("fewStrings")
+  void wrongContentType_neverReturns5xx(String contentType) {
+    // Spring Security's firewall rejects control and non-ASCII header values before they reach us
+    // (a 400 on a real server), so only printable ASCII is a meaningful header here.
+    String type = contentType.replaceAll("[^\\x20-\\x7e]", "");
+    asBothRoles(
+        () -> post("/api/v1/sos").header("Content-Type", type).content("{\"vehicleId\":\"x\"}"),
+        contentType);
+    asBothRoles(() -> get("/api/v1/sos").header("Accept", type), contentType);
+  }
+
+  @ParameterizedTest(name = "method #{index}")
+  @MethodSource("fewStrings")
+  void wrongHttpMethod_neverReturns5xx(String id) {
+    asBothRoles(() -> put("/api/v1/sos/{id}", id).content("{}"), id);
+    asBothRoles(() -> delete("/api/v1/sos/{id}", id), id);
+    asBothRoles(() -> post("/api/v1/sos/{id}/status", id), id);
+    asBothRoles(() -> put("/api/v1/feedback"), id);
+  }
+
   // ── helper ─────────────────────────────────────────────────────────────────
 
-  private void assertNo5xx(MockHttpServletRequestBuilder request, String input) {
+  private void uploadAsBothRoles(
+      Supplier<MockMultipartHttpServletRequestBuilder> request, String input) {
+    assertNo5xx(request.get().header("user-context", DRIVER_HEADER), input);
+    assertNo5xx(request.get().header("mechanic-context", MECHANIC_HEADER), input);
+  }
+
+  /** Runs the request once as a driver and once as a mechanic, so neither role gate hides it. */
+  private void asBothRoles(Supplier<MockHttpServletRequestBuilder> request, String input) {
+    assertNo5xx(request.get().header("user-context", DRIVER_HEADER), input);
+    assertNo5xx(request.get().header("mechanic-context", MECHANIC_HEADER), input);
+  }
+
+  private void assertNo5xx(RequestBuilder request, String input) {
     int status;
     try {
       status = mockMvc.perform(request).andReturn().getResponse().getStatus();

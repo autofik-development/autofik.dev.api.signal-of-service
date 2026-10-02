@@ -13,6 +13,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingPathVariableException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -188,6 +191,31 @@ public class GlobalExceptionHandler {
         "Bad Request",
         "Invalid value for path parameter '" + ex.getVariableName() + "'",
         LocalDateTime.now());
+  }
+
+  /**
+   * The request body's Content-Type is one the endpoint does not accept (a missing header, or
+   * something other than JSON). Maps to HTTP 415 Unsupported Media Type.
+   */
+  @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+  @ResponseStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+  public ErrorResponse handleUnsupportedMediaType(HttpMediaTypeNotSupportedException ex) {
+    return new ErrorResponse(
+        415, "Unsupported Media Type", "Unsupported content type", LocalDateTime.now());
+  }
+
+  /** The Accept header asks for something the endpoint cannot produce. Maps to HTTP 406. */
+  @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+  @ResponseStatus(HttpStatus.NOT_ACCEPTABLE)
+  public ErrorResponse handleNotAcceptable(HttpMediaTypeNotAcceptableException ex) {
+    return new ErrorResponse(406, "Not Acceptable", "Not acceptable", LocalDateTime.now());
+  }
+
+  /** The path exists but not for this HTTP method. Maps to HTTP 405 Method Not Allowed. */
+  @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+  @ResponseStatus(HttpStatus.METHOD_NOT_ALLOWED)
+  public ErrorResponse handleMethodNotAllowed(HttpRequestMethodNotSupportedException ex) {
+    return new ErrorResponse(405, "Method Not Allowed", "Method not allowed", LocalDateTime.now());
   }
 
   /** A required query parameter is absent. Maps to HTTP 400 Bad Request. */
