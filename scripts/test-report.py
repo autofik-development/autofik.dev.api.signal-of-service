@@ -192,7 +192,7 @@ def main():
         if low:
             rec.append('Next coverage targets by missed lines: ' + ', '.join(f"{c['name']} ({c['missed']})" for c in low) + '.')
     if a.kind == 'integration':
-        rec.append('Run this suite in CI on a runner with Docker (the `test-suite` workflow does) and keep it out of the fast PR check.')
+        rec.append('Keep this suite out of CI and the fast PR check; run it locally with `scripts/run-tests.sh`.')
     if a.kind == 'fuzz':
         rec.append('Run the deeper `-Pfuzz` pass on a schedule or before releases, with a fresh `-Dfuzz.seed`, and keep every failing seed as a regression test.')
     md += [f'{i}. {x}' for i, x in enumerate(rec or ['No action needed from this run.'], 1)]

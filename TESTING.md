@@ -60,7 +60,7 @@ connection" (seen on one dev laptop), the script already sets
 | Raw JMeter output | `load-tests/results/*.jtl`, `jmeter.log` (not committed) |
 
 CI should collect `reports/**/*.md`, `reports/**/*.json`, `reports/data/**/*.csv` and `target/logs/*.log`.
-`.github/workflows/test-suite.yml` does exactly that.
+There is no scheduled CI job for this suite; run `scripts/run-tests.sh` locally.
 
 ## How reports are produced
 
