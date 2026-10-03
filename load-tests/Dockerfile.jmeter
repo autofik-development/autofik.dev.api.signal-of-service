@@ -1,8 +1,0 @@
-# JMeter on Java 21: the STOMP samplers use java.net.http.WebSocket, which the common Java 8 images lack.
-FROM eclipse-temurin:21-jre
-ARG JMETER_VERSION=5.6.3
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
- && curl -fsSL https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VERSION}.tgz | tar -xz -C /opt \
- && mv /opt/apache-jmeter-${JMETER_VERSION} /opt/jmeter && apt-get purge -y curl && rm -rf /var/lib/apt/lists/*
-ENV JVM_ARGS="-Xms512m -Xmx1g"
-ENTRYPOINT ["/opt/jmeter/bin/jmeter"]

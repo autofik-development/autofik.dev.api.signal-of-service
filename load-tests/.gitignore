@@ -1,5 +1,0 @@
-results/
-data/*-rev.csv
-data/mechanics-available.csv
-__pycache__/
-probe/*.class
