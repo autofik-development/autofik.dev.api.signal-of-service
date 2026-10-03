@@ -151,15 +151,22 @@ public class SosMediaServiceImpl implements SosMediaService {
     }
 
     // Phase 3: Secure media transformation
+    byte[] raw;
+    try {
+      raw = file.getBytes();
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to read uploaded file", e);
+    }
+    // Guard against spoofed extensions by inspecting early bytes
+    verifyMagicBytes(raw, file.getContentType());
     byte[] compressed;
     try {
-      byte[] raw = file.getBytes();
-      // Guard against spoofed extensions by inspecting early bytes
-      verifyMagicBytes(raw, file.getContentType());
       // Normalize image bounds and transcode directly to JPEG
       compressed = compressToJpeg(raw);
     } catch (IOException e) {
-      throw new UncheckedIOException("Failed to process uploaded file", e);
+      // The bytes passed the signature check but do not decode: the client's file is bad (400),
+      // not our failure (500).
+      throw new IllegalArgumentException("File is not a readable image", e);
     }
 
     // Phase 4: S3 Object Storage Persistence

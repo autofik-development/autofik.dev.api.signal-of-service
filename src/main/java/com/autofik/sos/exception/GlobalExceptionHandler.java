@@ -8,10 +8,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
@@ -247,6 +251,32 @@ public class GlobalExceptionHandler {
         "Service Unavailable",
         ex.getMessage(),
         LocalDateTime.now());
+  }
+
+  /**
+   * No database connection within the pool timeout: the pool is exhausted under load, or the
+   * database is down. Opening a transaction raises CannotCreateTransactionException; a repository
+   * call outside one raises DataAccessResourceFailureException. Either way the server is
+   * temporarily unable, not broken, so 503 with Retry-After tells the app and the gateway to back
+   * off and retry, where the catch-all's 500 told them nothing. Logged as one WARN line, not a
+   * stack trace: under load this fires in bursts, and the cause is in the pool metrics, not the
+   * stack.
+   */
+  @ExceptionHandler({
+    CannotCreateTransactionException.class,
+    DataAccessResourceFailureException.class
+  })
+  public ResponseEntity<ErrorResponse> handleDatabaseUnavailable(Exception ex) {
+    log.warn("Database unavailable, answering 503: {}", ex.getMessage());
+    return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+        // Matches the 5 s pool timeout: a retry sooner would mostly queue behind the same backlog.
+        .header(HttpHeaders.RETRY_AFTER, "5")
+        .body(
+            new ErrorResponse(
+                HttpStatus.SERVICE_UNAVAILABLE.value(),
+                "Service Unavailable",
+                "The service is busy, please retry shortly",
+                LocalDateTime.now()));
   }
 
   /** Handles API rate-limiting violations. Maps to HTTP 429 Too Many Requests. */
