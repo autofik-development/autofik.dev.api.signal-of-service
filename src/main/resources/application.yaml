@@ -38,7 +38,7 @@ spring:
       # Fail fast instead of Lettuce's 60s default — a slow/unresponsive (not fully down) Redis
       # should hit the Kafka fallback (see RedisLocationListenerConfig) quickly, not after a
       # minute-long stall per command.
-      timeout: ${REDIS_TIMEOUT_MS:5000}ms
+      timeout: ${REDIS_TIMEOUT_MS:1000}ms
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     admin:
@@ -51,6 +51,11 @@ spring:
       properties:
         spring.json.add.type.headers: false
         enable.idempotence: true
+        # Fail fast when the broker is unreachable. The default max.block.ms (60 s) holds the
+        # calling request thread that long, so a Kafka outage would pin every Tomcat thread.
+        max.block.ms: ${KAFKA_PRODUCER_MAX_BLOCK_MS:2000}
+        request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS:5000}
+        delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:10000}
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP_ID:sos-location-group}
       auto-offset-reset: earliest
@@ -80,6 +85,23 @@ aws:
 
 server:
   port: ${SERVER_PORT}
+  tomcat:
+    # Exposes tomcat.threads.busy / tomcat.threads.current to Micrometer.
+    mbeanregistry:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # /actuator/** is permitAll in SecurityConfig, so anything exposed here is public to whoever
+        # can reach the port. Default stays at health; set to health,prometheus on a private
+        # network (load-test stack, internal scrape) only.
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health}
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
 
 websocket:
   # Restrict to your domain in production, e.g. https://*.autofik.com

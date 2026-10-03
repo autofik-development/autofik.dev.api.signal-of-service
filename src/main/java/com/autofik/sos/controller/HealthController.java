@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -29,9 +30,9 @@ public class HealthController {
     return response;
   }
 
+  // 503 when the database is down so a probe that only reads the status code stops routing here.
   @GetMapping("/healthy")
-  @ResponseStatus(HttpStatus.OK)
-  public Map<String, Object> healthy() {
+  public ResponseEntity<Map<String, Object>> healthy() {
     String dbStatus;
     try {
       jdbcTemplate.queryForObject("SELECT 1", Integer.class);
@@ -44,6 +45,8 @@ public class HealthController {
     response.put("status", "SUCCESS");
     response.put("database", dbStatus);
     response.put("timestamp", LocalDateTime.now().format(FORMATTER));
-    return response;
+    return ResponseEntity.status(
+            "UP".equals(dbStatus) ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE)
+        .body(response);
   }
 }

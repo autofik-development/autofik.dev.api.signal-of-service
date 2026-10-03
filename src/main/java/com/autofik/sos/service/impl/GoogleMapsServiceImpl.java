@@ -18,6 +18,7 @@ import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Point;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Slf4j // Lombok: Automatically adds an slf4j 'log' field to record system warnings/errors
@@ -28,9 +29,21 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
   // The foundational configuration bean holding your secure Google Maps API Key credentials
   private final GeoApiContext geoApiContext;
 
+  // Injected by Spring; stays null when the class is built by hand (tests), which counts as
+  // enabled.
+  @Value("${google.maps.api-key:}")
+  private String apiKey;
+
+  // With no key every call is rejected by Google ("Invalid API key") after a real network round
+  // trip, so skip the call: same null result, no outbound traffic, no latency on SOS create.
+  private boolean disabled() {
+    return apiKey != null && apiKey.isBlank();
+  }
+
   /** WORKFLOW: Translates raw numeric GPS coordinates back into a text address. */
   @Override
   public String reverseGeocode(double latitude, double longitude) {
+    if (disabled()) return null;
     try {
       // 1. API HIT: Request address details from the Google Geocoding API endpoint
       GeocodingResult[] results =
@@ -61,6 +74,7 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
   /** WORKFLOW: Hits the Distance Matrix API to calculate driving mileage and time frames. */
   @Override
   public DistanceInfo getDistanceInfo(Point origin, Point destination) {
+    if (disabled()) return null;
     try {
       // 1. API REQUEST: Set up a new driving route lookup payload matrix
       // Note: In JTS Topology geometry, point coordinates map as: Point.getX() = Longitude,
@@ -105,6 +119,7 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
   @Override
   public List<DistanceInfo> getDistanceInfos(List<Point> origins, Point destination) {
     if (origins.isEmpty()) return List.of();
+    if (disabled()) return null;
     try {
       LatLng[] from =
           origins.stream().map(p -> new LatLng(p.getY(), p.getX())).toArray(LatLng[]::new);

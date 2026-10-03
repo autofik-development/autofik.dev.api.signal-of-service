@@ -55,6 +55,11 @@ public class KafkaConfig {
   @Value("${kafka.topic.replication-factor:1}")
   private short replicationFactor;
 
+  // Push notifications make one blocking OneSignal call per record; one consumer thread drained a
+  // burst of SOS fan-out at ~3 messages/s. Keep at or below the partition count.
+  @Value("${kafka.consumer.notification-concurrency:3}")
+  private int notificationConcurrency;
+
   private final KafkaProperties kafkaProperties;
 
   public KafkaConfig(KafkaProperties kafkaProperties) {
@@ -253,6 +258,7 @@ public class KafkaConfig {
     factory.setConsumerFactory(
         new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), failSafe(deserializer)));
     factory.setCommonErrorHandler(kafkaErrorHandler());
+    factory.setConcurrency(Math.max(1, notificationConcurrency));
     return factory;
   }
 }
