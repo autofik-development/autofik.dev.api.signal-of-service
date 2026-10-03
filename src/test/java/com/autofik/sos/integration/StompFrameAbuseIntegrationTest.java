@@ -70,7 +70,13 @@ class StompFrameAbuseIntegrationTest extends IntegrationTestBase {
   }
 
   private void send(RawSocket s, String frame) throws Exception {
-    s.socket.sendText(frame, true).get();
+    try {
+      s.socket.sendText(frame, true).get();
+    } catch (java.util.concurrent.ExecutionException e) {
+      // The server may hang up while a refused frame is still being written ("closed output").
+      // That is the outcome these tests want; anything else is a real failure.
+      if (!(e.getCause() instanceof java.io.IOException)) throw e;
+    }
   }
 
   private void pause() throws InterruptedException {

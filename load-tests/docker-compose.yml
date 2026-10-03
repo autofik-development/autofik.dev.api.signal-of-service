@@ -1,0 +1,93 @@
+# Load-test stack: app + Postgres/PostGIS + Redis + single-broker Kafka + WireMock (stands in for Medusa).
+# Google Maps runs with an empty key: the app still calls Google, which answers "Invalid API key" (no cost,
+# but it is outbound traffic); geocode/ETA come back null. OneSignal likewise answers 400 to the fake app id.
+# Run from this folder:  docker compose up -d --build
+name: sos-loadtest
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: sos
+      POSTGRES_USER: sos
+      POSTGRES_PASSWORD: sos
+    command: ["postgres", "-c", "max_connections=200"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sos -d sos"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      retries: 20
+
+  medusa-stub:
+    image: wiremock/wiremock:3.9.1
+    volumes:
+      - ./wiremock:/home/wiremock
+
+  app:
+    build:
+      context: ..
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      medusa-stub: {condition: service_started}
+    ports:
+      - "18080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      # prod profile validates the schema; the stack starts empty, so let Hibernate create it.
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      WEBSOCKET_ALLOWED_ORIGINS: "*"
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: sos
+      DB_USERNAME: sos
+      DB_PASSWORD: sos
+      DB_POOL_MAX: ${DB_POOL_MAX:-20}
+      DB_POOL_MIN_IDLE: 5
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MEDUSA_BASE_URL: http://medusa-stub:8080
+      MEDUSA_PUBLIC_KEY: loadtest
+      ONESIGNAL_APP_ID: loadtest
+      ONESIGNAL_API_KEY: loadtest
+      GOOGLE_MAPS_API_KEY: ""
+      S3_ACCESS_KEY: loadtest
+      S3_SECRET_KEY: loadtest
+      SOS_CREATE_COOLDOWN_SECONDS: ${SOS_CREATE_COOLDOWN_SECONDS:-60}
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,prometheus,metrics
+      JAVA_TOOL_OPTIONS: -Xms1g -Xmx1g
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "19090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - app

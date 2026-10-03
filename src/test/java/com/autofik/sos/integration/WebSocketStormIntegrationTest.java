@@ -197,9 +197,11 @@ class WebSocketStormIntegrationTest extends IntegrationTestBase {
                       // A little jitter inside Phnom Penh, as a moving mechanic would send.
                       double lat = 11.55 + (n % 10) * 0.0005;
                       double lng = 104.92 + (n % 10) * 0.0005;
+                      // A Map, not a JSON String: the client's Jackson converter would quote a
+                      // String, and every ping would fail conversion before reaching the handler.
                       session.send(
                           "/app/mechanic/location",
-                          "{\"latitude\":" + lat + ",\"longitude\":" + lng + "}");
+                          java.util.Map.of("latitude", lat, "longitude", lng));
                       maxQueue.accumulateAndGet(executor.getQueue().size(), Math::max);
                     }
                     session.disconnect();

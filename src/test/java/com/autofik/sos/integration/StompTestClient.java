@@ -43,4 +43,15 @@ final class StompTestClient {
             new StompSessionHandlerAdapter() {})
         .get(10, TimeUnit.SECONDS);
   }
+
+  /** Like {@link #connect} but with the caller's own handler, to observe ERROR frames. */
+  StompSession connectWith(
+      int port, String contextHeader, String contextJson, StompSessionHandlerAdapter handler)
+      throws Exception {
+    WebSocketHttpHeaders handshake = new WebSocketHttpHeaders();
+    if (contextHeader != null) handshake.add(contextHeader, contextJson);
+    return client
+        .connectAsync("ws://localhost:" + port + "/ws", handshake, new StompHeaders(), handler)
+        .get(10, TimeUnit.SECONDS);
+  }
 }

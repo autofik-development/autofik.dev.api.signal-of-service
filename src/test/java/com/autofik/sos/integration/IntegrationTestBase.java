@@ -134,6 +134,7 @@ public abstract class IntegrationTestBase {
     r.add("DB_NAME", POSTGRES::getDatabaseName);
     r.add("DB_USERNAME", POSTGRES::getUsername);
     r.add("DB_PASSWORD", POSTGRES::getPassword);
+    r.add("REDIS_TIMEOUT_MS", () -> "1000"); // a local .env must not change what the tests measure
     r.add("DB_POOL_MAX", () -> String.valueOf(DB_POOL_MAX));
     r.add("DB_POOL_MIN_IDLE", () -> "1");
     r.add("DB_CONNECTION_TIMEOUT_MS", () -> "2000");

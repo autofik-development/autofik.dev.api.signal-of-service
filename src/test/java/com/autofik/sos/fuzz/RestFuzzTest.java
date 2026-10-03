@@ -1,6 +1,5 @@
 package com.autofik.sos.fuzz;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -380,6 +379,21 @@ class RestFuzzTest {
     asBothRoles(() -> put("/api/v1/feedback"), id);
   }
 
+  @org.junit.jupiter.api.Test
+  void aFailureLine_carriesEverythingNeededToReplayTheRequest() {
+    String line =
+        reproduction(
+            post("/api/v1/sos")
+                .header("user-context", DRIVER_HEADER)
+                .header("Content-Type", "application/json")
+                .content("{\"vehicleId\":\"not-a-uuid\"}"));
+
+    org.assertj.core.api.Assertions.assertThat(line)
+        .contains("POST /api/v1/sos")
+        .contains("user-context")
+        .contains("vehicleId");
+  }
+
   // ── helper ─────────────────────────────────────────────────────────────────
 
   private void uploadAsBothRoles(
@@ -400,16 +414,57 @@ class RestFuzzTest {
       status = mockMvc.perform(request).andReturn().getResponse().getStatus();
     } catch (Exception e) {
       // MockMvc rethrows what the app failed to turn into a response — in production that is a 500.
+      String repro = reproduction(request);
+      System.out.println(
+          "[fuzz-repro] seed=" + SEED + " unhandled " + e.getClass().getSimpleName() + " " + repro);
       throw new AssertionError(
           "Unhandled "
               + e.getClass().getSimpleName()
               + " for input: "
               + abbreviate(input)
               + " -> "
-              + e.getMessage(),
+              + e.getMessage()
+              + " | Reproduce: "
+              + repro,
           e);
     }
-    assertThat(status).as("status for input: %s", abbreviate(input)).isLessThan(500);
+    if (status >= 500) {
+      String repro = reproduction(request);
+      System.out.println("[fuzz-repro] seed=" + SEED + " status=" + status + " " + repro);
+      throw new AssertionError(
+          "status " + status + " for input: " + abbreviate(input) + " | Reproduce: " + repro);
+    }
+  }
+
+  /**
+   * The request as a replayable line: method, URL, headers and body, enough to send it by hand
+   * (curl, Postman) against a running instance. Header values here are test identities only.
+   */
+  private static String reproduction(RequestBuilder request) {
+    try {
+      var req = request.buildRequest(new org.springframework.mock.web.MockServletContext());
+      StringBuilder headers = new StringBuilder();
+      java.util.Collections.list(req.getHeaderNames())
+          .forEach(
+              h ->
+                  headers
+                      .append(h)
+                      .append(": ")
+                      .append(abbreviate(req.getHeader(h)))
+                      .append(" | "));
+      String query = req.getQueryString() == null ? "" : "?" + abbreviate(req.getQueryString());
+      return req.getMethod()
+          + " "
+          + abbreviate(req.getRequestURI())
+          + query
+          + " headers[ "
+          + headers
+          + "] body="
+          + abbreviate(
+              new String(req.getContentAsByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+    } catch (Exception e) {
+      return "(could not render the request: " + e + ")";
+    }
   }
 
   private static String abbreviate(String s) {

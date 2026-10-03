@@ -1,0 +1,8 @@
+{
+  "request": {"method": "GET", "urlPathPattern": "/store/service-groups/.*"},
+  "response": {
+    "status": 200,
+    "headers": {"Content-Type": "application/json"},
+    "body": "{\"service_group\":{\"id\":\"sg_loadtest\",\"key\":\"tow\",\"label\":\"Tow\"}}"
+  }
+}

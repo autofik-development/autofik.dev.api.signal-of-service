@@ -82,6 +82,17 @@
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
 
+        <!-- Metrics for load tests and ops. Only /actuator/health is exposed unless
+             MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE says otherwise (see application.yaml). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- In-JVM L2 cache for the ETA refresh gate: keeps the Google Distance Matrix
              throttle working (per-instance) when Redis is unavailable. Version managed by
              spring-boot-starter-parent. -->
@@ -274,6 +285,27 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- Coverage for the unit report (target/site/jacoco/jacoco.csv, read by
+                 scripts/test-report.py). Report only, no threshold gate. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.13</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>
@@ -294,6 +326,37 @@
                 <it.groups>integration</it.groups>
                 <it.excluded.groups></it.excluded.groups>
             </properties>
+        </profile>
+        <!-- Deeper fuzz pass: only the fuzz package, many more tries than the PR build's pinned
+             200. Run with ./mvnw test -Pfuzz (override depth with -Djqwik.tries.default=N). -->
+        <profile>
+            <id>fuzz</id>
+            <properties>
+                <jqwik.tries.default>5000</jqwik.tries.default>
+                <fuzz.tries>500</fuzz.tries>
+                <fuzz.frames>400</fuzz.frames>
+                <!-- the STOMP frame fuzz test needs Docker, so the integration tag is not excluded -->
+                <it.excluded.groups></it.excluded.groups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <includes>
+                                <include>com/autofik/sos/fuzz/**/*Test.java</include>
+                                <include>com/autofik/sos/integration/*Fuzz*Test.java</include>
+                            </includes>
+                            <systemPropertyVariables>
+                                <jqwik.tries.default>${jqwik.tries.default}</jqwik.tries.default>
+                                <fuzz.tries>${fuzz.tries}</fuzz.tries>
+                                <fuzz.frames>${fuzz.frames}</fuzz.frames>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 </project>
