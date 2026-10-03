@@ -17,7 +17,7 @@ Exit code: 0 = pass, 1 = the scenario ran and a pass criterion failed, 2 = the h
 Environment (all optional, defaults suit load-tests/docker-compose.yml): see TESTING.md.
 Needs: Python 3.9+, Docker, the `sos-jmeter` image (docker build -f load-tests/Dockerfile.jmeter -t sos-jmeter load-tests).
 """
-import argparse, csv, datetime as dt, json, math, os, pathlib, re, statistics, subprocess, sys, threading, time
+import argparse, csv, datetime as dt, json, math, os, pathlib, re, statistics, subprocess, sys, threading, time, traceback
 import urllib.error, urllib.parse, urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -905,7 +905,8 @@ def main():
     try:
         ok = fn(a)
     except Exception as e:
-        print(f'harness error: {e}', file=sys.stderr)
+        print(f'harness error: {e!r}', file=sys.stderr)
+        traceback.print_exc()
         sys.exit(2)
     sys.exit(0 if ok else 1)
 

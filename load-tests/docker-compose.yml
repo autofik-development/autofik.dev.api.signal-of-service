@@ -68,7 +68,7 @@ services:
       DB_USERNAME: sos
       DB_PASSWORD: sos
       DB_POOL_MAX: ${DB_POOL_MAX:-20}
-      DB_POOL_MIN_IDLE: 5
+      DB_POOL_MIN_IDLE: ${DB_POOL_MAX:-20}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       REDIS_HOST: redis
       REDIS_PORT: 6379
