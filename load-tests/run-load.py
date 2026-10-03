@@ -828,7 +828,7 @@ def scenario_lifecycle(a):
     completed = int(psql("SELECT count(*) FROM sos_request WHERE status='COMPLETED'"))
     integrity = [
         ['Jobs started / COMPLETED / with feedback', f"{psql('SELECT count(*) FROM sos_request')} / {completed} / {psql('SELECT count(*) FROM feedback')}"],
-        ['COMPLETED jobs without exactly 4 history rows', psql("SELECT count(*) FROM sos_request s WHERE s.status='COMPLETED' AND (SELECT count(*) FROM sos_status_history h WHERE h.sos_id=s.sos_id) <> 4")],
+        ['COMPLETED jobs without exactly 5 history rows', psql("SELECT count(*) FROM sos_request s WHERE s.status='COMPLETED' AND (SELECT count(*) FROM sos_status_history h WHERE h.sos_id=s.sos_id) <> 5")],
         ['Duplicate history rows (same ticket, same target status)', psql('SELECT count(*) FROM (SELECT sos_id, to_status FROM sos_status_history GROUP BY 1, 2 HAVING count(*) > 1) t')],
         ['Mechanics with more than one mechanic_rate row', psql('SELECT count(*) FROM (SELECT mechanic_profile_id FROM mechanic_rate GROUP BY 1 HAVING count(*) > 1) t')],
         ['Mechanics whose stored rating disagrees with their feedback rows', psql(
@@ -836,7 +836,7 @@ def scenario_lifecycle(a):
             'WHERE r.rating_count <> f.c OR abs(r.rating_avg - f.a) > 0.01')],
         ['Jobs stuck part-way (not COMPLETED) when the run ended', psql("SELECT status || ': ' || count(*) FROM sos_request WHERE status <> 'COMPLETED' GROUP BY status ORDER BY 1") .replace('\n', ', ') or '0']]
     v = {k: val for k, val in integrity[1:5]}
-    checks = [(f'Every COMPLETED job has its 4 history rows ({v["COMPLETED jobs without exactly 4 history rows"]} without)', v['COMPLETED jobs without exactly 4 history rows'] == '0'),
+    checks = [(f'Every COMPLETED job has its 5 history rows ({v["COMPLETED jobs without exactly 5 history rows"]} without)', v['COMPLETED jobs without exactly 5 history rows'] == '0'),
               ('No duplicate history rows', v['Duplicate history rows (same ticket, same target status)'] == '0'),
               ('One rating row per mechanic, matching its feedback', v['Mechanics with more than one mechanic_rate row'] == '0' and v['Mechanics whose stored rating disagrees with their feedback rows'] == '0'),
               (f'At least one job completed ({completed})', completed > 0)]

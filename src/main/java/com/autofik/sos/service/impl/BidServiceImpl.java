@@ -3,6 +3,8 @@ package com.autofik.sos.service.impl;
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
+import com.autofik.sos.domain.entity.SosStatusHistory;
+import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.BidSortFilter;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
@@ -20,6 +22,7 @@ import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
+import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.service.BidService;
 import com.autofik.sos.service.GoogleMapsService;
 import jakarta.persistence.EntityNotFoundException;
@@ -44,6 +47,7 @@ public class BidServiceImpl implements BidService {
   // --- DEPENDENCIES (REPOSITORIES & EXTERNAL SERVICES) ---
   private final BidSosRepository bidSosRepository;
   private final SosRequestRepository sosRequestRepository;
+  private final SosStatusHistoryRepository sosStatusHistoryRepository;
   private final MechanicRepository mechanicRepository;
   private final BidSosMapper bidSosMapper; // Converts between Database Entities and DTO Responses
   private final GoogleMapsService googleMapsService; // Calculates real road mileage and times
@@ -285,6 +289,20 @@ public class BidServiceImpl implements BidService {
       SosRequest sos = bid.getSosRequest();
       sos.setStatus(SosStatus.ACCEPTED);
       sosRequestRepository.save(sos);
+
+      // 2b. HISTORY: record PENDING -> ACCEPTED like every other transition. The winning
+      // mechanic proposed it (their bid) and the driver approved it (this accept).
+      sosStatusHistoryRepository.save(
+          SosStatusHistory.builder()
+              .sosRequest(sos)
+              .fromStatus(SosStatus.PENDING)
+              .toStatus(SosStatus.ACCEPTED)
+              .proposedBy(bid.getMechanic())
+              .proposedAt(bid.getBidAt())
+              .approvedStatus(ApprovedStatus.ACCEPTED)
+              .approvedBy(sos.getUser())
+              .approveAt(bid.getRespondedAt())
+              .build());
 
       Mechanic mechanic = bid.getMechanic();
       UUID userId = sos.getUser().getUserId();

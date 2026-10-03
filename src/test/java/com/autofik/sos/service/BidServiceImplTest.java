@@ -63,6 +63,8 @@ class BidServiceImplTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock SimpMessagingTemplate messagingTemplate;
 
+  @Mock com.autofik.sos.repository.SosStatusHistoryRepository sosStatusHistoryRepository;
+
   @InjectMocks BidServiceImpl bidService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -400,6 +402,43 @@ class BidServiceImplTest {
   // of them go out as one multi-recipient event: one Kafka record and one OneSignal request per
   // accept, not one per runner-up. Per-loser events made each accept a burst of pushes that the
   // ~570 ms-per-call consumer could not keep up with (bidding load test).
+  // The accept is a status transition like any other: the winning mechanic proposed it (their bid)
+  // and the driver approved it. Without this row the history skipped PENDING -> ACCEPTED.
+  @Test
+  void updateStatus_accepted_recordsPendingToAcceptedInTheStatusHistory() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenReturn(List.of());
+    when(sosRequestRepository.save(pendingSos)).thenReturn(pendingSos);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED));
+
+    ArgumentCaptor<com.autofik.sos.domain.entity.SosStatusHistory> row =
+        ArgumentCaptor.forClass(com.autofik.sos.domain.entity.SosStatusHistory.class);
+    verify(sosStatusHistoryRepository).save(row.capture());
+    assertThat(row.getValue().getFromStatus()).isEqualTo(SosStatus.PENDING);
+    assertThat(row.getValue().getToStatus()).isEqualTo(SosStatus.ACCEPTED);
+    assertThat(row.getValue().getProposedBy()).isSameAs(mechanic);
+    assertThat(row.getValue().getApprovedBy()).isSameAs(user);
+    assertThat(row.getValue().getApprovedStatus())
+        .isEqualTo(com.autofik.sos.domain.enums.ApprovedStatus.ACCEPTED);
+    assertThat(row.getValue().getSosRequest()).isSameAs(pendingSos);
+    assertThat(row.getValue().getApproveAt()).isNotNull();
+  }
+
+  @Test
+  void updateStatus_rejected_recordsNoStatusHistory() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.REJECTED));
+
+    verify(sosStatusHistoryRepository, never()).save(any());
+  }
+
   @Test
   void updateStatus_accepted_rejectsAllLosersInOneMultiRecipientPush() {
     List<BidSos> losers = new java.util.ArrayList<>();

@@ -79,14 +79,12 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     for (SosStatusHistory h : history) transitions.add(h.getFromStatus() + ">" + h.getToStatus());
     assertThat(transitions)
         .containsExactly(
+            "PENDING>ACCEPTED",
             "ACCEPTED>ON_THE_WAY",
             "ON_THE_WAY>ARRIVED",
             "ARRIVED>IN_PROGRESS",
             "IN_PROGRESS>COMPLETED");
     assertThat(history).allMatch(h -> h.getApprovedStatus() == ApprovedStatus.ACCEPTED);
-    finding(
-        "status history has no row for PENDING>ACCEPTED (bid accept) — only mechanic-driven"
-            + " transitions are recorded, though the README says every transition is");
   }
 
   @Test
