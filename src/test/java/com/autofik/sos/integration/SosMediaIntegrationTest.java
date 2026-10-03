@@ -22,10 +22,10 @@ import software.amazon.awssdk.services.s3.S3Client;
 import tools.jackson.databind.JsonNode;
 
 /**
- * Media upload against a real S3-compatible store. Adobe S3Mock stands in for the production
- * bucket (the MinIO images are no longer pullable from Docker Hub or quay.io), so the bytes really
- * travel through the SDK and the presigned URL is really fetched. The base class's S3 settings,
- * which point nowhere useful, are overridden for this class only, so it boots its own context.
+ * Media upload against a real S3-compatible store. Adobe S3Mock stands in for the production bucket
+ * (the MinIO images are no longer pullable from Docker Hub or quay.io), so the bytes really travel
+ * through the SDK and the presigned URL is really fetched. The base class's S3 settings, which
+ * point nowhere useful, are overridden for this class only, so it boots its own context.
  */
 class SosMediaIntegrationTest extends FlowTestSupport {
 
