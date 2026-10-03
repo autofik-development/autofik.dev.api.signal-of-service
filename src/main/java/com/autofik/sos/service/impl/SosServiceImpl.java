@@ -348,13 +348,21 @@ public class SosServiceImpl implements SosService {
     }
 
     // Redis distributed lock prevents accidental double-tap double submissions
-    Boolean allowed =
-        redisTemplate
-            .opsForValue()
-            .setIfAbsent(
-                SOS_COOLDOWN_KEY_PREFIX + request.userId(),
-                "1",
-                Duration.ofSeconds(createCooldownSeconds));
+    // Fails open when Redis is unreachable: the active-ticket check above still stops a second
+    // live ticket, and refusing an emergency request because a cache is down is the worse outcome.
+    Boolean allowed;
+    try {
+      allowed =
+          redisTemplate
+              .opsForValue()
+              .setIfAbsent(
+                  SOS_COOLDOWN_KEY_PREFIX + request.userId(),
+                  "1",
+                  Duration.ofSeconds(createCooldownSeconds));
+    } catch (RuntimeException e) {
+      log.warn("Redis unavailable for create cooldown, allowing request: {}", e.getMessage());
+      allowed = Boolean.TRUE;
+    }
     if (!Boolean.TRUE.equals(allowed)) {
       throw new TooManyRequestsException(
           "Please wait 60 seconds before submitting another SOS request");
@@ -488,12 +496,13 @@ public class SosServiceImpl implements SosService {
       double lat, double lng, String problemType, int radiusKm) {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
-    List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
+    List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
     if (coarse.isEmpty()) {
-      return coarse;
+      return List.of();
     }
-    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-    return mechanicRepository.filterByRadiusAndBroadcast(ids, lat, lng, radiusKm * 1000.0);
+    List<UUID> matched =
+        mechanicRepository.filterByRadiusAndBroadcast(coarse, lat, lng, radiusKm * 1000.0);
+    return matched.isEmpty() ? List.of() : mechanicRepository.findAllWithRateById(matched);
   }
 
   @Override
@@ -537,21 +546,19 @@ public class SosServiceImpl implements SosService {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
 
-    List<Mechanic> coarse =
+    List<UUID> coarse =
         mechanicRepository.findByH3CellsAndSkillTag(searchCells, sos.getProblemType());
 
-    if (coarse.isEmpty()) {
+    if (!coarse.contains(callerId)) {
       return false;
     }
 
-    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-
-    List<Mechanic> matched =
+    List<UUID> matched =
         sos.getBroadcastRadiusKm() != null
             ? mechanicRepository.filterByRadiusAndBroadcast(
-                ids, lat, lng, sos.getBroadcastRadiusKm() * 1000.0)
-            : mechanicRepository.filterByRadius(ids, lat, lng);
-    return matched.stream().anyMatch(mechanic -> mechanic.getMechanicId().equals(callerId));
+                coarse, lat, lng, sos.getBroadcastRadiusKm() * 1000.0)
+            : mechanicRepository.filterByRadius(coarse, lat, lng);
+    return matched.contains(callerId);
   }
 
   @Override
@@ -996,15 +1003,17 @@ public class SosServiceImpl implements SosService {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
 
-    List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
+    List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
     if (coarse.isEmpty()) return;
 
-    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-    List<Mechanic> matched =
+    List<UUID> matchedIds =
         broadcastRadiusKm != null
             ? mechanicRepository.filterByRadiusAndBroadcast(
-                ids, lat, lng, broadcastRadiusKm * 1000.0)
-            : mechanicRepository.filterByRadius(ids, lat, lng);
+                coarse, lat, lng, broadcastRadiusKm * 1000.0)
+            : mechanicRepository.filterByRadius(coarse, lat, lng);
+    if (matchedIds.isEmpty()) return;
+    // Entities only for the offer estimates (they need each mechanic's location); one query.
+    List<Mechanic> matched = mechanicRepository.findAllWithRateById(matchedIds);
 
     // Photos are uploaded after the ticket is created, so this is empty on the first broadcast
     // and populated on a rebroadcast — which is the attempt where the mechanic most needs to see

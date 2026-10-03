@@ -27,9 +27,11 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -225,7 +227,10 @@ public class MechanicServiceImpl implements MechanicService {
     }
 
     List<UUID> candidateIds = stage1.stream().map(Mechanic::getMechanicId).toList();
-    List<Mechanic> stage2 = mechanicRepository.filterByRadius(candidateIds, lat, lng);
+    // Stage 1 already loaded the entities (rating included); stage 2 only narrows the ids.
+    Set<UUID> inRadius = new HashSet<>(mechanicRepository.filterByRadius(candidateIds, lat, lng));
+    List<Mechanic> stage2 =
+        stage1.stream().filter(m -> inRadius.contains(m.getMechanicId())).toList();
     if (stage2.isEmpty()) {
       return List.of();
     }

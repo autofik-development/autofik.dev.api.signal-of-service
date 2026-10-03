@@ -140,7 +140,7 @@ class MechanicServiceImplTest {
   @Test
   void findAvailable_stage2Empty_returnsEmpty() {
     when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(mechanic));
-    when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(List.of());
+    when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(ids());
 
     assertThat(mechanicService.findAvailable(LAT, LNG, null, 15)).isEmpty();
   }
@@ -148,8 +148,7 @@ class MechanicServiceImplTest {
   @Test
   void findAvailable_stage2HasCandidates_returnsMappedList() {
     when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(mechanic));
-    when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG)))
-        .thenReturn(List.of(mechanic));
+    when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(ids(mechanic));
     when(mechanicMapper.toResponseList(List.of(mechanic))).thenReturn(List.of(mechanicResponse));
 
     assertThat(mechanicService.findAvailable(LAT, LNG, null, 15)).containsExactly(mechanicResponse);
@@ -180,7 +179,7 @@ class MechanicServiceImplTest {
     when(mechanicRepository.findByH3Cells(anyList()))
         .thenReturn(List.of(flatTireMechanic, engineMechanic));
     when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG)))
-        .thenReturn(List.of(flatTireMechanic, engineMechanic));
+        .thenReturn(ids(flatTireMechanic, engineMechanic));
     when(mechanicRepository.findByIdsWithSkills(anyList()))
         .thenReturn(List.of(flatTireMechanic, engineMechanic));
     when(mechanicMapper.toResponseList(List.of(flatTireMechanic)))
@@ -196,7 +195,7 @@ class MechanicServiceImplTest {
     Mechanic engineMechanic = buildMechanicWithSkill("Engine");
     when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(engineMechanic));
     when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG)))
-        .thenReturn(List.of(engineMechanic));
+        .thenReturn(ids(engineMechanic));
     when(mechanicRepository.findByIdsWithSkills(anyList())).thenReturn(List.of(engineMechanic));
     when(mechanicMapper.toResponseList(List.of())).thenReturn(List.of());
 
@@ -465,5 +464,9 @@ class MechanicServiceImplTest {
             .build();
     m.setSkills(List.of(skill));
     return m;
+  }
+
+  private static List<UUID> ids(Mechanic... mechanics) {
+    return java.util.Arrays.stream(mechanics).map(Mechanic::getMechanicId).toList();
   }
 }
