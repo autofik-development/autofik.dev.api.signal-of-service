@@ -1,5 +1,6 @@
 package com.autofik.sos.service;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -21,4 +22,7 @@ public interface OneSignalService {
    *     jump directly to the correct emergency tracking screen.
    */
   void send(UUID recipientId, String title, String body, Map<String, String> data);
+
+  /** One push with the same content to many recipients, in as few OneSignal requests as allowed. */
+  void sendToMany(List<UUID> recipientIds, String title, String body, Map<String, String> data);
 }

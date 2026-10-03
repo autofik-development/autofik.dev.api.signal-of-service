@@ -39,7 +39,7 @@ class KafkaConsumerFuzzTest {
   private final MechanicLocationConsumer locationConsumer =
       new MechanicLocationConsumer(messagingTemplate);
   private final NotificationConsumer notificationConsumer =
-      new NotificationConsumer(oneSignalService);
+      new NotificationConsumer(oneSignalService, Runnable::run);
   private final SosMediaUploadedConsumer mediaConsumer =
       new SosMediaUploadedConsumer(messagingTemplate);
 

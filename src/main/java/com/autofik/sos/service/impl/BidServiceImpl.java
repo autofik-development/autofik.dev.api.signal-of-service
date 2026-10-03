@@ -110,6 +110,21 @@ public class BidServiceImpl implements BidService {
       }
     }
 
+    // RACE GUARD: the checks above read the ticket without a lock, and the Maps call can take a
+    // while.
+    // Lock the ticket and re-check against the database: a driver accepting another bid meanwhile
+    // either committed first (we see it and refuse) or waits until this bid is in, so their
+    // auto-reject sees it. Re-checking the duplicate here also closes a mechanic's double-tap.
+    if (!SosStatus.PENDING
+        .name()
+        .equals(sosRequestRepository.lockStatus(request.sosId()).orElse(null))) {
+      throw new IllegalStateException("Bids can only be placed on PENDING requests");
+    }
+    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(
+        request.sosId(), request.mechanicId())) {
+      throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
+    }
+
     // Save the compiled Bid object into the PostgreSQL database table
     BidSos savedBid = bidSosRepository.save(bidBuilder.build());
 
@@ -236,6 +251,16 @@ public class BidServiceImpl implements BidService {
       throw new AccessDeniedException("You can only respond to bids on your own SOS request");
     }
 
+    // RACE GUARD: lock the ticket before touching any bid. Concurrent bid placements and a second
+    // accept on the same ticket now queue behind this one; the status is read fresh under the lock,
+    // so whoever comes second sees ACCEPTED and is refused instead of leaving a PENDING bid behind.
+    if (request.status() == BidStatus.ACCEPTED
+        && !SosStatus.PENDING
+            .name()
+            .equals(sosRequestRepository.lockStatus(bid.getSosRequest().getSosId()).orElse(null))) {
+      throw new IllegalStateException("This SOS request is no longer open for accepting bids");
+    }
+
     // A bid already responded to cannot be responded to again — without this, re-accepting an
     // ACCEPTED bid re-runs the entire domino effect below (duplicate Kafka events, duplicate
     // push notifications, duplicate WebSocket messages) on every retry or double-tap.
@@ -298,16 +323,21 @@ public class BidServiceImpl implements BidService {
       if (!rejectedBids.isEmpty()) {
         List<UUID> rejectedBidIds = rejectedBids.stream().map(BidSos::getBidId).toList();
         sosEventProducer.publishBidRejected(new BidRejectedEvent(sos.getSosId(), rejectedBidIds));
+        // One push event for every runner-up: the content is identical, so it goes out as a
+        // single multi-recipient OneSignal request instead of a burst of one per loser.
+        sosEventProducer.publishNotification(
+            new SosNotificationEvent(
+                "BID_REJECTED",
+                null,
+                "MECHANIC",
+                sos.getSosId(),
+                "Another mechanic was selected",
+                "Your bid was not selected for this request",
+                null,
+                null,
+                rejectedBids.stream().map(r -> r.getMechanic().getMechanicId()).toList()));
         rejectedBids.forEach(
             rejected -> {
-              sosEventProducer.publishNotification(
-                  new SosNotificationEvent(
-                      "BID_REJECTED",
-                      rejected.getMechanic().getMechanicId(),
-                      "MECHANIC",
-                      sos.getSosId(),
-                      "Another mechanic was selected",
-                      "Your bid was not selected for this request"));
               // The winner already gets a socket message; the losers only got a push, so their
               // open bid screen kept showing a live auction that had already been decided.
               // Their own bid id and nothing else — the winning price is not theirs to see.
