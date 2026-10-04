@@ -5,8 +5,7 @@
 #   scripts/run-tests.sh unit            fast, no Docker
 #   scripts/run-tests.sh integration     needs Docker (Testcontainers)
 #   scripts/run-tests.sh fuzz            deeper fuzz pass; the STOMP frame fuzz test needs Docker
-#   scripts/run-tests.sh load <scenario> [options]   scenario: smoke|spike|soak|stress|cold-start (needs the load stack)
-#   scripts/run-tests.sh all             unit, integration, fuzz (not load)
+#   scripts/run-tests.sh all             unit, integration, fuzz
 #
 # Exit code is non-zero if any selected type failed. All selected types run even if an earlier one fails.
 set -u
@@ -63,20 +62,11 @@ run_fuzz() {
   [[ $rc -ne 0 ]] && status=1
 }
 
-run_load() {
-  local scenario="${1:-smoke}"; shift || true
-  echo "== load: $scenario"
-  mkdir -p target/logs
-  $PY load-tests/run-load.py "$scenario" "$@" 2>&1 | tee "target/logs/load-$scenario.log"
-  [[ ${PIPESTATUS[0]} -ne 0 ]] && status=1
-}
-
 case "${1:-all}" in
   unit) run_unit ;;
   integration) run_integration ;;
   fuzz) run_fuzz ;;
-  load) shift; run_load "$@" ;;
   all) run_unit; run_integration; run_fuzz ;;
-  *) echo "usage: $0 unit|integration|fuzz|load <scenario>|all"; exit 64 ;;
+  *) echo "usage: $0 unit|integration|fuzz|all"; exit 64 ;;
 esac
 exit $status
