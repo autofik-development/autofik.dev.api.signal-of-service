@@ -149,6 +149,10 @@ public abstract class IntegrationTestBase {
     r.add("MEDUSA_PUBLIC_KEY", () -> "pk_test");
     r.add("ONESIGNAL_APP_ID", () -> "test");
     r.add("ONESIGNAL_API_KEY", () -> "test");
+    // Without this, application.yaml falls back to the real external S3 host. A dead local port
+    // makes a test that forgot its S3 stand-in fail at once instead of reaching that host.
+    // SosMediaIntegrationTest registers its own endpoint on top of this.
+    r.add("S3_ENDPOINT", () -> "http://localhost:1");
     r.add("S3_ACCESS_KEY", () -> "test");
     r.add("S3_SECRET_KEY", () -> "test");
   }
