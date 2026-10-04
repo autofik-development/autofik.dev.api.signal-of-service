@@ -65,9 +65,10 @@ class KafkaConsumerFuzzTest {
     if (pushDown) {
       doThrow(new IllegalStateException("onesignal down"))
           .when(oneSignalService)
-          .send(any(), any(), any(), any());
+          .send(any(), any(), any(), any(), any());
     }
-    assertThatCode(() -> notificationConsumer.consume(event)).doesNotThrowAnyException();
+    assertThatCode(() -> notificationConsumer.consume(event, "sos.notification", 0, 0L, 0L))
+        .doesNotThrowAnyException();
   }
 
   @Property(seed = Fuzz.SEED)

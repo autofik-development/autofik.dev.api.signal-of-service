@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
@@ -25,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -39,6 +42,8 @@ class KafkaConsumersTest {
 
   private static final UUID SOS = UUID.randomUUID();
   private static final UUID RECIPIENT = UUID.randomUUID();
+  private static final String TOPIC = "sos.notification";
+  private static final long TIMESTAMP = 1_759_550_000_000L;
 
   @Nested
   @ExtendWith(MockitoExtension.class)
@@ -46,6 +51,12 @@ class KafkaConsumersTest {
 
     @Mock OneSignalService oneSignal;
     NotificationConsumer consumer;
+    long nextOffset;
+
+    /** Delivers the event as the next record on partition 0, as the listener container would. */
+    void consume(NotificationConsumer target, SosNotificationEvent event) {
+      target.consume(event, TOPIC, 0, nextOffset++, TIMESTAMP);
+    }
 
     @BeforeEach
     void inlinePushes() {
@@ -55,37 +66,81 @@ class KafkaConsumersTest {
 
     @Test
     void targeted_isPushedToTheRecipient_withTypeAndSosIdAsData() {
-      consumer.consume(
+      consume(
+          consumer,
           new SosNotificationEvent("BID_ACCEPTED", RECIPIENT, "USER", SOS, "Title", "Body"));
 
       verify(oneSignal)
           .send(
-              RECIPIENT, "Title", "Body", Map.of("type", "BID_ACCEPTED", "sosId", SOS.toString()));
+              eq(RECIPIENT),
+              eq("Title"),
+              eq("Body"),
+              eq(Map.of("type", "BID_ACCEPTED", "sosId", SOS.toString())),
+              any(UUID.class));
     }
 
     @Test
     void multiRecipientEvent_isOnePushToEveryRecipient() {
       UUID a = UUID.randomUUID();
       UUID b = UUID.randomUUID();
-      consumer.consume(
+      consume(
+          consumer,
           new SosNotificationEvent(
               "BID_REJECTED", null, "MECHANIC", SOS, "t", "b", null, null, List.of(a, b)));
 
       verify(oneSignal)
           .sendToMany(
-              List.of(a, b), "t", "b", Map.of("type", "BID_REJECTED", "sosId", SOS.toString()));
-      verify(oneSignal, never()).send(any(), anyString(), anyString(), anyMap());
+              eq(List.of(a, b)),
+              eq("t"),
+              eq("b"),
+              eq(Map.of("type", "BID_REJECTED", "sosId", SOS.toString())),
+              any(UUID.class));
+      verify(oneSignal, never()).send(any(), anyString(), anyString(), anyMap(), any());
+    }
+
+    /**
+     * Kafka delivers at least once. A redelivered record must carry the same idempotency key, so
+     * OneSignal drops the second push instead of showing the notification twice.
+     */
+    @Test
+    void redeliveredRecord_sendsTheSameIdempotencyKey() {
+      SosNotificationEvent event =
+          new SosNotificationEvent("BID_ACCEPTED", RECIPIENT, "USER", SOS, "t", "b");
+      consumer.consume(event, TOPIC, 2, 41L, TIMESTAMP);
+      consumer.consume(event, TOPIC, 2, 41L, TIMESTAMP);
+
+      ArgumentCaptor<UUID> keys = ArgumentCaptor.forClass(UUID.class);
+      verify(oneSignal, times(2))
+          .send(eq(RECIPIENT), anyString(), anyString(), anyMap(), keys.capture());
+      assertThat(keys.getAllValues().get(0)).isNotNull().isEqualTo(keys.getAllValues().get(1));
+    }
+
+    /** Two different records with the same content are two real notifications. */
+    @Test
+    void differentRecords_sendDifferentKeys() {
+      SosNotificationEvent event =
+          new SosNotificationEvent("BID_RECEIVED", RECIPIENT, "USER", SOS, "t", "b");
+      consumer.consume(event, TOPIC, 0, 7L, TIMESTAMP);
+      consumer.consume(event, TOPIC, 0, 8L, TIMESTAMP);
+      consumer.consume(event, TOPIC, 1, 7L, TIMESTAMP);
+      // Same offset after the topic was recreated: the new record has a later timestamp.
+      consumer.consume(event, TOPIC, 0, 7L, TIMESTAMP + 60_000);
+
+      ArgumentCaptor<UUID> keys = ArgumentCaptor.forClass(UUID.class);
+      verify(oneSignal, times(4))
+          .send(eq(RECIPIENT), anyString(), anyString(), anyMap(), keys.capture());
+      assertThat(keys.getAllValues()).doesNotHaveDuplicates();
     }
 
     @Test
     void fanOut_withoutRecipient_isNotPushed() {
-      consumer.consume(new SosNotificationEvent("SOS_CREATED", null, "MECHANIC", SOS, "t", "b"));
+      consume(consumer, new SosNotificationEvent("SOS_CREATED", null, "MECHANIC", SOS, "t", "b"));
       verifyNoInteractions(oneSignal);
     }
 
     @Test
     void nullRecord_isIgnored() {
-      assertThatCode(() -> consumer.consume(null)).doesNotThrowAnyException();
+      assertThatCode(() -> consume(consumer, null)).doesNotThrowAnyException();
       verifyNoInteractions(oneSignal);
     }
 
@@ -102,18 +157,19 @@ class KafkaConsumersTest {
                 return null;
               })
           .when(oneSignal)
-          .send(any(), anyString(), anyString(), anyMap());
+          .send(any(), anyString(), anyString(), anyMap(), any());
       NotificationConsumer pooled = new NotificationConsumer(oneSignal, 8, 100);
       try {
         long start = System.nanoTime();
         for (int i = 0; i < 16; i++) {
-          pooled.consume(
-              new SosNotificationEvent("BID_RECEIVED", RECIPIENT, "USER", SOS, "t", "b"));
+          consume(
+              pooled, new SosNotificationEvent("BID_RECEIVED", RECIPIENT, "USER", SOS, "t", "b"));
         }
         long listenerMs = (System.nanoTime() - start) / 1_000_000;
 
         assertThat(listenerMs).as("listener time for 16 pushes of 200 ms each").isLessThan(500);
-        verify(oneSignal, timeout(2_000).times(16)).send(any(), anyString(), anyString(), anyMap());
+        verify(oneSignal, timeout(2_000).times(16))
+            .send(any(), anyString(), anyString(), anyMap(), any());
       } finally {
         pooled.shutdown();
       }
@@ -128,18 +184,20 @@ class KafkaConsumersTest {
                 return null;
               })
           .when(oneSignal)
-          .send(any(), anyString(), anyString(), anyMap());
+          .send(any(), anyString(), anyString(), anyMap(), any());
       NotificationConsumer tiny = new NotificationConsumer(oneSignal, 1, 1);
       try {
         for (int i = 0; i < 10; i++) {
           assertThatCode(
                   () ->
-                      tiny.consume(
+                      consume(
+                          tiny,
                           new SosNotificationEvent(
                               "BID_RECEIVED", RECIPIENT, "USER", SOS, "t", "b")))
               .doesNotThrowAnyException();
         }
-        verify(oneSignal, timeout(2_000).times(10)).send(any(), anyString(), anyString(), anyMap());
+        verify(oneSignal, timeout(2_000).times(10))
+            .send(any(), anyString(), anyString(), anyMap(), any());
       } finally {
         tiny.shutdown();
       }
@@ -149,11 +207,12 @@ class KafkaConsumersTest {
     void oneSignalFailure_isSwallowed_soTheOffsetAdvances() {
       doThrow(new IllegalStateException("OneSignal 503"))
           .when(oneSignal)
-          .send(any(), anyString(), anyString(), anyMap());
+          .send(any(), anyString(), anyString(), anyMap(), any());
 
       assertThatCode(
               () ->
-                  consumer.consume(
+                  consume(
+                      consumer,
                       new SosNotificationEvent("BID_ACCEPTED", RECIPIENT, "USER", SOS, "t", "b")))
           .doesNotThrowAnyException();
     }

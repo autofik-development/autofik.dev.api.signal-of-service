@@ -122,7 +122,9 @@ class KafkaFlowIntegrationTest extends FlowTestSupport {
             eq(recipient),
             eq("Accepted"),
             eq("Your bid was accepted"),
-            eq(Map.of("type", "BID_ACCEPTED", "sosId", sosId.toString())));
+            eq(Map.of("type", "BID_ACCEPTED", "sosId", sosId.toString())),
+            // The listener reads the record's Kafka headers into the push's idempotency key.
+            org.mockito.ArgumentMatchers.notNull());
   }
 
   @Test
@@ -144,6 +146,7 @@ class KafkaFlowIntegrationTest extends FlowTestSupport {
         .send(
             org.mockito.ArgumentMatchers.any(),
             eq(marker),
+            org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any());
   }

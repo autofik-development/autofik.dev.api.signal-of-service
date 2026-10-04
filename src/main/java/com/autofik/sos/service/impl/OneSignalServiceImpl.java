@@ -7,6 +7,7 @@ import com.onesignal.client.ApiException;
 import com.onesignal.client.api.DefaultApi;
 import com.onesignal.client.model.LanguageStringMap;
 import com.onesignal.client.model.Notification;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -35,22 +36,38 @@ public class OneSignalServiceImpl implements OneSignalService {
    * mobile device.
    */
   @Override
-  public void send(UUID recipientId, String title, String body, Map<String, String> data) {
-    sendChunk(List.of(recipientId), title, body, data);
+  public void send(
+      UUID recipientId, String title, String body, Map<String, String> data, UUID idempotencyKey) {
+    sendChunk(List.of(recipientId), title, body, data, idempotencyKey);
   }
 
   @Override
   public void sendToMany(
-      List<UUID> recipientIds, String title, String body, Map<String, String> data) {
+      List<UUID> recipientIds,
+      String title,
+      String body,
+      Map<String, String> data,
+      UUID idempotencyKey) {
     for (int from = 0; from < recipientIds.size(); from += MAX_ALIASES_PER_REQUEST) {
       List<UUID> chunk =
           recipientIds.subList(from, Math.min(from + MAX_ALIASES_PER_REQUEST, recipientIds.size()));
-      sendChunk(chunk, title, body, data);
+      sendChunk(chunk, title, body, data, chunkKey(idempotencyKey, from));
     }
   }
 
+  // Each chunk is its own OneSignal notification, so it needs its own key: one shared key would
+  // make OneSignal drop every chunk after the first. The first chunk keeps the original key.
+  static UUID chunkKey(UUID idempotencyKey, int from) {
+    if (idempotencyKey == null || from == 0) return idempotencyKey;
+    return UUID.nameUUIDFromBytes((idempotencyKey + ":" + from).getBytes(StandardCharsets.UTF_8));
+  }
+
   private void sendChunk(
-      List<UUID> recipients, String title, String body, Map<String, String> data) {
+      List<UUID> recipients,
+      String title,
+      String body,
+      Map<String, String> data,
+      UUID idempotencyKey) {
     try {
       // 1. INITIALIZATION: Instantiate a new OneSignal API notification container configuration
       // layout
@@ -80,6 +97,9 @@ public class OneSignalServiceImpl implements OneSignalService {
       // invisible tracking dictionary
       if (data != null && !data.isEmpty()) {
         notification.setData(data);
+      }
+      if (idempotencyKey != null) {
+        notification.setIdempotencyKey(idempotencyKey.toString());
       }
 
       // 6. SDK DELIVERY CALL: Dispatch the compiled request block synchronously over HTTP to

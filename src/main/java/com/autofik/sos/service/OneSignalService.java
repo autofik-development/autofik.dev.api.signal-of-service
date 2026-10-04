@@ -20,9 +20,20 @@ public interface OneSignalService {
    * @param data A key-value map of hidden background data payloads (e.g., {"sosId":
    *     "123e4567-e89b..."}). When the user taps the notification, the mobile app reads this map to
    *     jump directly to the correct emergency tracking screen.
+   * @param idempotencyKey OneSignal drops a second notification with the same key for 30 days, so a
+   *     redelivered Kafka record does not push twice. Null sends without one.
    */
-  void send(UUID recipientId, String title, String body, Map<String, String> data);
+  void send(
+      UUID recipientId, String title, String body, Map<String, String> data, UUID idempotencyKey);
 
-  /** One push with the same content to many recipients, in as few OneSignal requests as allowed. */
-  void sendToMany(List<UUID> recipientIds, String title, String body, Map<String, String> data);
+  /**
+   * One push with the same content to many recipients, in as few OneSignal requests as allowed.
+   * Each request gets its own key derived from {@code idempotencyKey}.
+   */
+  void sendToMany(
+      List<UUID> recipientIds,
+      String title,
+      String body,
+      Map<String, String> data,
+      UUID idempotencyKey);
 }

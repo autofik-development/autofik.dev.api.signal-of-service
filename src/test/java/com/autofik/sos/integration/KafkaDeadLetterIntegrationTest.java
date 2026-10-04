@@ -96,7 +96,7 @@ class KafkaDeadLetterIntegrationTest extends IntegrationTestBase {
       assertThat(missingFromDeadLetters(dlq, junk))
           .as("the malformed record should be published to sos.dlq with its raw bytes")
           .isEmpty();
-      verify(oneSignalService, timeout(30_000)).send(eq(recipient), any(), any(), any());
+      verify(oneSignalService, timeout(30_000)).send(eq(recipient), any(), any(), any(), any());
     }
   }
 
@@ -143,6 +143,6 @@ class KafkaDeadLetterIntegrationTest extends IntegrationTestBase {
           .get();
     }
 
-    verify(oneSignalService, timeout(30_000)).send(eq(recipient), any(), any(), any());
+    verify(oneSignalService, timeout(30_000)).send(eq(recipient), any(), any(), any(), any());
   }
 }
