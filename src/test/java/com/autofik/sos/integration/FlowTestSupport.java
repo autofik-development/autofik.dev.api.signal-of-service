@@ -229,7 +229,7 @@ abstract class FlowTestSupport extends IntegrationTestBase {
     throw new AssertionError("no record with key " + key + " within " + wait + "; saw " + seen);
   }
 
-  /** Recorded in the test output; scripts/test-report.py lifts these lines into the report. */
+  /** Recorded in the test output as a {@code [finding]} line for the test report. */
   protected static void finding(String text) {
     System.out.println("[finding] " + text);
   }

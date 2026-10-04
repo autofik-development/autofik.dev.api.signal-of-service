@@ -63,10 +63,9 @@ test-ws.html
 api-tests.http
 
 docs
-# Only the test runner scripts are shared; TESTING.md calls them.
-scripts/*
-!scripts/run-tests.sh
-!scripts/test-report.py
+# Local-only helper scripts, including the test runner and report generator
+scripts/
+TESTING.md
 test-image.jpg
 .claude
 

@@ -285,8 +285,7 @@
                     </execution>
                 </executions>
             </plugin>
-            <!-- Coverage for the unit report (target/site/jacoco/jacoco.csv, read by
-                 scripts/test-report.py). Report only, no threshold gate. -->
+            <!-- Unit test coverage (target/site/jacoco/). Report only, no threshold gate. -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
