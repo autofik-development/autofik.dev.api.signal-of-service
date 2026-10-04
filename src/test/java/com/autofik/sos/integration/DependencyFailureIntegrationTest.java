@@ -39,6 +39,7 @@ class DependencyFailureIntegrationTest extends FlowTestSupport {
     Driver d = newDriver();
     Mechanic m = newMechanic(11.55, 104.92);
     UUID sosId = createSosOk(d);
+    assignMechanic(d, m, sosId); // only the assigned mechanic's pings are broadcast
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession mechanic =
         stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));
@@ -79,6 +80,7 @@ class DependencyFailureIntegrationTest extends FlowTestSupport {
     Driver d = newDriver();
     Mechanic m = newMechanic(11.55, 104.92);
     UUID sosId = createSosOk(d);
+    assignMechanic(d, m, sosId); // only the assigned mechanic's pings are broadcast
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession mechanic =
         stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));

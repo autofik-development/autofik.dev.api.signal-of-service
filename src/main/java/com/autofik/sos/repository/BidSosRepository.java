@@ -2,12 +2,16 @@ package com.autofik.sos.repository;
 
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.enums.BidStatus;
+import com.autofik.sos.domain.enums.SosStatus;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 @Repository // Tells Spring that this interface handles database operations and should be manageable
@@ -44,11 +48,56 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
   Optional<BidSos> findFirstBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
 
   /**
-   * Resolve the active SOS request for a mechanic — used to route location broadcasts. * Finds the
-   * first bid belonging to a specific mechanic with a specific status (usually BidStatus.ACCEPTED).
-   * This helps the system know if a mechanic is currently busy working on a live breakdown.
+   * SOS statuses in which an ACCEPTED bid still means "this mechanic is on that job". A bid stays
+   * ACCEPTED after the ticket is completed or cancelled, so the bid status alone says nothing about
+   * whether the job is live.
    */
-  Optional<BidSos> findFirstByMechanicMechanicIdAndStatus(UUID mechanicId, BidStatus status);
+  List<SosStatus> ACTIVE_JOB_STATUSES =
+      List.of(SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED, SosStatus.IN_PROGRESS);
+
+  Optional<BidSos>
+      findFirstByMechanicMechanicIdAndStatusAndSosRequestStatusInOrderByRespondedAtDesc(
+          UUID mechanicId, BidStatus status, Collection<SosStatus> sosStatuses);
+
+  /**
+   * The SOS a mechanic is working right now, used to route location broadcasts: the most recently
+   * accepted bid whose ticket is still live. Finished jobs are ignored, so a mechanic's second job
+   * is never mistaken for the first.
+   */
+  default Optional<BidSos> findActiveJob(UUID mechanicId) {
+    return findFirstByMechanicMechanicIdAndStatusAndSosRequestStatusInOrderByRespondedAtDesc(
+        mechanicId, BidStatus.ACCEPTED, ACTIVE_JOB_STATUSES);
+  }
+
+  @Query(
+      "select count(b) > 0 from BidSos b where b.mechanic.mechanicId = :mechanicId"
+          + " and b.sosRequest.sosId = :sosId and b.status = :bidStatus"
+          + " and b.sosRequest.status in :sosStatuses")
+  boolean existsAssignment(
+      @Param("mechanicId") UUID mechanicId,
+      @Param("sosId") UUID sosId,
+      @Param("bidStatus") BidStatus bidStatus,
+      @Param("sosStatuses") Collection<SosStatus> sosStatuses);
+
+  /** True when the mechanic holds the accepted bid on this SOS and the ticket is still live. */
+  default boolean isAssignedToActiveJob(UUID mechanicId, UUID sosId) {
+    return existsAssignment(mechanicId, sosId, BidStatus.ACCEPTED, ACTIVE_JOB_STATUSES);
+  }
+
+  @Query(
+      "select count(b) > 0 from BidSos b where b.mechanic.mechanicId = :mechanicId"
+          + " and b.sosRequest.user.userId = :userId and b.status = :bidStatus"
+          + " and b.sosRequest.status in :sosStatuses")
+  boolean existsJobWithUser(
+      @Param("mechanicId") UUID mechanicId,
+      @Param("userId") UUID userId,
+      @Param("bidStatus") BidStatus bidStatus,
+      @Param("sosStatuses") Collection<SosStatus> sosStatuses);
+
+  /** True when this driver has a live ticket that the mechanic has been accepted for. */
+  default boolean isOnActiveJobWithDriver(UUID mechanicId, UUID userId) {
+    return existsJobWithUser(mechanicId, userId, BidStatus.ACCEPTED, ACTIVE_JOB_STATUSES);
+  }
 
   /**
    * Checks if a mechanic has already submitted a bid for a specific SOS request. Returns true or

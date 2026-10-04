@@ -41,6 +41,8 @@ class StompFlowIntegrationTest extends FlowTestSupport {
     Driver d = newDriver();
     Mechanic m = newMechanic(11.55, 104.92);
     UUID sosId = createSosOk(d);
+    // Only the assigned mechanic's pings are broadcast on this SOS.
+    assignMechanic(d, m, sosId);
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession mechanic =
         stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));
@@ -88,6 +90,8 @@ class StompFlowIntegrationTest extends FlowTestSupport {
     Driver d = newDriver();
     Mechanic m = newMechanic(11.55, 104.92);
     UUID sosId = createSosOk(d);
+    // Only the assigned mechanic's pings are broadcast on this SOS.
+    assignMechanic(d, m, sosId);
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession mechanic =
         stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));

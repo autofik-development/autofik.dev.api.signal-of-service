@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.Mockito.when;
 
+import com.autofik.sos.domain.entity.Mechanic;
 import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -232,5 +233,46 @@ abstract class FlowTestSupport extends IntegrationTestBase {
   /** Recorded in the test output as a {@code [finding]} line for the test report. */
   protected static void finding(String text) {
     System.out.println("[finding] " + text);
+  }
+
+  protected HttpResponse<String> placeBid(Mechanic m, UUID sosId) throws Exception {
+    return send(
+        req("/api/v1/bids")
+            .header("mechanic-context", mechanicContext(m.getMechanicId()))
+            .header("Content-Type", "application/json")
+            .POST(
+                HttpRequest.BodyPublishers.ofString(
+                    "{\"mechanicId\":\""
+                        + m.getMechanicId()
+                        + "\",\"sosId\":\""
+                        + sosId
+                        + "\",\"price\":25.00}")));
+  }
+
+  protected UUID placeBidOk(Mechanic m, UUID sosId) throws Exception {
+    HttpResponse<String> r = placeBid(m, sosId);
+    assertThat(r.statusCode()).as("place bid: %s", r.body()).isEqualTo(201);
+    return UUID.fromString(parse(r.body()).get("bidId").asString());
+  }
+
+  protected HttpResponse<String> acceptBid(Driver d, UUID bidId) throws Exception {
+    return send(
+        req("/api/v1/bids/" + bidId + "/status")
+            .header("user-context", userContext(d.user().getUserId()))
+            .header("Content-Type", "application/json")
+            .method(
+                "PATCH",
+                HttpRequest.BodyPublishers.ofString(
+                    "{\"userId\":\"" + d.user().getUserId() + "\",\"status\":\"ACCEPTED\"}")));
+  }
+
+  protected void acceptBidOk(Driver d, UUID bidId) throws Exception {
+    HttpResponse<String> r = acceptBid(d, bidId);
+    assertThat(r.statusCode()).as("accept bid: %s", r.body()).isEqualTo(200);
+  }
+
+  /** The mechanic bids and the driver accepts: the mechanic is now assigned to the ticket. */
+  protected void assignMechanic(Driver d, Mechanic m, UUID sosId) throws Exception {
+    acceptBidOk(d, placeBidOk(m, sosId));
   }
 }

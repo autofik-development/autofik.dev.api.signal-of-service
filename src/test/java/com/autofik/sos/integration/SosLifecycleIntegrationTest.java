@@ -10,6 +10,7 @@ import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.repository.MechanicSkillRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
+import com.autofik.sos.service.impl.MechanicLocationWriter;
 import com.autofik.sos.service.impl.SosServiceImpl;
 import com.uber.h3core.H3Core;
 import java.io.IOException;
@@ -51,6 +52,7 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
   @Autowired private SosStatusHistoryRepository historyRepository;
   @Autowired private SosRequestRepository sosRequestRepository;
   @Autowired private SosServiceImpl sosService;
+  @Autowired private MechanicLocationWriter locationWriter;
 
   @Test
   void fullLifecycle_reachesCompleted_andRecordsEveryMechanicDrivenTransition() throws Exception {
@@ -136,6 +138,54 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     assertThat(rebroadcast.statusCode()).as(rebroadcast.body()).isEqualTo(200);
     assertThat(sosStatus(expiring, sosId)).isEqualTo("PENDING");
     assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)).isEmpty();
+  }
+
+  /**
+   * A bid stays ACCEPTED after the job is done. The mechanic's "active job" must still be the
+   * current one: location pings with no sosId go to the second ticket, and the second driver (not
+   * the first) may read the mechanic's position.
+   */
+  @Test
+  void aMechanicsSecondJob_isTheOneTrackedAndVisibleToItsDriver() throws Exception {
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Driver first = newDriver();
+    completedSos(first, m);
+
+    Driver second = newDriver();
+    UUID secondSos = createSosOk(second);
+    acceptBidOk(second, placeBidOk(m, secondSos));
+
+    assertThat(locationWriter.persistAndResolveSos(m.getMechanicId(), SOS_LAT, SOS_LNG, null))
+        .as("a ping with no sosId must resolve to the current job, not the finished one")
+        .isEqualTo(secondSos);
+    assertThat(mechanicLocationStatus(second, m)).as("current driver").isEqualTo(200);
+    assertThat(mechanicLocationStatus(first, m)).as("driver of the finished job").isEqualTo(403);
+  }
+
+  /** A ping's sosId is only trusted when the mechanic holds the accepted bid on that active SOS. */
+  @Test
+  void aPingWithSomeoneElsesSosId_isNotBroadcastOnThatSos() throws Exception {
+    Mechanic assigned = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic outsider = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Driver d = newDriver();
+    UUID sosId = createSosOk(d);
+    acceptBidOk(d, placeBidOk(assigned, sosId));
+
+    assertThat(
+            locationWriter.persistAndResolveSos(outsider.getMechanicId(), SOS_LAT, SOS_LNG, sosId))
+        .as("the outsider has no job, so nothing may be broadcast")
+        .isNull();
+    assertThat(
+            locationWriter.persistAndResolveSos(assigned.getMechanicId(), SOS_LAT, SOS_LNG, sosId))
+        .as("the assigned mechanic's own sosId is accepted")
+        .isEqualTo(sosId);
+  }
+
+  private int mechanicLocationStatus(Driver d, Mechanic m) throws Exception {
+    return send(req("/api/v1/mechanics/" + m.getMechanicId() + "/location")
+            .header("user-context", userContext(d.user().getUserId()))
+            .GET())
+        .statusCode();
   }
 
   @Test
@@ -546,42 +596,6 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
                 .GET());
     assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
     return parse(r.body()).get("status").asString();
-  }
-
-  private HttpResponse<String> placeBid(Mechanic m, UUID sosId) throws Exception {
-    return send(
-        req("/api/v1/bids")
-            .header("mechanic-context", mechanicContext(m.getMechanicId()))
-            .header("Content-Type", "application/json")
-            .POST(
-                HttpRequest.BodyPublishers.ofString(
-                    "{\"mechanicId\":\""
-                        + m.getMechanicId()
-                        + "\",\"sosId\":\""
-                        + sosId
-                        + "\",\"price\":25.00}")));
-  }
-
-  private UUID placeBidOk(Mechanic m, UUID sosId) throws Exception {
-    HttpResponse<String> r = placeBid(m, sosId);
-    assertThat(r.statusCode()).as("place bid: %s", r.body()).isEqualTo(201);
-    return UUID.fromString(parse(r.body()).get("bidId").asString());
-  }
-
-  private HttpResponse<String> acceptBid(Driver d, UUID bidId) throws Exception {
-    return send(
-        req("/api/v1/bids/" + bidId + "/status")
-            .header("user-context", userContext(d.user().getUserId()))
-            .header("Content-Type", "application/json")
-            .method(
-                "PATCH",
-                HttpRequest.BodyPublishers.ofString(
-                    "{\"userId\":\"" + d.user().getUserId() + "\",\"status\":\"ACCEPTED\"}")));
-  }
-
-  private void acceptBidOk(Driver d, UUID bidId) throws Exception {
-    HttpResponse<String> r = acceptBid(d, bidId);
-    assertThat(r.statusCode()).as("accept bid: %s", r.body()).isEqualTo(200);
   }
 
   private HttpResponse<String> cancelBid(Mechanic m, UUID bidId) throws Exception {

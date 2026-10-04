@@ -245,6 +245,7 @@ class StompFrameFuzzIntegrationTest extends FlowTestSupport {
     Driver victim = newDriver();
     Mechanic victimMechanic = newMechanic(11.55, 104.92);
     UUID victimSos = createSosOk(victim);
+    assignMechanic(victim, victimMechanic, victimSos); // only the assigned mechanic is broadcast
     StompSession victimSession =
         stomp.connect(port, "user-context", userContext(victim.user().getUserId()));
     Tap victimTap = subscribe(victimSession, "/topic/sos/" + victimSos + "/location");

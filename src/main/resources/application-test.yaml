@@ -8,3 +8,8 @@ logging:
   level:
     root: WARN
     com.autofik: INFO
+
+websocket:
+  # application.yaml imports .env for every profile, and a developer's .env may enable the insecure
+  # handshake for local work. Tests always run with the real handshake.
+  dev-insecure-handshake: false
