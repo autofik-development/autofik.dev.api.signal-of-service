@@ -16,4 +16,10 @@ public class MedusaConfig {
 
   /** The public API key used for non-sensitive public identifier tasks. */
   private String publicKey;
+
+  /** Connect timeout for Medusa calls. SOS create waits on this call, so it must stay short. */
+  private int connectTimeoutMs = 2000;
+
+  /** Read timeout for Medusa calls; a hung Medusa must not hold a request thread. */
+  private int readTimeoutMs = 3000;
 }

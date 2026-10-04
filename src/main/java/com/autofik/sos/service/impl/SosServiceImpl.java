@@ -365,14 +365,27 @@ public class SosServiceImpl implements SosService {
     }
     if (!Boolean.TRUE.equals(allowed)) {
       throw new TooManyRequestsException(
-          "Please wait 60 seconds before submitting another SOS request");
+          "Please wait "
+              + createCooldownSeconds
+              + " seconds before submitting another SOS request");
     }
 
-    // External call, outside any transaction.
-    String problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
+    // The cooldown only guards a double-tap of a request that went through. If Medusa is down, or
+    // the user, vehicle or service group is not found, no ticket exists, so the key is released:
+    // otherwise one failed attempt locks an emergency caller out of retrying for the whole window.
+    String problemTypeKey;
+    SosRequest sos;
+    try {
+      // External call, outside any transaction.
+      problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
 
-    // The only transactional part: look up the projections, pick the radius, insert the ticket.
-    SosRequest sos = transactionTemplate.execute(status -> persistSos(request, problemTypeKey));
+      // The only transactional part: look up the projections, pick the radius, insert the ticket.
+      String key = problemTypeKey;
+      sos = transactionTemplate.execute(status -> persistSos(request, key));
+    } catch (RuntimeException e) {
+      releaseCreateCooldown(request.userId());
+      throw e;
+    }
     int startingRadiusKm = sos.getBroadcastRadiusKm();
     User user = sos.getUser();
 
@@ -429,6 +442,15 @@ public class SosServiceImpl implements SosService {
   }
 
   // Runs inside the transaction opened by create(); keep external calls out of it.
+  private void releaseCreateCooldown(UUID userId) {
+    try {
+      redisTemplate.delete(SOS_COOLDOWN_KEY_PREFIX + userId);
+    } catch (RuntimeException e) {
+      // Same stance as the claim: Redis being down must not turn a failed create into a new error.
+      log.warn("Could not release the create cooldown for user {}: {}", userId, e.getMessage());
+    }
+  }
+
   private SosRequest persistSos(CreateSosRequest request, String problemTypeKey) {
     // Both rows are projections of SSO. ponytail: no SSO round-trip for today's test (see
     // SsoProjection) — the vehicle lookup checks local ownership instead of SSO's per-user

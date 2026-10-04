@@ -5,7 +5,10 @@ import com.autofik.sos.dto.external.MedusaServiceGroupResponse;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.service.MedusaService;
 import jakarta.persistence.EntityNotFoundException;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -28,8 +31,16 @@ public class MedusaServiceImpl implements MedusaService {
    * @param config The injected configuration properties containing base URLs and API keys.
    */
   public MedusaServiceImpl(MedusaConfig config) {
+    // Without timeouts a hung Medusa holds the caller's request thread, and SOS create waits on it.
+    JdkClientHttpRequestFactory requestFactory =
+        new JdkClientHttpRequestFactory(
+            HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(config.getConnectTimeoutMs()))
+                .build());
+    requestFactory.setReadTimeout(Duration.ofMillis(config.getReadTimeoutMs()));
     this.restClient =
         RestClient.builder()
+            .requestFactory(requestFactory)
             .baseUrl(config.getBaseUrl())
             .defaultHeader("x-publishable-api-key", config.getPublicKey())
             .build();

@@ -441,6 +441,73 @@ class SosServiceImplTest {
     verify(userRepository, never()).findById(any());
   }
 
+  /**
+   * The cooldown only guards a double-tap. When no ticket was created (Medusa down, group unknown),
+   * the key must be released, or one failed attempt locks an emergency caller out for the window.
+   */
+  @Test
+  void create_whenMedusaFails_releasesTheCooldown_soTheCallerCanRetryAtOnce() {
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+    when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+    when(medusaService.resolveServiceGroupKey(serviceGroupId))
+        .thenThrow(new com.autofik.sos.exception.ServiceUnavailableException("Medusa down"));
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
+
+    assertThatThrownBy(() -> sosService.create(request))
+        .isInstanceOf(com.autofik.sos.exception.ServiceUnavailableException.class);
+
+    verify(redisTemplate).delete(endsWith(userId.toString()));
+  }
+
+  @Test
+  void create_whenTheTicketCannotBeSaved_releasesTheCooldown() {
+    stubCreateGuards();
+    when(ssoProjection.user(userId)).thenThrow(new EntityNotFoundException("User not found"));
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
+
+    assertThatThrownBy(() -> sosService.create(request))
+        .isInstanceOf(EntityNotFoundException.class);
+
+    verify(redisTemplate).delete(endsWith(userId.toString()));
+  }
+
+  @Test
+  void create_whenRedisCannotReleaseTheCooldown_stillSurfacesTheRealError() {
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+    when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+    when(medusaService.resolveServiceGroupKey(serviceGroupId))
+        .thenThrow(new EntityNotFoundException("Service group not found"));
+    when(redisTemplate.delete(anyString()))
+        .thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("down"));
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
+
+    assertThatThrownBy(() -> sosService.create(request))
+        .isInstanceOf(EntityNotFoundException.class)
+        .hasMessageContaining("Service group");
+  }
+
+  @Test
+  void create_whenItSucceeds_keepsTheCooldown() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    verify(redisTemplate, never()).delete(anyString());
+  }
+
   @Test
   // An unverified or unknown driver never gets a local row — SSO is the gate, not this service.
   void create_userNotVerified_isRejected() {
