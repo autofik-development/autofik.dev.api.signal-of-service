@@ -88,6 +88,8 @@ User submits SOS
 
 `MechanicRate` is a cached aggregate — one row per mechanic storing `rating_avg` and `rating_count`. Upserted by `FeedbackServiceImpl` after each new feedback so rating lookups never need to aggregate over the full feedback history.
 
+`SosStatusHistory` is not a log of every status change. It holds the transitions a mechanic drives or proposes (`ON_THE_WAY`, `ARRIVED`, `IN_PROGRESS`, `COMPLETED`) and the `PENDING → ACCEPTED` row written when a bid is accepted. Cancel, expiry and rebroadcast have no mechanic, so they write no row; read the ticket's `status` or the `sos.status.updated` Kafka event for those.
+
 ---
 
 ## Architecture

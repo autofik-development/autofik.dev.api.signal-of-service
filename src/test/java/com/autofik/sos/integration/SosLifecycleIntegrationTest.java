@@ -8,13 +8,16 @@ import com.autofik.sos.domain.entity.SosStatusHistory;
 import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.repository.MechanicSkillRepository;
+import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
+import com.autofik.sos.service.impl.SosServiceImpl;
 import com.uber.h3core.H3Core;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -46,6 +49,8 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
 
   @Autowired private MechanicSkillRepository mechanicSkillRepository;
   @Autowired private SosStatusHistoryRepository historyRepository;
+  @Autowired private SosRequestRepository sosRequestRepository;
+  @Autowired private SosServiceImpl sosService;
 
   @Test
   void fullLifecycle_reachesCompleted_andRecordsEveryMechanicDrivenTransition() throws Exception {
@@ -85,6 +90,52 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
             "ARRIVED>IN_PROGRESS",
             "IN_PROGRESS>COMPLETED");
     assertThat(history).allMatch(h -> h.getApprovedStatus() == ApprovedStatus.ACCEPTED);
+  }
+
+  /**
+   * Pins the scope of {@code sos_status_history}: it records the transitions a mechanic proposes
+   * and the bid accept, not the ones the driver or the system make. Cancel, expiry and rebroadcast
+   * have no mechanic, and {@code proposed_by} is NOT NULL, so they write no row; they show through
+   * the ticket's {@code status} and the {@code sos.status.updated} event instead. If this test
+   * starts failing, someone changed that on purpose: update the docs and the entity's Javadoc with
+   * it.
+   */
+  @Test
+  void cancelExpiryAndRebroadcast_writeNoStatusHistory() throws Exception {
+    // Cancel (PENDING -> CANCELLED), by the driver.
+    Driver cancelling = newDriver();
+    UUID cancelled = createSosOk(cancelling);
+    HttpResponse<String> cancel =
+        send(
+            req("/api/v1/sos/" + cancelled + "/cancel")
+                .header("user-context", userContext(cancelling.user().getUserId()))
+                .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancel.statusCode()).as(cancel.body()).isEqualTo(200);
+    assertThat(sosStatus(cancelling, cancelled)).isEqualTo("CANCELLED");
+    assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(cancelled)).isEmpty();
+
+    // Expiry (PENDING -> EXPIRED) by the system, then rebroadcast (EXPIRED -> PENDING) by the
+    // driver. A bid is placed first: a ticket with no bids widens its search instead of expiring.
+    Driver expiring = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(expiring);
+    placeBidOk(m, sosId);
+    var sos = sosRequestRepository.findById(sosId).orElseThrow();
+    sos.setBiddingExpiresAt(LocalDateTime.now().minusMinutes(1));
+    sosRequestRepository.save(sos);
+
+    sosService.expireOverduePendingRequests();
+    assertThat(sosStatus(expiring, sosId)).isEqualTo("EXPIRED");
+    assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)).isEmpty();
+
+    HttpResponse<String> rebroadcast =
+        send(
+            req("/api/v1/sos/" + sosId + "/rebroadcast")
+                .header("user-context", userContext(expiring.user().getUserId()))
+                .POST(HttpRequest.BodyPublishers.noBody()));
+    assertThat(rebroadcast.statusCode()).as(rebroadcast.body()).isEqualTo(200);
+    assertThat(sosStatus(expiring, sosId)).isEqualTo("PENDING");
+    assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)).isEmpty();
   }
 
   @Test

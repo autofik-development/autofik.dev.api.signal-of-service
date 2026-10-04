@@ -12,6 +12,12 @@ import org.hibernate.annotations.UuidGenerator;
  * Audit trail of status transitions for an {@link SosRequest}. A mechanic proposes a status change
  * (e.g. IN_PROGRESS -> COMPLETED), and the requesting user approves or rejects it. Each row
  * represents one proposed transition and its eventual approval outcome.
+ *
+ * <p>This is not a log of every status change. It holds the transitions a mechanic drives or
+ * proposes (ON_THE_WAY, ARRIVED, IN_PROGRESS, COMPLETED) and the PENDING -> ACCEPTED written when a
+ * bid is accepted. Cancel, expiry and rebroadcast have no mechanic ({@code proposed_by} is NOT
+ * NULL), so they write no row; read the ticket's {@code status} or the {@code sos.status.updated}
+ * event for those.
  */
 @Entity
 @Table(name = "sos_status_history")
