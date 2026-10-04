@@ -5,9 +5,11 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
+import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
+import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
 import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.redis.MechanicLocationRedisListener;
 import java.nio.charset.StandardCharsets;
@@ -68,6 +70,88 @@ class PayloadRoundTripTest {
     Deserializer<T> d = cf.getValueDeserializer();
     d.configure(cf.getConfigurationProperties(), false);
     return d;
+  }
+
+  /**
+   * What other services read off the topics: ISO-8601 strings, not the arrays and epoch decimals
+   * Jackson writes by default. A change here is a change to a contract other teams parse.
+   */
+  @Test
+  void dates_goOutAsIsoStrings_notArraysOrEpochNumbers() {
+    KafkaConfig c = config();
+
+    String status =
+        new String(
+            serializer(c)
+                .serialize(
+                    "sos.status.updated",
+                    new SosStatusUpdatedEvent(
+                        SOS,
+                        MECH,
+                        UUID.randomUUID(),
+                        SosStatus.PENDING,
+                        SosStatus.ACCEPTED,
+                        LocalDateTime.of(2026, 10, 4, 10, 0, 5))),
+            StandardCharsets.UTF_8);
+    assertThat(status).contains("\"changedAt\":\"2026-10-04T10:00:05\"");
+
+    String location =
+        new String(
+            serializer(c)
+                .serialize(
+                    "mechanic.location.updated",
+                    new MechanicLocationEvent(
+                        SOS,
+                        MECH,
+                        11.5,
+                        104.9,
+                        OffsetDateTime.of(
+                            2026, 10, 3, 14, 5, 6, 789_000_000, ZoneOffset.ofHours(7)),
+                        null,
+                        null,
+                        null,
+                        null)),
+            StandardCharsets.UTF_8);
+    assertThat(location).contains("\"timestamp\":\"2026-10-03T14:05:06.789+07:00\"");
+  }
+
+  /** Records already on a topic were written in the old format; they must still be readable. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void recordsWrittenInTheOldFormat_stillDeserialize() {
+    KafkaConfig c = config();
+
+    Object location =
+        deserializer(
+                (ConcurrentKafkaListenerContainerFactory<String, Object>)
+                    c.kafkaListenerContainerFactory())
+            .deserialize(
+                "mechanic.location.updated",
+                new RecordHeaders(),
+                ("{\"sosId\":\""
+                        + SOS
+                        + "\",\"mechanicId\":\""
+                        + MECH
+                        + "\",\"latitude\":11.5,\"longitude\":104.9,"
+                        + "\"timestamp\":1791082800.000000000}")
+                    .getBytes(StandardCharsets.UTF_8));
+    assertThat(((MechanicLocationEvent) location).timestamp().toEpochSecond())
+        .isEqualTo(1_791_082_800L);
+
+    SosMediaUploadedEvent media =
+        deserializer(c.mediaUploadedListenerContainerFactory())
+            .deserialize(
+                "sos.media.uploaded",
+                new RecordHeaders(),
+                ("{\"sosId\":\""
+                        + SOS
+                        + "\",\"mediaId\":\""
+                        + UUID.randomUUID()
+                        + "\",\"uploadedByRole\":\"USER\",\"uploadedById\":\""
+                        + UUID.randomUUID()
+                        + "\",\"uploadedAt\":[2026,10,4,10,0,5]}")
+                    .getBytes(StandardCharsets.UTF_8));
+    assertThat(media.uploadedAt()).isEqualTo(LocalDateTime.of(2026, 10, 4, 10, 0, 5));
   }
 
   @Test

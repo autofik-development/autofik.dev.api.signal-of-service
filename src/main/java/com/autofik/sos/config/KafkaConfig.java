@@ -3,6 +3,7 @@ package com.autofik.sos.config;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -71,8 +72,16 @@ public class KafkaConfig {
   // ObjectMapper when configured by class reference, so LocalDateTime fields on event
   // records (e.g. SosCreatedEvent.createdAt) fail to (de)serialize unless we register
   // the module here too.
+  //
+  // Dates go out as ISO-8601 strings ("2026-10-04T10:00:05", "2026-10-03T14:05:06.789+07:00"), the
+  // same style as the REST and WebSocket payloads. Jackson's default, left on, writes a
+  // LocalDateTime as an array [2026,10,4,10,0,5] and an OffsetDateTime as an epoch decimal, which
+  // every other service reading these topics would have to special-case. Reading is unchanged: the
+  // module still accepts arrays and epoch numbers, so records already on a topic keep working.
   private static ObjectMapper kafkaObjectMapper() {
-    return new ObjectMapper().registerModule(new JavaTimeModule());
+    return new ObjectMapper()
+        .registerModule(new JavaTimeModule())
+        .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
   }
 
   @Bean

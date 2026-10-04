@@ -51,7 +51,7 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 | 503 | Medusa unreachable, database pool exhausted (sends `Retry-After: 5`) |
 | 500 | unexpected |
 
-- **Timestamps differ by surface (known inconsistency):** REST responses use `MMM d yyyy, h:mm:ss a` with no zone (server local time); WebSocket events use ISO local date-time with no zone; the location event uses an ISO offset date-time at `+07:00`; Kafka uses the formats in §6. `asOf` on `GET /mechanics/{id}/location` is the time of the read, not of the GPS fix.
+- **Timestamps differ by surface (known inconsistency):** REST responses use `MMM d yyyy, h:mm:ss a` with no zone (server local time); WebSocket events use ISO local date-time with no zone; the location event uses an ISO offset date-time at `+07:00`; Kafka uses ISO-8601 (§7). `asOf` on `GET /mechanics/{id}/location` is the time of the read, not of the GPS fix.
 - Lists that return `Page` accept `page`, `size` (default 20, not capped) and `sort`.
 
 ## 3. Status machine
@@ -171,7 +171,7 @@ Partitions default to 3, replication factor 1 unless configured. Key is the `sos
 | `mechanic.location.updated` | sosId | the location event; **only used when Redis is down** |
 | `sos.dlq` | original key | dead-lettered records (raw bytes for malformed input) and push failures |
 
-**Date format on Kafka (important for consumers):** the Kafka JSON mapper has `WRITE_DATES_AS_TIMESTAMPS` on, so `LocalDateTime` fields are arrays `[2026,10,4,10,0]` and `OffsetDateTime` is epoch seconds as a decimal (`1791082800.000000000`), **not ISO strings**. This differs from REST and WebSocket. It is planned to switch to ISO strings; do not parse the current format without agreeing the change.
+**Date format on Kafka:** dates are ISO-8601 strings, the same style as REST and WebSocket: `LocalDateTime` fields as `"2026-10-04T10:00:05"` (no zone, server local time) and the location event's `timestamp` as `"2026-10-03T14:05:06.789+07:00"`. (Before 4 October 2026 they were written as arrays `[2026,10,4,10,0,5]` and epoch decimals; SOS still reads that older format, but nothing writes it any more.)
 
 Events are published inside the database transaction, before commit, with no outbox: a consumer may see an event for work that later rolls back, and an event lost during a broker outage is not replayed.
 
