@@ -115,4 +115,40 @@ class MedusaServiceImplTest {
     assertThatThrownBy(() -> new MedusaServiceImpl(cfg).resolveServiceGroupKey("sg"))
         .isInstanceOf(ServiceUnavailableException.class);
   }
+
+  /** A hung Medusa must fail within the read timeout, not hold the SOS-create thread forever. */
+  @Test
+  void aHungMedusa_failsWithinTheReadTimeout_asServiceUnavailable() throws Exception {
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    server.removeContext("/");
+    server.createContext(
+        "/",
+        ex -> {
+          try {
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+          } catch (InterruptedException ignored) {
+          }
+          ex.close();
+        });
+    MedusaConfig cfg = new MedusaConfig();
+    cfg.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+    cfg.setPublicKey("k");
+    cfg.setReadTimeoutMs(300);
+    long start = System.nanoTime();
+
+    try {
+      assertThatThrownBy(() -> new MedusaServiceImpl(cfg).resolveServiceGroupKey("sg"))
+          .isInstanceOf(ServiceUnavailableException.class);
+      assertThat((System.nanoTime() - start) / 1_000_000).isLessThan(3_000);
+    } finally {
+      release.countDown();
+    }
+  }
+
+  @Test
+  void defaultTimeouts_areShort() {
+    MedusaConfig cfg = new MedusaConfig();
+    assertThat(cfg.getConnectTimeoutMs()).isEqualTo(2000);
+    assertThat(cfg.getReadTimeoutMs()).isEqualTo(3000);
+  }
 }

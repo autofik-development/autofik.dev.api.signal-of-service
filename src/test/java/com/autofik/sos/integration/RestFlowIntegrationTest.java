@@ -1,6 +1,7 @@
 package com.autofik.sos.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.dto.event.SosCreatedEvent;
@@ -11,12 +12,31 @@ import java.util.UUID;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import software.amazon.awssdk.services.s3.S3Client;
 
 /**
  * REST against the whole app with real Postgres, Redis and Kafka: what the caller sees, and the
  * side effects left behind in Kafka and Redis.
  */
 class RestFlowIntegrationTest extends FlowTestSupport {
+
+  @Autowired private S3Client s3Client;
+
+  /**
+   * The base class points S3 at a dead local port. A test that touches media without registering
+   * its own S3 stand-in (as SosMediaIntegrationTest does) must fail at once, not reach the real
+   * external host that application.yaml defaults to.
+   */
+  @Test
+  void s3WithoutAStandIn_failsFast_andNeverReachesARealHost() {
+    long start = System.nanoTime();
+
+    assertThatThrownBy(() -> s3Client.headBucket(b -> b.bucket("any-bucket")))
+        .hasMessageContaining("localhost");
+
+    assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(15));
+  }
 
   @Test
   void createSos_returns201_publishesToKafkaKeyedBySosId_andSetsTheRedisCooldown()

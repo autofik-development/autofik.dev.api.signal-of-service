@@ -63,6 +63,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -126,6 +127,12 @@ public class SosServiceImpl implements SosService {
   // zero-bid ticket may be rebroadcast (auto or manual) before it gives up.
   @Value("${sos.bidding.window-seconds:60}")
   private int biddingWindowSeconds;
+
+  // How long the customer has to answer a completion request. When it passes, the request is
+  // approved automatically, so a customer who never answers cannot leave the job open forever (it
+  // blocks them from a new SOS and keeps the mechanic tied to it).
+  @Value("${sos.completion.approval-window-seconds:120}")
+  private long completionApprovalWindowSeconds;
 
   @Value("${sos.bidding.max-rebroadcast:3}")
   private int maxRebroadcast;
@@ -365,14 +372,27 @@ public class SosServiceImpl implements SosService {
     }
     if (!Boolean.TRUE.equals(allowed)) {
       throw new TooManyRequestsException(
-          "Please wait 60 seconds before submitting another SOS request");
+          "Please wait "
+              + createCooldownSeconds
+              + " seconds before submitting another SOS request");
     }
 
-    // External call, outside any transaction.
-    String problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
+    // The cooldown only guards a double-tap of a request that went through. If Medusa is down, or
+    // the user, vehicle or service group is not found, no ticket exists, so the key is released:
+    // otherwise one failed attempt locks an emergency caller out of retrying for the whole window.
+    String problemTypeKey;
+    SosRequest sos;
+    try {
+      // External call, outside any transaction.
+      problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
 
-    // The only transactional part: look up the projections, pick the radius, insert the ticket.
-    SosRequest sos = transactionTemplate.execute(status -> persistSos(request, problemTypeKey));
+      // The only transactional part: look up the projections, pick the radius, insert the ticket.
+      String key = problemTypeKey;
+      sos = transactionTemplate.execute(status -> persistSos(request, key));
+    } catch (RuntimeException e) {
+      releaseCreateCooldown(request.userId());
+      throw e;
+    }
     int startingRadiusKm = sos.getBroadcastRadiusKm();
     User user = sos.getUser();
 
@@ -429,6 +449,15 @@ public class SosServiceImpl implements SosService {
   }
 
   // Runs inside the transaction opened by create(); keep external calls out of it.
+  private void releaseCreateCooldown(UUID userId) {
+    try {
+      redisTemplate.delete(SOS_COOLDOWN_KEY_PREFIX + userId);
+    } catch (RuntimeException e) {
+      // Same stance as the claim: Redis being down must not turn a failed create into a new error.
+      log.warn("Could not release the create cooldown for user {}: {}", userId, e.getMessage());
+    }
+  }
+
   private SosRequest persistSos(CreateSosRequest request, String problemTypeKey) {
     // Both rows are projections of SSO. ponytail: no SSO round-trip for today's test (see
     // SsoProjection) — the vehicle lookup checks local ownership instead of SSO's per-user
@@ -465,7 +494,20 @@ public class SosServiceImpl implements SosService {
     if (!isVisibleTo(sos, callerId)) {
       throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
-    return toResponseWithMechanic(sos);
+    SosRequestResponse response = toResponseWithMechanic(sos);
+    // The owner needs the historyId of a waiting completion request to approve it. The push and the
+    // COMPLETION_REQUESTED frame carry it too, but a missed frame must not leave the job stuck.
+    if (sos.getStatus() == SosStatus.IN_PROGRESS && sos.getUser().getUserId().equals(callerId)) {
+      return sosStatusHistoryRepository
+          .findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+              sosId, ApprovedStatus.PENDING_APPROVAL)
+          .map(
+              history ->
+                  response.withPendingCompletion(
+                      history.getId(), completionApprovalDeadline(history)))
+          .orElse(response);
+    }
+    return response;
   }
 
   // Live view for the customer's "waiting for a bid" screen — reuses the ticket's own location,
@@ -663,6 +705,14 @@ public class SosServiceImpl implements SosService {
             .orElseThrow(
                 () -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
     requireAssignedMechanic(sos, request.mechanicId());
+    // A retry (double tap, timeout) must not leave two approvable rows or push the customer twice:
+    // the request that is already waiting is the answer.
+    var alreadyWaiting =
+        sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL);
+    if (alreadyWaiting.isPresent()) {
+      return sosStatusHistoryMapper.toResponse(alreadyWaiting.get());
+    }
     SosStatusHistory history =
         SosStatusHistory.builder()
             .sosRequest(sos)
@@ -678,7 +728,14 @@ public class SosServiceImpl implements SosService {
         sos.getUser().getUserId().toString(),
         "/queue/sos-updates",
         Map.of(
-            "type", "COMPLETION_REQUESTED", "sosId", sos.getSosId(), "historyId", history.getId()));
+            "type",
+            "COMPLETION_REQUESTED",
+            "sosId",
+            sos.getSosId(),
+            "historyId",
+            history.getId(),
+            "approveBy",
+            completionApprovalDeadline(history).toString()));
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
             "COMPLETION_REQUESTED",
@@ -688,6 +745,117 @@ public class SosServiceImpl implements SosService {
             "Completion requested",
             "Your mechanic has marked the service complete. Please approve."));
     return sosStatusHistoryMapper.toResponse(history);
+  }
+
+  /**
+   * Records the answer to a waiting completion request and applies it. {@code approver} is the
+   * customer, or null when the approval window ran out and the system answered.
+   */
+  private void decideCompletion(SosStatusHistory history, ApprovedStatus decision, User approver) {
+    SosRequest sos = history.getSosRequest();
+    history.setApprovedStatus(decision);
+    history.setApprovedBy(approver);
+    history.setApproveAt(LocalDateTime.now());
+    sosStatusHistoryRepository.save(history);
+
+    if (decision == ApprovedStatus.ACCEPTED) {
+      SosStatus fromStatus = sos.getStatus();
+      validateTransition(fromStatus, history.getToStatus());
+      sos.setStatus(history.getToStatus());
+      if (history.getToStatus() == SosStatus.COMPLETED) {
+        sos.setJobCompletedAt(LocalDateTime.now());
+      }
+      sosRequestRepository.save(sos);
+      routeEtaService.clear(sos.getSosId()); // COMPLETED — no drive left to count down
+
+      UUID mechanicId = history.getProposedBy().getMechanicId();
+      SosStatusUpdatedEvent statusEvent =
+          new SosStatusUpdatedEvent(
+              sos.getSosId(),
+              mechanicId,
+              sos.getUser().getUserId(),
+              fromStatus,
+              history.getToStatus(),
+              LocalDateTime.now());
+      sosEventProducer.publishStatusUpdated(statusEvent);
+      messagingTemplate.convertAndSendToUser(
+          mechanicId.toString(), "/queue/sos-updates", statusEvent);
+
+      publishStatusNotifications(history.getToStatus(), sos, mechanicId);
+    } else if (decision == ApprovedStatus.REJECTED) {
+      UUID mechanicId = history.getProposedBy().getMechanicId();
+      messagingTemplate.convertAndSendToUser(
+          mechanicId.toString(),
+          "/queue/sos-updates",
+          Map.of(
+              "type",
+              "COMPLETION_REJECTED",
+              "sosId",
+              sos.getSosId(),
+              "historyId",
+              history.getId()));
+      sosEventProducer.publishNotification(
+          new SosNotificationEvent(
+              "COMPLETION_REJECTED",
+              mechanicId,
+              "MECHANIC",
+              sos.getSosId(),
+              "Completion rejected",
+              "The customer has rejected the service completion request."));
+    }
+  }
+
+  /**
+   * Approves completion requests the customer has not answered within the approval window, so the
+   * job closes, the mechanic is released and the customer can create a new SOS. Runs on a fixed
+   * delay (and so also catches requests overdue after a restart). Each request is handled in its
+   * own transaction and re-checked under the ticket's row lock, so a customer answering at the same
+   * moment wins and nothing is applied twice.
+   */
+  @Scheduled(fixedDelayString = "${sos.completion.sweep-interval-ms:15000}")
+  public void approveOverdueCompletions() {
+    LocalDateTime cutoff = LocalDateTime.now().minusSeconds(completionApprovalWindowSeconds);
+    for (SosStatusHistory overdue :
+        sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(
+            ApprovedStatus.PENDING_APPROVAL, cutoff)) {
+      try {
+        transactionTemplate.executeWithoutResult(status -> autoApproveCompletion(overdue.getId()));
+      } catch (RuntimeException e) {
+        // One bad row must not stop the others; it is retried on the next sweep.
+        log.error("Auto-approving completion {} failed: {}", overdue.getId(), e.getMessage());
+      }
+    }
+  }
+
+  private void autoApproveCompletion(UUID historyId) {
+    SosStatusHistory history = sosStatusHistoryRepository.findById(historyId).orElse(null);
+    if (history == null) return;
+    sosRequestRepository.lockStatus(history.getSosRequest().getSosId());
+    if (sosStatusHistoryRepository.findApprovedStatusById(historyId).orElse(ApprovedStatus.ACCEPTED)
+        != ApprovedStatus.PENDING_APPROVAL) {
+      return; // the customer answered while we waited for the lock
+    }
+    SosRequest sos = history.getSosRequest();
+    if (sos.getStatus() != SosStatus.IN_PROGRESS) {
+      return; // cancelled or otherwise moved on: nothing to complete
+    }
+    log.warn(
+        "Completion request {} for SOS {} unanswered after {} s, approving automatically",
+        historyId,
+        sos.getSosId(),
+        completionApprovalWindowSeconds);
+    decideCompletion(history, ApprovedStatus.ACCEPTED, null);
+    messagingTemplate.convertAndSendToUser(
+        sos.getUser().getUserId().toString(),
+        "/queue/sos-updates",
+        Map.of("type", "COMPLETION_AUTO_APPROVED", "sosId", sos.getSosId()));
+  }
+
+  /** When an unanswered completion request is approved automatically. */
+  private LocalDateTime completionApprovalDeadline(SosStatusHistory history) {
+    return history.getProposedAt() == null
+        ? null
+        : history.getProposedAt().plusSeconds(completionApprovalWindowSeconds);
   }
 
   /** Finalizes or discards a pending milestone update based on the client's explicit response. */
@@ -711,66 +879,24 @@ public class SosServiceImpl implements SosService {
       throw new AccessDeniedException("You can only respond to your own SOS request");
     }
 
+    // The customer and the approval-window sweep can answer the same request at the same moment;
+    // take the ticket's row lock so only one of them applies a decision.
+    sosRequestRepository.lockStatus(history.getSosRequest().getSosId());
+    ApprovedStatus current =
+        sosStatusHistoryRepository
+            .findApprovedStatusById(history.getId())
+            .orElse(history.getApprovedStatus());
+
     // A decided history entry cannot be decided again. ACCEPTED-then-ACCEPTED is incidentally
     // blocked by validateTransition below once the sos is already COMPLETED, but ACCEPTED-then-
     // REJECTED (or the reverse) is not — without this, the outcome could be flipped after the
     // fact, silently re-notifying the mechanic.
-    if (history.getApprovedStatus() != ApprovedStatus.PENDING_APPROVAL) {
-      throw new IllegalStateException(
-          "This completion request was already " + history.getApprovedStatus());
+    if (current != ApprovedStatus.PENDING_APPROVAL) {
+      throw new IllegalStateException("This completion request was already " + current);
     }
-
-    history.setApprovedStatus(request.approvedStatus());
-    history.setApprovedBy(user);
-    history.setApproveAt(LocalDateTime.now());
-    sosStatusHistoryRepository.save(history);
 
     SosRequest sos = history.getSosRequest();
-    if (request.approvedStatus() == ApprovedStatus.ACCEPTED) {
-      SosStatus fromStatus = sos.getStatus();
-      validateTransition(fromStatus, history.getToStatus());
-      sos.setStatus(history.getToStatus());
-      if (history.getToStatus() == SosStatus.COMPLETED) {
-        sos.setJobCompletedAt(LocalDateTime.now());
-      }
-      sosRequestRepository.save(sos);
-      routeEtaService.clear(sos.getSosId()); // COMPLETED — no drive left to count down
-
-      UUID mechanicId = history.getProposedBy().getMechanicId();
-      SosStatusUpdatedEvent statusEvent =
-          new SosStatusUpdatedEvent(
-              sos.getSosId(),
-              mechanicId,
-              user.getUserId(),
-              fromStatus,
-              history.getToStatus(),
-              LocalDateTime.now());
-      sosEventProducer.publishStatusUpdated(statusEvent);
-      messagingTemplate.convertAndSendToUser(
-          mechanicId.toString(), "/queue/sos-updates", statusEvent);
-
-      publishStatusNotifications(history.getToStatus(), sos, mechanicId);
-    } else if (request.approvedStatus() == ApprovedStatus.REJECTED) {
-      UUID mechanicId = history.getProposedBy().getMechanicId();
-      messagingTemplate.convertAndSendToUser(
-          mechanicId.toString(),
-          "/queue/sos-updates",
-          Map.of(
-              "type",
-              "COMPLETION_REJECTED",
-              "sosId",
-              sos.getSosId(),
-              "historyId",
-              history.getId()));
-      sosEventProducer.publishNotification(
-          new SosNotificationEvent(
-              "COMPLETION_REJECTED",
-              mechanicId,
-              "MECHANIC",
-              sos.getSosId(),
-              "Completion rejected",
-              "The customer has rejected the service completion request."));
-    }
+    decideCompletion(history, request.approvedStatus(), user);
     return toResponseWithMechanic(sos);
   }
 
@@ -842,9 +968,26 @@ public class SosServiceImpl implements SosService {
     sosRequestRepository.save(sos);
     routeEtaService.clear(sosId); // job is over — drop any countdown still cached
 
+    // Whoever was on the job, or had bid on it, must hear it is off: an assigned mechanic would
+    // otherwise keep driving to a cancelled job.
+    UUID assignedMechanicId =
+        bidSosRepository
+            .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+            .map(bid -> bid.getMechanic().getMechanicId())
+            .orElse(null);
+    List<UUID> pendingBidders =
+        bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING).stream()
+            .map(bid -> bid.getMechanic().getMechanicId())
+            .toList();
+
     sosEventProducer.publishStatusUpdated(
         new SosStatusUpdatedEvent(
-            sos.getSosId(), null, userId, fromStatus, SosStatus.CANCELLED, LocalDateTime.now()));
+            sos.getSosId(),
+            assignedMechanicId,
+            userId,
+            fromStatus,
+            SosStatus.CANCELLED,
+            LocalDateTime.now()));
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
             "STATUS_CANCELLED",
@@ -853,8 +996,53 @@ public class SosServiceImpl implements SosService {
             sos.getSosId(),
             "SOS request cancelled",
             "Your SOS request has been cancelled"));
+    notifyMechanicsOfCancellation(sos, fromStatus, assignedMechanicId, pendingBidders);
 
     return toResponseWithMechanic(sos);
+  }
+
+  /**
+   * Tells the assigned mechanic (a frame and a push) and every mechanic with a pending bid (a frame
+   * each and one batched push) that the customer cancelled. The frame carries the status the
+   * request was in, so the app can tell "my job was cancelled" from "a request I bid on was".
+   */
+  private void notifyMechanicsOfCancellation(
+      SosRequest sos, SosStatus fromStatus, UUID assignedMechanicId, List<UUID> pendingBidders) {
+    if (assignedMechanicId != null) {
+      messagingTemplate.convertAndSendToUser(
+          assignedMechanicId.toString(),
+          "/queue/sos-updates",
+          Map.of(
+              "type", "SOS_CANCELLED", "sosId", sos.getSosId(), "fromStatus", fromStatus.name()));
+      sosEventProducer.publishNotification(
+          new SosNotificationEvent(
+              "SOS_CANCELLED",
+              assignedMechanicId,
+              "MECHANIC",
+              sos.getSosId(),
+              "Job cancelled",
+              "The customer has cancelled this job"));
+    }
+    if (!pendingBidders.isEmpty()) {
+      for (UUID bidder : pendingBidders) {
+        messagingTemplate.convertAndSendToUser(
+            bidder.toString(),
+            "/queue/sos-updates",
+            Map.of(
+                "type", "SOS_CANCELLED", "sosId", sos.getSosId(), "fromStatus", fromStatus.name()));
+      }
+      sosEventProducer.publishNotification(
+          new SosNotificationEvent(
+              "SOS_CANCELLED",
+              null,
+              "MECHANIC",
+              sos.getSosId(),
+              "Request cancelled",
+              "The customer cancelled a request you bid on",
+              null,
+              null,
+              pendingBidders));
+    }
   }
 
   // SosRequest has no direct mechanic relation — the assigned mechanic is resolved
@@ -884,7 +1072,9 @@ public class SosServiceImpl implements SosService {
         base.rebroadcastCount(),
         base.user(),
         base.vehicle(),
-        mechanic);
+        mechanic,
+        null,
+        null);
   }
 
   private List<SosRequestResponse> toResponseListWithMechanic(List<SosRequest> sosList) {

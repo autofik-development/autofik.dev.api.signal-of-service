@@ -8,7 +8,6 @@ import static org.mockito.Mockito.*;
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
-import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.service.impl.MechanicLocationWriter;
@@ -85,15 +84,14 @@ class MechanicLocationWriterTest {
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, null)).isNull();
 
-    verify(bidSosRepository, never()).findFirstByMechanicMechanicIdAndStatus(any(), any());
+    verify(bidSosRepository, never()).findActiveJob(any());
   }
 
   @Test
   void notThrottled_updatesLocationAndH3Index() {
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-    when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-        .thenReturn(Optional.empty());
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
 
     writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
 
@@ -109,8 +107,7 @@ class MechanicLocationWriterTest {
     when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("Redis down"));
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-    when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-        .thenReturn(Optional.empty());
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
 
     writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
 
@@ -134,15 +131,44 @@ class MechanicLocationWriterTest {
         .isInstanceOf(EntityNotFoundException.class);
   }
 
-  // A caller-supplied sosId is authoritative — no reason to spend a query rediscovering it.
+  // A caller-supplied sosId is only trusted when the mechanic holds the accepted bid on that live
+  // SOS. Otherwise any mechanic could publish positions, and trigger billed route lookups, on
+  // someone else's ticket.
   @Test
-  void sosIdSupplied_returnsItWithoutActiveBidLookup() {
+  void sosIdSupplied_andAssigned_isTrusted_withoutTheActiveJobLookup() {
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+    when(bidSosRepository.isAssignedToActiveJob(mechanicId, sosId)).thenReturn(true);
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).isEqualTo(sosId);
 
-    verify(bidSosRepository, never()).findFirstByMechanicMechanicIdAndStatus(any(), any());
+    verify(bidSosRepository, never()).findActiveJob(any());
+  }
+
+  @Test
+  void sosIdSupplied_butNotAssigned_isIgnored_andNothingIsBroadcast() {
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+    when(bidSosRepository.isAssignedToActiveJob(mechanicId, sosId)).thenReturn(false);
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
+
+    assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).isNull();
+  }
+
+  // A stale or foreign sosId must not stop a mechanic who really is on a job from being tracked.
+  @Test
+  void sosIdSupplied_butNotAssigned_fallsBackToTheMechanicsOwnActiveJob() {
+    UUID realSos = UUID.randomUUID();
+    SosRequest sosRequest = mock(SosRequest.class);
+    when(sosRequest.getSosId()).thenReturn(realSos);
+    BidSos activeBid = mock(BidSos.class);
+    when(activeBid.getSosRequest()).thenReturn(sosRequest);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+    when(bidSosRepository.isAssignedToActiveJob(mechanicId, sosId)).thenReturn(false);
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.of(activeBid));
+
+    assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).isEqualTo(realSos);
   }
 
   @Test
@@ -154,8 +180,7 @@ class MechanicLocationWriterTest {
 
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-    when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-        .thenReturn(Optional.of(activeBid));
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.of(activeBid));
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, null)).isEqualTo(sosId);
   }
@@ -164,8 +189,7 @@ class MechanicLocationWriterTest {
   void noSosId_noActiveBid_resolvesToNull() {
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-    when(bidSosRepository.findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED))
-        .thenReturn(Optional.empty());
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, null)).isNull();
   }

@@ -8,6 +8,7 @@ import static org.mockito.Mockito.*;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.kafka.consumer.MechanicLocationConsumer;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -33,7 +34,15 @@ class MechanicLocationConsumerTest {
   void consume_validEvent_forwardsToCorrectWebSocketTopic() {
     MechanicLocationEvent event =
         new MechanicLocationEvent(
-            sosId, mechanicId, 11.5573, 104.9282, OffsetDateTime.now(), null, null, null, null);
+            sosId,
+            mechanicId,
+            11.5573,
+            104.9282,
+            OffsetDateTime.now(ZoneOffset.UTC),
+            null,
+            null,
+            null,
+            null);
 
     consumer.consume(event);
 
@@ -41,7 +50,10 @@ class MechanicLocationConsumerTest {
         ArgumentCaptor.forClass(MechanicLocationEvent.class);
     verify(messagingTemplate)
         .convertAndSend(eq("/topic/sos/" + sosId + "/location"), payload.capture());
-    assertThat(payload.getValue()).isEqualTo(event);
+    // Read back from Redis or Kafka the offset is UTC; clients must get Cambodian time (+07:00).
+    assertThat(payload.getValue().timestamp().getOffset()).isEqualTo(ZoneOffset.ofHours(7));
+    assertThat(payload.getValue().timestamp().toInstant()).isEqualTo(event.timestamp().toInstant());
+    assertThat(payload.getValue()).isEqualTo(event.withCambodianTimestamp());
   }
 
   @Test

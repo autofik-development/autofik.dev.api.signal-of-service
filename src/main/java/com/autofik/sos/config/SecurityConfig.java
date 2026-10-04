@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -35,8 +37,26 @@ public class SecurityConfig {
   @Value("${websocket.dev-insecure-handshake:false}")
   private boolean devInsecureHandshake;
 
+  private final Environment environment;
+
+  /**
+   * The flag is read by relaxed binding, so {@code WEBSOCKET_DEV_INSECURE_HANDSHAKE=true} in any
+   * environment file would switch it on in test, SIT or prod too. Refuse to start rather than run
+   * with a handshake anyone can use to connect as anyone.
+   */
+  static void requireDevProfile(boolean devInsecureHandshake, Environment environment) {
+    if (devInsecureHandshake && !environment.acceptsProfiles(Profiles.of("dev"))) {
+      throw new IllegalStateException(
+          "websocket.dev-insecure-handshake=true is only allowed with the 'dev' profile. "
+              + "Active profiles: "
+              + java.util.Arrays.toString(environment.getActiveProfiles())
+              + ". Remove the setting (or WEBSOCKET_DEV_INSECURE_HANDSHAKE) from this environment.");
+    }
+  }
+
   @PostConstruct
   void warnIfInsecure() {
+    requireDevProfile(devInsecureHandshake, environment);
     if (devInsecureHandshake) {
       log.warn(
           "websocket.dev-insecure-handshake=true — the WebSocket handshake accepts a "

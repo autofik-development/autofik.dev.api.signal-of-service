@@ -2,6 +2,8 @@
 
 A Spring Boot microservice powering a **roadside assistance platform**. Users submit breakdown requests; nearby mechanics discover them, place bids, and the user picks one. Real-time status tracking is broadcast over WebSocket with events published to Kafka.
 
+> **Integrating with this service (mobile, gateway, SSO, event consumers)?** Read [INTEGRATION.md](INTEGRATION.md): identity headers, every endpoint, WebSocket and Kafka payloads, and the known gaps.
+
 ---
 
 ## How It Works
@@ -87,6 +89,8 @@ User submits SOS
 ```
 
 `MechanicRate` is a cached aggregate — one row per mechanic storing `rating_avg` and `rating_count`. Upserted by `FeedbackServiceImpl` after each new feedback so rating lookups never need to aggregate over the full feedback history.
+
+`SosStatusHistory` is not a log of every status change. It holds the transitions a mechanic drives or proposes (`ON_THE_WAY`, `ARRIVED`, `IN_PROGRESS`, `COMPLETED`) and the `PENDING → ACCEPTED` row written when a bid is accepted. Cancel, expiry and rebroadcast have no mechanic, so they write no row; read the ticket's `status` or the `sos.status.updated` Kafka event for those.
 
 ---
 
@@ -189,7 +193,7 @@ Postgres `current_location` is the source of truth for all availability searches
 | Real-time | WebSocket / STOMP |
 | Push notifications | OneSignal (onesignal-java-client 5.8.1) |
 | Mapping | MapStruct |
-| Security | Spring Security (stateless, JWT validation — pending SSO team) |
+| Security | Spring Security (stateless; identity comes from the gateway's `user-context` / `mechanic-context` headers, no JWT validation here) |
 | Maps / Geocoding | Google Maps Platform (Geocoding API + Distance Matrix API) |
 | Media storage | AWS S3-compatible (MinIO) |
 
@@ -361,4 +365,4 @@ The mobile app must call `OneSignal.login(userId)` with the user's UUID on login
 | Push notifications | Complete — OneSignal push for bid received, bid accepted/rejected/cancelled, status transitions, completion flow |
 | SOS media (photo/video) | Complete — upload and retrieve via S3-compatible storage |
 | Input validation | Complete — Cambodia bounding box on all lat/lng inputs; `broadcastRadiusKm` 5–20 km; rate limiting (60 s cooldown + active SOS guard) |
-| JWT validation | Pending — token issued by SSO service; this service validates only |
+| Identity | Complete — the gateway verifies the token and forwards `user-context` / `mechanic-context`; this service trusts those headers and does not validate JWTs (see INTEGRATION.md) |

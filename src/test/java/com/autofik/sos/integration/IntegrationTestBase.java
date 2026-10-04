@@ -135,6 +135,10 @@ public abstract class IntegrationTestBase {
     r.add("DB_USERNAME", POSTGRES::getUsername);
     r.add("DB_PASSWORD", POSTGRES::getPassword);
     r.add("REDIS_TIMEOUT_MS", () -> "1000"); // a local .env must not change what the tests measure
+    // application.yaml imports .env for every profile, and a developer's .env turns the insecure
+    // WebSocket handshake on for local work. Tests must run with the real handshake, and the
+    // app refuses to start with that flag outside the dev profile.
+    r.add("websocket.dev-insecure-handshake", () -> "false");
     r.add("DB_POOL_MAX", () -> String.valueOf(DB_POOL_MAX));
     r.add("DB_POOL_MIN_IDLE", () -> "1");
     r.add("DB_CONNECTION_TIMEOUT_MS", () -> "2000");
@@ -149,6 +153,10 @@ public abstract class IntegrationTestBase {
     r.add("MEDUSA_PUBLIC_KEY", () -> "pk_test");
     r.add("ONESIGNAL_APP_ID", () -> "test");
     r.add("ONESIGNAL_API_KEY", () -> "test");
+    // Without this, application.yaml falls back to the real external S3 host. A dead local port
+    // makes a test that forgot its S3 stand-in fail at once instead of reaching that host.
+    // SosMediaIntegrationTest registers its own endpoint on top of this.
+    r.add("S3_ENDPOINT", () -> "http://localhost:1");
     r.add("S3_ACCESS_KEY", () -> "test");
     r.add("S3_SECRET_KEY", () -> "test");
   }

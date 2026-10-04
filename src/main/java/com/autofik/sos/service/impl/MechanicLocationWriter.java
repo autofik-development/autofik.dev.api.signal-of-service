@@ -1,7 +1,6 @@
 package com.autofik.sos.service.impl;
 
 import com.autofik.sos.domain.entity.Mechanic;
-import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.uber.h3core.H3Core;
@@ -61,14 +60,16 @@ public class MechanicLocationWriter {
    * Persists the ping (subject to the throttle) and works out which SOS, if any, this position
    * should be broadcast on.
    *
-   * @param sosId supplied by the caller when known, which skips the active-bid lookup entirely
+   * @param sosId supplied by the caller when known. It is only trusted when the mechanic holds the
+   *     accepted bid on that live SOS; otherwise it is ignored, so a mechanic cannot publish
+   *     positions or trigger billed route lookups on someone else's ticket
    * @return the SOS to broadcast on, or null when the mechanic has no active job
    */
   @Transactional
   public UUID persistAndResolveSos(UUID mechanicId, double lat, double lng, UUID sosId) {
     boolean persisted = writeLocation(mechanicId, lat, lng);
 
-    if (sosId != null) return sosId;
+    if (sosId != null && bidSosRepository.isAssignedToActiveJob(mechanicId, sosId)) return sosId;
 
     // No sosId supplied (app restart, reconnect, older client). Resolve the active job here so
     // a mechanic mid-drive keeps broadcasting instead of the customer's map silently freezing.
@@ -77,7 +78,7 @@ public class MechanicLocationWriter {
     if (!persisted) return null;
 
     return bidSosRepository
-        .findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED)
+        .findActiveJob(mechanicId)
         .map(bid -> bid.getSosRequest().getSosId())
         .orElse(null);
   }

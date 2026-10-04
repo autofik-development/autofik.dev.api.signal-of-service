@@ -8,13 +8,17 @@ import com.autofik.sos.domain.entity.SosStatusHistory;
 import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.repository.MechanicSkillRepository;
+import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
+import com.autofik.sos.service.impl.MechanicLocationWriter;
+import com.autofik.sos.service.impl.SosServiceImpl;
 import com.uber.h3core.H3Core;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -46,6 +50,9 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
 
   @Autowired private MechanicSkillRepository mechanicSkillRepository;
   @Autowired private SosStatusHistoryRepository historyRepository;
+  @Autowired private SosRequestRepository sosRequestRepository;
+  @Autowired private SosServiceImpl sosService;
+  @Autowired private MechanicLocationWriter locationWriter;
 
   @Test
   void fullLifecycle_reachesCompleted_andRecordsEveryMechanicDrivenTransition() throws Exception {
@@ -85,6 +92,276 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
             "ARRIVED>IN_PROGRESS",
             "IN_PROGRESS>COMPLETED");
     assertThat(history).allMatch(h -> h.getApprovedStatus() == ApprovedStatus.ACCEPTED);
+  }
+
+  /**
+   * Pins the scope of {@code sos_status_history}: it records the transitions a mechanic proposes
+   * and the bid accept, not the ones the driver or the system make. Cancel, expiry and rebroadcast
+   * have no mechanic, and {@code proposed_by} is NOT NULL, so they write no row; they show through
+   * the ticket's {@code status} and the {@code sos.status.updated} event instead. If this test
+   * starts failing, someone changed that on purpose: update the docs and the entity's Javadoc with
+   * it.
+   */
+  @Test
+  void cancelExpiryAndRebroadcast_writeNoStatusHistory() throws Exception {
+    // Cancel (PENDING -> CANCELLED), by the driver.
+    Driver cancelling = newDriver();
+    UUID cancelled = createSosOk(cancelling);
+    HttpResponse<String> cancel =
+        send(
+            req("/api/v1/sos/" + cancelled + "/cancel")
+                .header("user-context", userContext(cancelling.user().getUserId()))
+                .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancel.statusCode()).as(cancel.body()).isEqualTo(200);
+    assertThat(sosStatus(cancelling, cancelled)).isEqualTo("CANCELLED");
+    assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(cancelled)).isEmpty();
+
+    // Expiry (PENDING -> EXPIRED) by the system, then rebroadcast (EXPIRED -> PENDING) by the
+    // driver. A bid is placed first: a ticket with no bids widens its search instead of expiring.
+    Driver expiring = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(expiring);
+    placeBidOk(m, sosId);
+    var sos = sosRequestRepository.findById(sosId).orElseThrow();
+    sos.setBiddingExpiresAt(LocalDateTime.now().minusMinutes(1));
+    sosRequestRepository.save(sos);
+
+    sosService.expireOverduePendingRequests();
+    assertThat(sosStatus(expiring, sosId)).isEqualTo("EXPIRED");
+    assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)).isEmpty();
+
+    HttpResponse<String> rebroadcast =
+        send(
+            req("/api/v1/sos/" + sosId + "/rebroadcast")
+                .header("user-context", userContext(expiring.user().getUserId()))
+                .POST(HttpRequest.BodyPublishers.noBody()));
+    assertThat(rebroadcast.statusCode()).as(rebroadcast.body()).isEqualTo(200);
+    assertThat(sosStatus(expiring, sosId)).isEqualTo("PENDING");
+    assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)).isEmpty();
+  }
+
+  /**
+   * A bid stays ACCEPTED after the job is done. The mechanic's "active job" must still be the
+   * current one: location pings with no sosId go to the second ticket, and the second driver (not
+   * the first) may read the mechanic's position.
+   */
+  @Test
+  void aMechanicsSecondJob_isTheOneTrackedAndVisibleToItsDriver() throws Exception {
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Driver first = newDriver();
+    completedSos(first, m);
+
+    Driver second = newDriver();
+    UUID secondSos = createSosOk(second);
+    acceptBidOk(second, placeBidOk(m, secondSos));
+
+    assertThat(locationWriter.persistAndResolveSos(m.getMechanicId(), SOS_LAT, SOS_LNG, null))
+        .as("a ping with no sosId must resolve to the current job, not the finished one")
+        .isEqualTo(secondSos);
+    assertThat(mechanicLocationStatus(second, m)).as("current driver").isEqualTo(200);
+    assertThat(mechanicLocationStatus(first, m)).as("driver of the finished job").isEqualTo(403);
+  }
+
+  /** A ping's sosId is only trusted when the mechanic holds the accepted bid on that active SOS. */
+  @Test
+  void aPingWithSomeoneElsesSosId_isNotBroadcastOnThatSos() throws Exception {
+    Mechanic assigned = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic outsider = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Driver d = newDriver();
+    UUID sosId = createSosOk(d);
+    acceptBidOk(d, placeBidOk(assigned, sosId));
+
+    assertThat(
+            locationWriter.persistAndResolveSos(outsider.getMechanicId(), SOS_LAT, SOS_LNG, sosId))
+        .as("the outsider has no job, so nothing may be broadcast")
+        .isNull();
+    assertThat(
+            locationWriter.persistAndResolveSos(assigned.getMechanicId(), SOS_LAT, SOS_LNG, sosId))
+        .as("the assigned mechanic's own sosId is accepted")
+        .isEqualTo(sosId);
+  }
+
+  private int mechanicLocationStatus(Driver d, Mechanic m) throws Exception {
+    return send(req("/api/v1/mechanics/" + m.getMechanicId() + "/location")
+            .header("user-context", userContext(d.user().getUserId()))
+            .GET())
+        .statusCode();
+  }
+
+  /**
+   * The historyId needed to approve a completion used to arrive only in one WebSocket frame. A
+   * customer who missed it (app closed, tapped the push) could not approve, and the ticket sat in
+   * IN_PROGRESS, blocking a new SOS. The owner now reads it from GET /sos/{id}.
+   */
+  @Test
+  void aWaitingCompletion_isReadableByTheOwner_andARetriedProposalIsNotDuplicated()
+      throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = inProgressSos(d, m);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("nothing proposed")
+        .isNull();
+
+    UUID historyId = proposeCompletionOk(m, sosId);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("the owner can read the waiting request")
+        .isEqualTo(historyId);
+    assertThat(pendingCompletionSeenBy(mechanicContextHeader(m), sosId))
+        .as("the mechanic is not shown it")
+        .isNull();
+
+    assertThat(proposeCompletionOk(m, sosId))
+        .as("a retried proposal returns the request that is already waiting")
+        .isEqualTo(historyId);
+    assertThat(
+            historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId).stream()
+                .filter(h -> h.getApprovedStatus() == ApprovedStatus.PENDING_APPROVAL)
+                .count())
+        .isEqualTo(1);
+
+    assertThat(approveCompletion(d, historyId, ApprovedStatus.REJECTED).statusCode())
+        .isEqualTo(200);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("a rejected request is no longer waiting")
+        .isNull();
+
+    UUID second = proposeCompletionOk(m, sosId);
+    assertThat(second).as("after a rejection a new request is created").isNotEqualTo(historyId);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId)).isEqualTo(second);
+    assertThat(approveCompletion(d, second, ApprovedStatus.ACCEPTED).statusCode()).isEqualTo(200);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("nothing is waiting once the job is completed")
+        .isNull();
+  }
+
+  /**
+   * A cancelled job used to reach the assigned mechanic never: they kept driving. They now get a
+   * frame on their private queue, and a mechanic who only had a pending bid is told too.
+   */
+  @Test
+  void aCancelledJob_isPushedToTheAssignedMechanic_andToPendingBidders() throws Exception {
+    Driver d = newDriver();
+    Mechanic assigned = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic bidder = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    placeBidOk(bidder, sosId);
+    acceptBidOk(d, placeBidOk(assigned, sosId));
+    // The accept above rejects the bidder's bid; a fresh pending bid needs its own ticket, so the
+    // pending-bidder case is covered separately below.
+
+    StompSession mechanic =
+        stomp.connect(port, "mechanic-context", mechanicContext(assigned.getMechanicId()));
+    StompSession bystander =
+        stomp.connect(port, "mechanic-context", mechanicContext(bidder.getMechanicId()));
+    Tap frames = subscribe(mechanic, "/user/queue/sos-updates");
+    Tap other = subscribe(bystander, "/user/queue/sos-updates");
+    awaitSubscriptions("/user/queue/sos-updates", 2);
+
+    HttpResponse<String> cancel =
+        send(
+            req("/api/v1/sos/" + sosId + "/cancel")
+                .header("user-context", userContextHeader(d))
+                .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancel.statusCode()).as(cancel.body()).isEqualTo(200);
+
+    JsonNode frame = awaitTypedFrame(frames, sosId, "SOS_CANCELLED", Duration.ofSeconds(10));
+    assertThat(frame.get("type").asString()).isEqualTo("SOS_CANCELLED");
+    assertThat(frame.get("fromStatus").asString()).isEqualTo("ACCEPTED");
+    assertThat(other.next(Duration.ofSeconds(1)))
+        .as("a mechanic whose bid was already rejected is not told")
+        .isNull();
+    mechanic.disconnect();
+    bystander.disconnect();
+  }
+
+  @Test
+  void aCancelledRequest_isPushedToMechanicsWithAPendingBid() throws Exception {
+    Driver d = newDriver();
+    Mechanic bidder = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic outsider = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    placeBidOk(bidder, sosId);
+
+    StompSession bidderSession =
+        stomp.connect(port, "mechanic-context", mechanicContext(bidder.getMechanicId()));
+    StompSession outsiderSession =
+        stomp.connect(port, "mechanic-context", mechanicContext(outsider.getMechanicId()));
+    Tap frames = subscribe(bidderSession, "/user/queue/sos-updates");
+    Tap other = subscribe(outsiderSession, "/user/queue/sos-updates");
+    awaitSubscriptions("/user/queue/sos-updates", 2);
+
+    HttpResponse<String> cancel =
+        send(
+            req("/api/v1/sos/" + sosId + "/cancel")
+                .header("user-context", userContextHeader(d))
+                .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancel.statusCode()).as(cancel.body()).isEqualTo(200);
+
+    JsonNode frame = awaitTypedFrame(frames, sosId, "SOS_CANCELLED", Duration.ofSeconds(10));
+    assertThat(frame.get("type").asString()).isEqualTo("SOS_CANCELLED");
+    assertThat(frame.get("fromStatus").asString()).isEqualTo("PENDING");
+    assertThat(other.next(Duration.ofSeconds(1))).as("a mechanic who never bid").isNull();
+    bidderSession.disconnect();
+    outsiderSession.disconnect();
+  }
+
+  /**
+   * A customer who never answers must not leave the job open: it blocks a new SOS and keeps the
+   * mechanic tied to it. After the approval window the sweep approves the request as the system.
+   */
+  @Test
+  void anUnansweredCompletion_isApprovedAutomatically_afterTheWindow() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = inProgressSos(d, m);
+    UUID historyId = proposeCompletionOk(m, sosId);
+
+    HttpResponse<String> before =
+        send(req("/api/v1/sos/" + sosId).header("user-context", userContextHeader(d)).GET());
+    assertThat(parse(before.body()).get("pendingCompletionApproveBy").isNull())
+        .as("the owner is shown when the request will be approved automatically")
+        .isFalse();
+
+    // Inside the window nothing happens.
+    sosService.approveOverdueCompletions();
+    assertThat(sosStatus(d, sosId)).isEqualTo("IN_PROGRESS");
+
+    SosStatusHistory row = historyRepository.findById(historyId).orElseThrow();
+    row.setProposedAt(LocalDateTime.now().minusMinutes(5));
+    historyRepository.save(row);
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sosStatus(d, sosId)).isEqualTo("COMPLETED");
+    SosStatusHistory decided = historyRepository.findById(historyId).orElseThrow();
+    assertThat(decided.getApprovedStatus()).isEqualTo(ApprovedStatus.ACCEPTED);
+    assertThat(decided.getApprovedBy()).as("approved by the system").isNull();
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId)).isNull();
+    assertThat(approveCompletion(d, historyId, ApprovedStatus.ACCEPTED).statusCode())
+        .as("the customer answering afterwards is told it was already decided")
+        .isEqualTo(409);
+  }
+
+  private String userContextHeader(Driver d) {
+    return userContext(d.user().getUserId());
+  }
+
+  private String mechanicContextHeader(Mechanic m) {
+    return mechanicContext(m.getMechanicId());
+  }
+
+  /** The pendingCompletionHistoryId GET /sos/{id} shows to the caller, or null. */
+  private UUID pendingCompletionSeenBy(String contextHeaderValue, UUID sosId) throws Exception {
+    boolean mechanic = contextHeaderValue.contains("\"mechanic\"");
+    HttpResponse<String> r =
+        send(
+            req("/api/v1/sos/" + sosId)
+                .header(mechanic ? "mechanic-context" : "user-context", contextHeaderValue)
+                .GET());
+    assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+    JsonNode node = parse(r.body()).get("pendingCompletionHistoryId");
+    return node == null || node.isNull() ? null : UUID.fromString(node.asString());
   }
 
   @Test
@@ -497,42 +774,6 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     return parse(r.body()).get("status").asString();
   }
 
-  private HttpResponse<String> placeBid(Mechanic m, UUID sosId) throws Exception {
-    return send(
-        req("/api/v1/bids")
-            .header("mechanic-context", mechanicContext(m.getMechanicId()))
-            .header("Content-Type", "application/json")
-            .POST(
-                HttpRequest.BodyPublishers.ofString(
-                    "{\"mechanicId\":\""
-                        + m.getMechanicId()
-                        + "\",\"sosId\":\""
-                        + sosId
-                        + "\",\"price\":25.00}")));
-  }
-
-  private UUID placeBidOk(Mechanic m, UUID sosId) throws Exception {
-    HttpResponse<String> r = placeBid(m, sosId);
-    assertThat(r.statusCode()).as("place bid: %s", r.body()).isEqualTo(201);
-    return UUID.fromString(parse(r.body()).get("bidId").asString());
-  }
-
-  private HttpResponse<String> acceptBid(Driver d, UUID bidId) throws Exception {
-    return send(
-        req("/api/v1/bids/" + bidId + "/status")
-            .header("user-context", userContext(d.user().getUserId()))
-            .header("Content-Type", "application/json")
-            .method(
-                "PATCH",
-                HttpRequest.BodyPublishers.ofString(
-                    "{\"userId\":\"" + d.user().getUserId() + "\",\"status\":\"ACCEPTED\"}")));
-  }
-
-  private void acceptBidOk(Driver d, UUID bidId) throws Exception {
-    HttpResponse<String> r = acceptBid(d, bidId);
-    assertThat(r.statusCode()).as("accept bid: %s", r.body()).isEqualTo(200);
-  }
-
   private HttpResponse<String> cancelBid(Mechanic m, UUID bidId) throws Exception {
     return send(
         req("/api/v1/bids/" + bidId + "/cancel")
@@ -625,6 +866,27 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
       if (n.has("toStatus") && sosId.toString().equals(n.get("sosId").asString())) return n;
     }
     throw new AssertionError("no status event for " + sosId + " within " + wait);
+  }
+
+  /**
+   * Skips to the frame of the given {@code type} for this ticket (frames without a type are
+   * ignored).
+   */
+  private static JsonNode awaitTypedFrame(Tap tap, UUID sosId, String type, Duration wait)
+      throws Exception {
+    long deadline = System.currentTimeMillis() + wait.toMillis();
+    while (System.currentTimeMillis() < deadline) {
+      String frame = tap.next(Duration.ofMillis(deadline - System.currentTimeMillis()));
+      if (frame == null) break;
+      JsonNode n = parse(frame);
+      if (n.has("type")
+          && type.equals(n.get("type").asString())
+          && n.has("sosId")
+          && sosId.toString().equals(n.get("sosId").asString())) {
+        return n;
+      }
+    }
+    throw new AssertionError("no " + type + " frame for " + sosId + " within " + wait);
   }
 
   private static H3Core h3() {

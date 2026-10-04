@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -31,7 +32,8 @@ class KafkaFlowIntegrationTest extends FlowTestSupport {
         + ",\"longitude\":"
         + lng
         + ",\"timestamp\":\""
-        + OffsetDateTime.now()
+        // UTC on purpose: whatever offset the producer wrote, the client must get +07:00.
+        + OffsetDateTime.now(ZoneOffset.UTC)
         + "\"}";
   }
 
@@ -51,11 +53,9 @@ class KafkaFlowIntegrationTest extends FlowTestSupport {
     String frame = location.next(WAIT);
     assertThat(frame).as("frame from the Kafka fallback consumer").isNotNull();
     assertThat(parse(frame).get("latitude").asDouble()).isEqualTo(11.5611);
-    finding(
-        "Kafka fallback path: produced timestamp "
-            + OffsetDateTime.now().getOffset()
-            + " offset, client received = "
-            + parse(frame).get("timestamp").asString());
+    assertThat(parse(frame).get("timestamp").asString())
+        .as("timestamp a client receives over the Kafka path")
+        .endsWith("+07:00");
     customer.disconnect();
   }
 
@@ -122,7 +122,9 @@ class KafkaFlowIntegrationTest extends FlowTestSupport {
             eq(recipient),
             eq("Accepted"),
             eq("Your bid was accepted"),
-            eq(Map.of("type", "BID_ACCEPTED", "sosId", sosId.toString())));
+            eq(Map.of("type", "BID_ACCEPTED", "sosId", sosId.toString())),
+            // The listener reads the record's Kafka headers into the push's idempotency key.
+            org.mockito.ArgumentMatchers.notNull());
   }
 
   @Test
@@ -144,6 +146,7 @@ class KafkaFlowIntegrationTest extends FlowTestSupport {
         .send(
             org.mockito.ArgumentMatchers.any(),
             eq(marker),
+            org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any());
   }

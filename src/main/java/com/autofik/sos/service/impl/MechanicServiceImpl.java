@@ -1,10 +1,7 @@
 package com.autofik.sos.service.impl;
 
-import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.MechanicSkill;
-import com.autofik.sos.domain.enums.BidStatus;
-import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.request.CreateMechanicRequest;
@@ -63,10 +60,6 @@ public class MechanicServiceImpl implements MechanicService {
       new GeometryFactory(new PrecisionModel(), 4326);
   // The service is Cambodia-only — see the coordinate bounds on the controller.
   private static final ZoneId CAMBODIA = ZoneId.of("Asia/Phnom_Penh");
-  // A job is live while the ticket is unresolved — the window in which the driver may watch
-  // their mechanic approach.
-  private static final List<SosStatus> ACTIVE_STATUSES =
-      List.of(SosStatus.ACCEPTED, SosStatus.ON_THE_WAY, SosStatus.ARRIVED, SosStatus.IN_PROGRESS);
   private static final H3Core H3;
 
   static {
@@ -344,12 +337,7 @@ public class MechanicServiceImpl implements MechanicService {
   // "Active job" is the ACCEPTED bid: it is what assigns a mechanic to a driver, and it ends
   // when the SOS leaves an active state.
   private boolean hasActiveJobWith(UUID mechanicId, UUID userId) {
-    return bidSosRepository
-        .findFirstByMechanicMechanicIdAndStatus(mechanicId, BidStatus.ACCEPTED)
-        .map(BidSos::getSosRequest)
-        .filter(sos -> ACTIVE_STATUSES.contains(sos.getStatus()))
-        .map(sos -> sos.getUser().getUserId().equals(userId))
-        .orElse(false);
+    return bidSosRepository.isOnActiveJobWithDriver(mechanicId, userId);
   }
 
   @Override

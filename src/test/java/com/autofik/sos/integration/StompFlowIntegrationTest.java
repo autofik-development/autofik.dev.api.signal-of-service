@@ -41,6 +41,8 @@ class StompFlowIntegrationTest extends FlowTestSupport {
     Driver d = newDriver();
     Mechanic m = newMechanic(11.55, 104.92);
     UUID sosId = createSosOk(d);
+    // Only the assigned mechanic's pings are broadcast on this SOS.
+    assignMechanic(d, m, sosId);
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession mechanic =
         stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));
@@ -55,11 +57,11 @@ class StompFlowIntegrationTest extends FlowTestSupport {
     assertThat(parse(frame).get("longitude").asDouble()).isEqualTo(104.9302);
     assertThat(parse(frame).get("mechanicId").asString()).isEqualTo(m.getMechanicId().toString());
     assertThat(parse(frame).get("sosId").asString()).isEqualTo(sosId.toString());
-    // The event is documented as Cambodian local time (+07:00); record what a client really gets.
-    finding(
-        "Redis pub/sub path: timestamp a client receives = "
-            + parse(frame).get("timestamp").asString()
-            + " (documented as +07:00 local time)");
+    // The event is documented as Cambodian local time (+07:00): the client must get that offset,
+    // not the UTC ("...Z") that reading the event back from Redis would give.
+    assertThat(parse(frame).get("timestamp").asString())
+        .as("timestamp a client receives over the Redis path")
+        .endsWith("+07:00");
     // Presence of the Postgres-write throttle in Redis proves the ping also took the Redis path.
     assertThat(redis.hasKey("mechanic:pg-sync:" + m.getMechanicId())).isTrue();
     customer.disconnect();
@@ -88,6 +90,8 @@ class StompFlowIntegrationTest extends FlowTestSupport {
     Driver d = newDriver();
     Mechanic m = newMechanic(11.55, 104.92);
     UUID sosId = createSosOk(d);
+    // Only the assigned mechanic's pings are broadcast on this SOS.
+    assignMechanic(d, m, sosId);
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession mechanic =
         stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));

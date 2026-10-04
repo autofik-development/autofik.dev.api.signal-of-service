@@ -23,6 +23,8 @@ public interface SosMapper {
   @Mapping(target = "locationAddress", source = "locationAddress")
   @Mapping(target = "broadcastRadiusKm", source = "broadcastRadiusKm")
   @Mapping(target = "mechanic", ignore = true)
+  @Mapping(target = "pendingCompletionHistoryId", ignore = true)
+  @Mapping(target = "pendingCompletionApproveBy", ignore = true)
   @Mapping(target = "durationSeconds", expression = "java(durationSeconds(sosRequest))")
   SosRequestResponse toResponse(SosRequest sosRequest);
 

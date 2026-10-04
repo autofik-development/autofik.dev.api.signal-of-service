@@ -50,7 +50,8 @@ public class MechanicLocationRedisListener implements MessageListener {
           objectMapper.readValue(message.getBody(), MechanicLocationEvent.class);
 
       // Forward the event to the active client/mechanic WebSocket subscriber channel
-      messagingTemplate.convertAndSend("/topic/sos/" + sosId + "/location", event);
+      messagingTemplate.convertAndSend(
+          "/topic/sos/" + sosId + "/location", event.withCambodianTimestamp());
     } catch (Exception e) {
       // Log serialization or routing issues without interrupting the Redis network listener thread
       log.error("Failed to relay Redis location message to WebSocket: {}", e.getMessage());

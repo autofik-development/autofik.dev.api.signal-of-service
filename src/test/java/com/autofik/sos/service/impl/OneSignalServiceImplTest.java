@@ -36,7 +36,7 @@ class OneSignalServiceImplTest {
   void shouldNotPublishDlqWhenPushSucceeds() throws ApiException {
     UUID recipientId = UUID.randomUUID();
 
-    oneSignalService.send(recipientId, "Test title", "Test body", Map.of("type", "TEST"));
+    oneSignalService.send(recipientId, "Test title", "Test body", Map.of("type", "TEST"), null);
 
     verify(oneSignalApi).createNotification(any(Notification.class));
     verify(sosEventProducer, never()).publishOneSignalPushFailed(any());
@@ -52,7 +52,7 @@ class OneSignalServiceImplTest {
 
     doThrow(exception).when(oneSignalApi).createNotification(any(Notification.class));
 
-    oneSignalService.send(recipientId, "Test title", "Test body", Map.of("type", "TEST"));
+    oneSignalService.send(recipientId, "Test title", "Test body", Map.of("type", "TEST"), null);
 
     ArgumentCaptor<OneSignalPushFailedEvent> captor =
         ArgumentCaptor.forClass(OneSignalPushFailedEvent.class);
@@ -74,7 +74,7 @@ class OneSignalServiceImplTest {
         .when(oneSignalApi)
         .createNotification(any(Notification.class));
 
-    oneSignalService.send(recipientId, "Test title", "Test body", Map.of("type", "TEST"));
+    oneSignalService.send(recipientId, "Test title", "Test body", Map.of("type", "TEST"), null);
 
     ArgumentCaptor<OneSignalPushFailedEvent> captor =
         ArgumentCaptor.forClass(OneSignalPushFailedEvent.class);
@@ -95,7 +95,7 @@ class OneSignalServiceImplTest {
     List<UUID> recipients =
         java.util.stream.Stream.generate(UUID::randomUUID).limit(2_500).toList();
 
-    oneSignalService.sendToMany(recipients, "t", "b", Map.of("type", "BID_REJECTED"));
+    oneSignalService.sendToMany(recipients, "t", "b", Map.of("type", "BID_REJECTED"), null);
 
     ArgumentCaptor<Notification> sent = ArgumentCaptor.forClass(Notification.class);
     verify(oneSignalApi, times(2)).createNotification(sent.capture());
@@ -114,7 +114,7 @@ class OneSignalServiceImplTest {
     List<UUID> recipients = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
     doThrow(new RuntimeException("boom")).when(oneSignalApi).createNotification(any());
 
-    oneSignalService.sendToMany(recipients, "t", "b", Map.of());
+    oneSignalService.sendToMany(recipients, "t", "b", Map.of(), null);
 
     ArgumentCaptor<OneSignalPushFailedEvent> failed =
         ArgumentCaptor.forClass(OneSignalPushFailedEvent.class);
@@ -122,5 +122,46 @@ class OneSignalServiceImplTest {
     assertThat(failed.getAllValues())
         .extracting(OneSignalPushFailedEvent::recipientId)
         .containsExactlyElementsOf(recipients);
+  }
+
+  /** The key reaches OneSignal, which drops a repeat with the same key for 30 days. */
+  @Test
+  void send_passesTheIdempotencyKeyToOneSignal() throws ApiException {
+    UUID key = UUID.randomUUID();
+
+    oneSignalService.send(UUID.randomUUID(), "t", "b", Map.of(), key);
+
+    ArgumentCaptor<Notification> sent = ArgumentCaptor.forClass(Notification.class);
+    verify(oneSignalApi).createNotification(sent.capture());
+    assertThat(sent.getValue().getIdempotencyKey()).isEqualTo(key.toString());
+  }
+
+  /**
+   * Each chunk is a separate notification. With one shared key OneSignal would drop every chunk
+   * after the first, so each chunk gets its own, and the same batch sent again gets the same keys.
+   */
+  @Test
+  void sendToMany_givesEachChunkItsOwnStableKey() throws ApiException {
+    List<UUID> recipients =
+        java.util.stream.Stream.generate(UUID::randomUUID).limit(4_500).toList();
+    UUID key = UUID.randomUUID();
+
+    oneSignalService.sendToMany(recipients, "t", "b", Map.of(), key);
+    oneSignalService.sendToMany(recipients, "t", "b", Map.of(), key);
+
+    ArgumentCaptor<Notification> sent = ArgumentCaptor.forClass(Notification.class);
+    verify(oneSignalApi, times(6)).createNotification(sent.capture());
+    List<String> keys = sent.getAllValues().stream().map(Notification::getIdempotencyKey).toList();
+    assertThat(keys.subList(0, 3)).doesNotHaveDuplicates().startsWith(key.toString());
+    assertThat(keys.subList(3, 6)).isEqualTo(keys.subList(0, 3));
+  }
+
+  @Test
+  void noKey_sendsWithoutOne() throws ApiException {
+    oneSignalService.send(UUID.randomUUID(), "t", "b", Map.of(), null);
+
+    ArgumentCaptor<Notification> sent = ArgumentCaptor.forClass(Notification.class);
+    verify(oneSignalApi).createNotification(sent.capture());
+    assertThat(sent.getValue().getIdempotencyKey()).isNull();
   }
 }
