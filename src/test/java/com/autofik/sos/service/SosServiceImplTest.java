@@ -123,6 +123,7 @@ class SosServiceImplTest {
     ReflectionTestUtils.setField(sosService, "biddingWindowSeconds", 60);
     ReflectionTestUtils.setField(sosService, "maxRebroadcast", 3);
     ReflectionTestUtils.setField(sosService, "createCooldownSeconds", 60);
+    ReflectionTestUtils.setField(sosService, "completionApprovalWindowSeconds", 120L);
     ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 25);
     ReflectionTestUtils.setField(sosService, "offerEstimateMaxAgeSeconds", 300);
     // create() runs its writes through the template; run the callback inline.
@@ -165,6 +166,8 @@ class SosServiceImplTest {
             null,
             null,
             0,
+            null,
+            null,
             null,
             null,
             null);
@@ -904,6 +907,197 @@ class SosServiceImplTest {
     assertThat(sosService.getById(sosId, userId)).isEqualTo(sosResponse);
   }
 
+  // ── completion approval window: unanswered requests are approved automatically ──
+
+  @SuppressWarnings("unchecked")
+  private void runSweepTransactionsInline() {
+    doAnswer(
+            inv -> {
+              ((java.util.function.Consumer<org.springframework.transaction.TransactionStatus>)
+                      inv.getArgument(0))
+                  .accept(null);
+              return null;
+            })
+        .when(transactionTemplate)
+        .executeWithoutResult(any());
+  }
+
+  private SosStatusHistory overdueCompletion(SosRequest sos) {
+    SosStatusHistory h = waitingCompletion(sos);
+    h.setProposedBy(mechanic);
+    h.setProposedAt(LocalDateTime.now().minusMinutes(5));
+    return h;
+  }
+
+  private void stubOverdue(SosStatusHistory h) {
+    runSweepTransactionsInline();
+    when(sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(
+            eq(ApprovedStatus.PENDING_APPROVAL), any(LocalDateTime.class)))
+        .thenReturn(List.of(h));
+    when(sosStatusHistoryRepository.findById(h.getId())).thenReturn(Optional.of(h));
+  }
+
+  @Test
+  void approveOverdueCompletions_completesTheJob_asASystemApproval() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    SosStatusHistory h = overdueCompletion(sos);
+    stubOverdue(h);
+    when(sosStatusHistoryRepository.findApprovedStatusById(h.getId()))
+        .thenReturn(Optional.of(ApprovedStatus.PENDING_APPROVAL));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.ACCEPTED);
+    assertThat(h.getApprovedBy()).as("approved by the system, not a person").isNull();
+    assertThat(h.getApproveAt()).isNotNull();
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.COMPLETED);
+    assertThat(sos.getJobCompletedAt()).isNotNull();
+    verify(sosEventProducer).publishStatusUpdated(any());
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(userId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "COMPLETION_AUTO_APPROVED", "sosId", sosId)));
+  }
+
+  @Test
+  void approveOverdueCompletions_nothingOverdue_doesNothing() {
+    when(sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(any(), any()))
+        .thenReturn(List.of());
+
+    sosService.approveOverdueCompletions();
+
+    verify(sosRequestRepository, never()).save(any(SosRequest.class));
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+  }
+
+  // The customer and the sweep can answer at the same moment; the customer, who got the lock first,
+  // wins and the sweep must not apply a second decision.
+  @Test
+  void approveOverdueCompletions_whenTheCustomerAnsweredMeanwhile_changesNothing() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    SosStatusHistory h = overdueCompletion(sos);
+    stubOverdue(h);
+    when(sosStatusHistoryRepository.findApprovedStatusById(h.getId()))
+        .thenReturn(Optional.of(ApprovedStatus.REJECTED));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.IN_PROGRESS);
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+  }
+
+  @Test
+  void approveOverdueCompletions_whenTheJobWasCancelled_doesNotCompleteIt() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    sos.setStatus(SosStatus.CANCELLED);
+    SosStatusHistory h = overdueCompletion(sos);
+    stubOverdue(h);
+    when(sosStatusHistoryRepository.findApprovedStatusById(h.getId()))
+        .thenReturn(Optional.of(ApprovedStatus.PENDING_APPROVAL));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.CANCELLED);
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+  }
+
+  @Test
+  void approveOverdueCompletions_oneFailingRequestDoesNotStopTheNext() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    SosStatusHistory broken = overdueCompletion(sos);
+    broken.setId(UUID.randomUUID());
+    SosStatusHistory good = overdueCompletion(sos);
+    runSweepTransactionsInline();
+    when(sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(any(), any()))
+        .thenReturn(List.of(broken, good));
+    when(sosStatusHistoryRepository.findById(broken.getId()))
+        .thenThrow(new IllegalStateException("db hiccup"));
+    when(sosStatusHistoryRepository.findById(good.getId())).thenReturn(Optional.of(good));
+    when(sosStatusHistoryRepository.findApprovedStatusById(good.getId()))
+        .thenReturn(Optional.of(ApprovedStatus.PENDING_APPROVAL));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.COMPLETED);
+  }
+
+  @Test
+  void getById_owner_seesWhenAWaitingCompletionIsApprovedAutomatically() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    SosStatusHistory h = waitingCompletion(sos);
+    LocalDateTime proposed = LocalDateTime.of(2026, 10, 4, 10, 0);
+    h.setProposedAt(proposed);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+    when(sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(Optional.of(h));
+
+    assertThat(sosService.getById(sosId, userId).pendingCompletionApproveBy())
+        .isEqualTo(proposed.plusSeconds(120));
+  }
+
+  // ── pending completion: GET /sos/{id} and the proposal ───────────────────
+
+  private SosRequest inProgressSosOwnedByUser() {
+    return SosRequest.builder()
+        .sosId(sosId)
+        .problemType(resolvedKey)
+        .status(SosStatus.IN_PROGRESS)
+        .user(user)
+        .vehicle(vehicle)
+        .build();
+  }
+
+  private SosStatusHistory waitingCompletion(SosRequest sos) {
+    SosStatusHistory h =
+        SosStatusHistory.builder()
+            .sosRequest(sos)
+            .fromStatus(SosStatus.IN_PROGRESS)
+            .toStatus(SosStatus.COMPLETED)
+            .approvedStatus(ApprovedStatus.PENDING_APPROVAL)
+            .build();
+    h.setId(historyId);
+    return h;
+  }
+
+  @Test
+  void getById_owner_seesTheHistoryIdOfAWaitingCompletion() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+    when(sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(Optional.of(waitingCompletion(sos)));
+
+    assertThat(sosService.getById(sosId, userId).pendingCompletionHistoryId()).isEqualTo(historyId);
+  }
+
+  @Test
+  void getById_owner_nothingWaiting_showsNoHistoryId() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+
+    assertThat(sosService.getById(sosId, userId).pendingCompletionHistoryId()).isNull();
+  }
+
+  @Test
+  void getById_aMechanic_neverSeesTheHistoryId_andTheLookupIsNotEvenRun() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    UUID assignedMechanic = UUID.randomUUID();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, assignedMechanic))
+        .thenReturn(true);
+
+    assertThat(sosService.getById(sosId, assignedMechanic).pendingCompletionHistoryId()).isNull();
+
+    verify(sosStatusHistoryRepository, never())
+        .findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(any(), any());
+  }
+
   @Test
   void getById_notFound_throwsEntityNotFoundException() {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
@@ -1159,6 +1353,28 @@ class SosServiceImplTest {
     assertThat(saved.getToStatus()).isEqualTo(SosStatus.COMPLETED);
     assertThat(saved.getApprovedStatus()).isEqualTo(ApprovedStatus.PENDING_APPROVAL);
     assertThat(result).isEqualTo(historyResponse);
+  }
+
+  // A double tap or a timeout retry must not leave two approvable rows or push the customer twice.
+  @Test
+  void proposeStatusChange_whenOneIsAlreadyWaiting_returnsIt_withoutANewRowOrPush() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    stubAssignedMechanic(sos);
+    SosStatusHistory waiting = waitingCompletion(sos);
+    when(sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(Optional.of(waiting));
+    when(sosStatusHistoryMapper.toResponse(waiting)).thenReturn(historyResponse);
+
+    SosStatusHistoryResponse result =
+        sosService.proposeStatusChange(
+            sosId, new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED));
+
+    assertThat(result).isEqualTo(historyResponse);
+    verify(sosStatusHistoryRepository, never()).save(any(SosStatusHistory.class));
+    verify(sosEventProducer, never()).publishNotification(any());
   }
 
   // ARRIVED can no longer skip straight to COMPLETED now that IN_PROGRESS is mandatory.

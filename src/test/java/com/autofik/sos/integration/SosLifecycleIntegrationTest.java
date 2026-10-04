@@ -188,6 +188,111 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
         .statusCode();
   }
 
+  /**
+   * The historyId needed to approve a completion used to arrive only in one WebSocket frame. A
+   * customer who missed it (app closed, tapped the push) could not approve, and the ticket sat in
+   * IN_PROGRESS, blocking a new SOS. The owner now reads it from GET /sos/{id}.
+   */
+  @Test
+  void aWaitingCompletion_isReadableByTheOwner_andARetriedProposalIsNotDuplicated()
+      throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = inProgressSos(d, m);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("nothing proposed")
+        .isNull();
+
+    UUID historyId = proposeCompletionOk(m, sosId);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("the owner can read the waiting request")
+        .isEqualTo(historyId);
+    assertThat(pendingCompletionSeenBy(mechanicContextHeader(m), sosId))
+        .as("the mechanic is not shown it")
+        .isNull();
+
+    assertThat(proposeCompletionOk(m, sosId))
+        .as("a retried proposal returns the request that is already waiting")
+        .isEqualTo(historyId);
+    assertThat(
+            historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId).stream()
+                .filter(h -> h.getApprovedStatus() == ApprovedStatus.PENDING_APPROVAL)
+                .count())
+        .isEqualTo(1);
+
+    assertThat(approveCompletion(d, historyId, ApprovedStatus.REJECTED).statusCode())
+        .isEqualTo(200);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("a rejected request is no longer waiting")
+        .isNull();
+
+    UUID second = proposeCompletionOk(m, sosId);
+    assertThat(second).as("after a rejection a new request is created").isNotEqualTo(historyId);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId)).isEqualTo(second);
+    assertThat(approveCompletion(d, second, ApprovedStatus.ACCEPTED).statusCode()).isEqualTo(200);
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId))
+        .as("nothing is waiting once the job is completed")
+        .isNull();
+  }
+
+  /**
+   * A customer who never answers must not leave the job open: it blocks a new SOS and keeps the
+   * mechanic tied to it. After the approval window the sweep approves the request as the system.
+   */
+  @Test
+  void anUnansweredCompletion_isApprovedAutomatically_afterTheWindow() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = inProgressSos(d, m);
+    UUID historyId = proposeCompletionOk(m, sosId);
+
+    HttpResponse<String> before =
+        send(req("/api/v1/sos/" + sosId).header("user-context", userContextHeader(d)).GET());
+    assertThat(parse(before.body()).get("pendingCompletionApproveBy").isNull())
+        .as("the owner is shown when the request will be approved automatically")
+        .isFalse();
+
+    // Inside the window nothing happens.
+    sosService.approveOverdueCompletions();
+    assertThat(sosStatus(d, sosId)).isEqualTo("IN_PROGRESS");
+
+    SosStatusHistory row = historyRepository.findById(historyId).orElseThrow();
+    row.setProposedAt(LocalDateTime.now().minusMinutes(5));
+    historyRepository.save(row);
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sosStatus(d, sosId)).isEqualTo("COMPLETED");
+    SosStatusHistory decided = historyRepository.findById(historyId).orElseThrow();
+    assertThat(decided.getApprovedStatus()).isEqualTo(ApprovedStatus.ACCEPTED);
+    assertThat(decided.getApprovedBy()).as("approved by the system").isNull();
+    assertThat(pendingCompletionSeenBy(userContextHeader(d), sosId)).isNull();
+    assertThat(approveCompletion(d, historyId, ApprovedStatus.ACCEPTED).statusCode())
+        .as("the customer answering afterwards is told it was already decided")
+        .isEqualTo(409);
+  }
+
+  private String userContextHeader(Driver d) {
+    return userContext(d.user().getUserId());
+  }
+
+  private String mechanicContextHeader(Mechanic m) {
+    return mechanicContext(m.getMechanicId());
+  }
+
+  /** The pendingCompletionHistoryId GET /sos/{id} shows to the caller, or null. */
+  private UUID pendingCompletionSeenBy(String contextHeaderValue, UUID sosId) throws Exception {
+    boolean mechanic = contextHeaderValue.contains("\"mechanic\"");
+    HttpResponse<String> r =
+        send(
+            req("/api/v1/sos/" + sosId)
+                .header(mechanic ? "mechanic-context" : "user-context", contextHeaderValue)
+                .GET());
+    assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+    JsonNode node = parse(r.body()).get("pendingCompletionHistoryId");
+    return node == null || node.isNull() ? null : UUID.fromString(node.asString());
+  }
+
   @Test
   void completedCannotBeSetDirectly_is400_andTheTicketDoesNotMove() throws Exception {
     Driver d = newDriver();

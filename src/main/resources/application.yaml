@@ -184,6 +184,13 @@ sos:
     # Seconds mechanics have to bid per broadcast attempt, and max rebroadcasts per ticket.
     window-seconds: ${SOS_BIDDING_WINDOW_SECONDS:60}
     max-rebroadcast: ${SOS_MAX_REBROADCAST:3}
+  completion:
+    # How long the customer has to approve or reject a mechanic's completion request. After that it
+    # is approved automatically, so an unanswered request cannot leave the job open (it blocks the
+    # customer from a new SOS and keeps the mechanic tied to it). Default 2 minutes (120 s); 90 s also works.
+    approval-window-seconds: ${SOS_COMPLETION_APPROVAL_WINDOW_SECONDS:120}
+    # How often the service looks for requests past that window.
+    sweep-interval-ms: ${SOS_COMPLETION_SWEEP_INTERVAL_MS:15000}
   create:
     # Minimum gap between two SOS creations by the same user.
     cooldown-seconds: ${SOS_CREATE_COOLDOWN_SECONDS:60}

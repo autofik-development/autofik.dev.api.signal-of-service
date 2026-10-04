@@ -251,7 +251,7 @@ class SosStateMachineFuzzTest {
         .thenReturn(
             new SosRequestResponse(
                 sosId, null, null, null, status, null, null, null, null, null, null, null, null,
-                null, 0, null, null, null));
+                null, 0, null, null, null, null, null));
     return sos;
   }
 
