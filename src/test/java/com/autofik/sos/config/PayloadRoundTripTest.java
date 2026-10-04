@@ -169,10 +169,11 @@ class PayloadRoundTripTest {
     ArgumentCaptor<MechanicLocationEvent> relayed =
         ArgumentCaptor.forClass(MechanicLocationEvent.class);
     verify(stomp).convertAndSend(eq("/topic/sos/" + SOS + "/location"), relayed.capture());
-    // The instant must survive. The offset does not: Jackson 3 reads +07:00 back as UTC (Z), so
-    // a client on the Redis path sees "...Z" where the Kafka path keeps the sender's offset. See
-    // reports/report-unit-tests.md, findings.
+    // Jackson 3 reads +07:00 back as UTC (Z); the listener puts Cambodian time back before
+    // relaying,
+    // so the instant and the +07:00 offset both reach the client.
     assertThat(relayed.getValue().timestamp().toInstant()).isEqualTo(sent.timestamp().toInstant());
+    assertThat(relayed.getValue().timestamp().getOffset()).isEqualTo(ZoneOffset.ofHours(7));
     assertThat(relayed.getValue())
         .usingRecursiveComparison()
         .ignoringFields("timestamp")

@@ -28,7 +28,8 @@ public class MechanicLocationConsumer {
       return;
     }
     try {
-      messagingTemplate.convertAndSend("/topic/sos/" + event.sosId() + "/location", event);
+      messagingTemplate.convertAndSend(
+          "/topic/sos/" + event.sosId() + "/location", event.withCambodianTimestamp());
     } catch (Exception e) {
       log.error(
           "Failed to relay Kafka location event to WebSocket sosId={}: {}",

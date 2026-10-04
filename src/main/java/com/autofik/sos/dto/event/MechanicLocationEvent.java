@@ -1,6 +1,7 @@
 package com.autofik.sos.dto.event;
 
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.UUID;
 
 /**
@@ -23,4 +24,26 @@ public record MechanicLocationEvent(
     Long remainingDistanceM,
     Long remainingDurationS,
     String remainingDistanceText,
-    String remainingDurationText) {}
+    String remainingDurationText) {
+
+  private static final ZoneId CAMBODIA = ZoneId.of("Asia/Phnom_Penh");
+
+  /**
+   * The same event with {@code timestamp} at Cambodian local time (+07:00). Reading the event back
+   * from Redis or Kafka moves the offset to UTC (Jackson adjusts dates to the context time zone),
+   * so the relays call this before sending to clients. The instant never changes.
+   */
+  public MechanicLocationEvent withCambodianTimestamp() {
+    if (timestamp == null) return this;
+    return new MechanicLocationEvent(
+        sosId,
+        mechanicId,
+        latitude,
+        longitude,
+        timestamp.atZoneSameInstant(CAMBODIA).toOffsetDateTime(),
+        remainingDistanceM,
+        remainingDurationS,
+        remainingDistanceText,
+        remainingDurationText);
+  }
+}
