@@ -13,7 +13,7 @@ User submits SOS
 ┌─────────────────────────────────────────────────┐
 │              SOS Request (PENDING)              │
 │  problem type · GPS location · vehicle          │
-│  broadcastRadiusKm (5–30 km, default 15 km)     │
+│  broadcastRadiusKm (5–20 km, default 15 km)     │
 └─────────────────────────────────────────────────┘
        │
        │  System finds nearby available mechanics
@@ -236,7 +236,7 @@ All GPS coordinates are restricted to **Cambodia only** (WGS-84 bounding box):
 
 Applies to: Create SOS, Create Mechanic, Update Mechanic Location, and Find Available Mechanics endpoints.
 
-**`broadcastRadiusKm`** on Create SOS: optional integer, 5–30 km. Defaults to 15 km internally when omitted.
+**`broadcastRadiusKm`** on Create SOS: optional integer, 5–20 km. Defaults to 15 km internally when omitted.
 
 ---
 
@@ -360,5 +360,5 @@ The mobile app must call `OneSignal.login(userId)` with the user's UUID on login
 | WebSocket broadcasts | Complete — bid acceptance, status changes, location streaming, new SOS fan-out to nearby mechanics |
 | Push notifications | Complete — OneSignal push for bid received, bid accepted/rejected/cancelled, status transitions, completion flow |
 | SOS media (photo/video) | Complete — upload and retrieve via S3-compatible storage |
-| Input validation | Complete — Cambodia bounding box on all lat/lng inputs; `broadcastRadiusKm` 5–30 km; rate limiting (60 s cooldown + active SOS guard) |
+| Input validation | Complete — Cambodia bounding box on all lat/lng inputs; `broadcastRadiusKm` 5–20 km; rate limiting (60 s cooldown + active SOS guard) |
 | JWT validation | Pending — token issued by SSO service; this service validates only |

@@ -3,19 +3,23 @@ package com.autofik.sos.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Feedback;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.MechanicRate;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.entity.Vehicle;
+import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
 import com.autofik.sos.mapper.FeedbackMapper;
+import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.FeedbackRepository;
 import com.autofik.sos.repository.MechanicRateRepository;
 import com.autofik.sos.repository.MechanicRepository;
@@ -38,6 +42,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.access.AccessDeniedException;
 
 @ExtendWith(MockitoExtension.class)
 class FeedbackServiceImplTest {
@@ -47,6 +52,7 @@ class FeedbackServiceImplTest {
   @Mock UserRepository userRepository;
   @Mock MechanicRepository mechanicRepository;
   @Mock MechanicRateRepository mechanicRateRepository;
+  @Mock BidSosRepository bidSosRepository;
   @Mock FeedbackMapper feedbackMapper;
 
   @InjectMocks FeedbackServiceImpl feedbackService;
@@ -92,6 +98,10 @@ class FeedbackServiceImplTest {
             .build();
     feedbackResponse =
         new FeedbackResponse(feedbackId, null, BigDecimal.valueOf(4.5), null, null, null);
+    // By default the mechanic under test is the one who won this job.
+    lenient()
+        .when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(BidSos.builder().mechanic(mechanic).build()));
   }
 
   // ── create ────────────────────────────────────────────────────────────────
@@ -203,16 +213,66 @@ class FeedbackServiceImplTest {
     when(feedbackRepository.findBySosRequestSosId(sosId)).thenReturn(Optional.of(feedback));
     when(feedbackMapper.toResponse(feedback)).thenReturn(feedbackResponse);
 
-    assertThat(feedbackService.getBySosRequest(sosId)).isEqualTo(feedbackResponse);
+    assertThat(feedbackService.getBySosRequest(sosId, userId)).isEqualTo(feedbackResponse);
   }
 
   @Test
   void getBySosRequest_notFound_throwsEntityNotFoundException() {
     when(feedbackRepository.findBySosRequestSosId(sosId)).thenReturn(Optional.empty());
 
-    assertThatThrownBy(() -> feedbackService.getBySosRequest(sosId))
+    assertThatThrownBy(() -> feedbackService.getBySosRequest(sosId, userId))
         .isInstanceOf(EntityNotFoundException.class)
         .hasMessageContaining(sosId.toString());
+  }
+
+  @Test
+  void getBySosRequest_assignedMechanic_canRead() {
+    when(feedbackRepository.findBySosRequestSosId(sosId)).thenReturn(Optional.of(feedback));
+    when(feedbackMapper.toResponse(feedback)).thenReturn(feedbackResponse);
+
+    assertThat(feedbackService.getBySosRequest(sosId, mechanicId)).isEqualTo(feedbackResponse);
+  }
+
+  /** A stranger gets the same answer as a SOS with no feedback, so existence is not revealed. */
+  @Test
+  void getBySosRequest_stranger_getsNotFound() {
+    when(feedbackRepository.findBySosRequestSosId(sosId)).thenReturn(Optional.of(feedback));
+
+    assertThatThrownBy(() -> feedbackService.getBySosRequest(sosId, UUID.randomUUID()))
+        .isInstanceOf(EntityNotFoundException.class);
+    verify(feedbackMapper, org.mockito.Mockito.never()).toResponse(any());
+  }
+
+  @Test
+  void create_reviewerIsNotTheSosOwner_isDenied() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
+    UUID stranger = UUID.randomUUID();
+
+    assertThatThrownBy(
+            () ->
+                feedbackService.create(
+                    new CreateFeedbackRequest(
+                        stranger, mechanicId, sosId, BigDecimal.valueOf(1), "bad")))
+        .isInstanceOf(AccessDeniedException.class);
+    verify(feedbackRepository, org.mockito.Mockito.never()).save(any());
+  }
+
+  /** The skew attack: a real customer rating a mechanic who never worked their job. */
+  @Test
+  void create_mechanicWasNotAssignedToThisSos_isDenied() {
+    UUID otherMechanicId = UUID.randomUUID();
+    Mechanic other = Mechanic.builder().mechanicId(otherMechanicId).fullName("Eve").build();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+    when(mechanicRepository.findById(otherMechanicId)).thenReturn(Optional.of(other));
+
+    assertThatThrownBy(
+            () ->
+                feedbackService.create(
+                    new CreateFeedbackRequest(
+                        userId, otherMechanicId, sosId, BigDecimal.valueOf(1), "bad")))
+        .isInstanceOf(AccessDeniedException.class);
+    verify(feedbackRepository, org.mockito.Mockito.never()).save(any());
   }
 
   // ── getByMechanic ─────────────────────────────────────────────────────────
@@ -226,5 +286,21 @@ class FeedbackServiceImplTest {
 
     Page<FeedbackResponse> result = feedbackService.getByMechanic(mechanicId, pageable);
     assertThat(result.getContent()).containsExactly(feedbackResponse);
+  }
+
+  @Test
+  void create_secondFeedbackForSameSos_isRejectedBeforeAnythingIsSaved() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(completedSos));
+    when(feedbackRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
+
+    assertThatThrownBy(
+            () ->
+                feedbackService.create(
+                    new CreateFeedbackRequest(
+                        userId, mechanicId, sosId, BigDecimal.valueOf(5), "again")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("already been submitted");
+
+    verify(feedbackRepository, org.mockito.Mockito.never()).save(any());
   }
 }

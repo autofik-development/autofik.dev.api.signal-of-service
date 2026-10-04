@@ -30,6 +30,7 @@ import jakarta.persistence.EntityNotFoundException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,7 +73,9 @@ class SosServiceImplTest {
   @Mock SimpMessagingTemplate messagingTemplate;
   @Mock TaskScheduler taskScheduler;
   @Mock StringRedisTemplate redisTemplate;
+  @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
   @Mock ValueOperations<String, String> valueOps;
+  @Mock org.springframework.data.redis.core.HashOperations<String, Object, Object> hashOps;
   @Mock org.springframework.beans.factory.ObjectProvider<SosMediaService> sosMediaService;
   @Mock SosMediaService sosMediaServiceBean;
 
@@ -120,8 +123,23 @@ class SosServiceImplTest {
     ReflectionTestUtils.setField(sosService, "biddingWindowSeconds", 60);
     ReflectionTestUtils.setField(sosService, "maxRebroadcast", 3);
     ReflectionTestUtils.setField(sosService, "createCooldownSeconds", 60);
+    ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 25);
+    ReflectionTestUtils.setField(sosService, "offerEstimateMaxAgeSeconds", 300);
+    // create() runs its writes through the template; run the callback inline.
+    lenient()
+        .when(transactionTemplate.execute(any()))
+        .thenAnswer(
+            inv ->
+                ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null));
     // Broadcast payload carries photo URLs; the mocked bean returns an empty list.
     lenient().when(sosMediaService.getObject()).thenReturn(sosMediaServiceBean);
+    // The geo filters return ids; the entities come back through findAllWithRateById.
+    lenient()
+        .when(mechanicRepository.findAllWithRateById(anyList()))
+        .thenAnswer(
+            inv -> ((List<UUID>) inv.getArgument(0)).stream().map(knownMechanics::get).toList());
     pendingSos =
         SosRequest.builder()
             .sosId(sosId)
@@ -521,6 +539,26 @@ class SosServiceImplTest {
     verify(userRepository, never()).findById(any());
   }
 
+  @Test
+  void create_redisDown_failsOpen_andStillCreatesTheTicket() {
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+    when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    when(medusaService.resolveServiceGroupKey(serviceGroupId)).thenReturn(resolvedKey);
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+        .thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("down"));
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    assertThat(sosService.create(request)).isNotNull();
+    verify(sosRequestRepository, atLeastOnce()).save(any(SosRequest.class));
+  }
+
   // ── create: starting-radius escalation (item 16a, immediate variant) ───────
 
   @Test
@@ -530,7 +568,7 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(List.of(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
     stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -544,6 +582,206 @@ class SosServiceImplTest {
         .publishNotification(argThat(n -> n.type().equals("SOS_AUTO_REBROADCAST")));
   }
 
+  // ── create: external calls stay out of the transaction ─────────────────────
+
+  /** Medusa and Google can each take seconds; none may hold a DB connection while they run. */
+  @Test
+  void create_externalCalls_runOutsideTheTransaction() {
+    java.util.concurrent.atomic.AtomicBoolean inTx =
+        new java.util.concurrent.atomic.AtomicBoolean(false);
+    doAnswer(
+            inv -> {
+              inTx.set(true);
+              try {
+                return ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null);
+              } finally {
+                inTx.set(false);
+              }
+            })
+        .when(transactionTemplate)
+        .execute(any());
+    // Guards, minus Medusa (stubbed below so it can assert where it was called from).
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+    when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+    when(medusaService.resolveServiceGroupKey(any()))
+        .thenAnswer(
+            inv -> {
+              assertThat(inTx.get()).as("Medusa called inside the transaction").isFalse();
+              return resolvedKey;
+            });
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble()))
+        .thenAnswer(
+            inv -> {
+              assertThat(inTx.get()).as("Google called inside the transaction").isFalse();
+              return "Somewhere";
+            });
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    stubSaveAssignsSosId();
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15));
+  }
+
+  /** The ticket is committed by then, so a notification failure must not become a 500. */
+  @Test
+  void create_broadcastFailsAfterCommit_stillReturnsTicketAndSchedulesExpiry() {
+    stubCreateGuards();
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    doThrow(new RuntimeException("kafka down")).when(sosEventProducer).publishSosCreated(any());
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    SosRequestResponse result =
+        sosService.create(
+            new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15));
+
+    assertThat(result).isNotNull();
+    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  // ── create: pre-bid road estimate in the job offer ─────────────────────────
+
+  @Test
+  void create_offerEstimate_onlyNearestMechanicsGetOne_inSingleGoogleCall() {
+    ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 1);
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    UUID nearId = UUID.randomUUID();
+    Mechanic near =
+        Mechanic.builder()
+            .mechanicId(nearId)
+            .currentLocation(GEO.createPoint(new Coordinate(100.5020, 13.7560)))
+            .build();
+    // `mechanic` is parked in Phnom Penh, far from the request — it should get no estimate.
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic, near));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic, near));
+    when(googleMapsService.getDistanceInfos(any(), any()))
+        .thenReturn(List.of(new DistanceInfo(800, 420, "0.8 km", "7 mins")));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    verify(googleMapsService, times(1)).getDistanceInfos(argThat(o -> o.size() == 1), any());
+    ArgumentCaptor<SosNotificationEvent> sent = ArgumentCaptor.forClass(SosNotificationEvent.class);
+    verify(messagingTemplate)
+        .convertAndSendToUser(eq(nearId.toString()), eq("/queue/sos-new-request"), sent.capture());
+    assertThat(sent.getValue().estimate().remainingDistanceText()).isEqualTo("0.8 km");
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-new-request"),
+            argThat((SosNotificationEvent e) -> e.estimate() == null));
+  }
+
+  @Test
+  void create_offerEstimate_googleFails_offerStillSentWithoutEstimate() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic));
+    when(googleMapsService.getDistanceInfos(any(), any())).thenReturn(null);
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-new-request"),
+            argThat((SosNotificationEvent e) -> e.estimate() == null));
+  }
+
+  @Test
+  void create_offerEstimate_mechanicAlreadyOffered_reusesStoredEstimateAndSkipsGoogle() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic));
+    // This mechanic already got an estimate for this SOS on an earlier fan-out.
+    when(redisTemplate.opsForHash()).thenReturn(hashOps);
+    when(hashOps.entries(anyString()))
+        .thenReturn(
+            Map.of(
+                mechanicId.toString(),
+                "800	420	0.8 km	7 mins	" + java.time.Instant.now().getEpochSecond()));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    verify(googleMapsService, never()).getDistanceInfos(any(), any());
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-new-request"),
+            argThat(
+                (SosNotificationEvent e) ->
+                    e.estimate() != null && e.estimate().remainingDistanceM() == 800));
+  }
+
+  /** The mechanic has likely moved since a stale estimate was taken, so it is fetched again. */
+  @Test
+  void create_offerEstimate_staleStoredEstimate_isRefetched() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic));
+    when(redisTemplate.opsForHash()).thenReturn(hashOps);
+    long anHourAgo = java.time.Instant.now().getEpochSecond() - 3600;
+    when(hashOps.entries(anyString()))
+        .thenReturn(Map.of(mechanicId.toString(), "800	420	0.8 km	7 mins	" + anHourAgo));
+    when(googleMapsService.getDistanceInfos(any(), any()))
+        .thenReturn(List.of(new DistanceInfo(1200, 600, "1.2 km", "10 mins")));
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    verify(googleMapsService).getDistanceInfos(any(), any());
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-new-request"),
+            argThat(
+                (SosNotificationEvent e) ->
+                    e.estimate() != null && e.estimate().remainingDistanceM() == 1200));
+  }
+
   @Test
   void create_zeroMechanicsAtRequestedRadius_escalatesOnce() {
     stubCreateGuards();
@@ -554,7 +792,7 @@ class SosServiceImplTest {
     // 1st call (resolving @15km): none. 2nd call (resolving @20km): found, stop escalating.
     // 3rd+ calls: fanOutToNearbyMechanics's own independent lookup.
     when(mechanicRepository.findByH3CellsAndSkillTag(any(), any()))
-        .thenReturn(List.of(), List.of(mechanic), List.of(mechanic));
+        .thenReturn(ids(), ids(mechanic), ids(mechanic));
     stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -697,9 +935,9 @@ class SosServiceImplTest {
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
         .thenReturn(false);
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
-        .thenReturn(List.of(mechanic));
+        .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble()))
-        .thenReturn(List.of(mechanic));
+        .thenReturn(ids(mechanic));
     when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
     SosRequestResponse result = sosService.getById(sosId, mechanicId);
     assertThat(result).isEqualTo(sosResponse);
@@ -714,9 +952,8 @@ class SosServiceImplTest {
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
         .thenReturn(false);
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
-        .thenReturn(List.of(mechanic));
-    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble()))
-        .thenReturn(List.of());
+        .thenReturn(ids(mechanic));
+    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble())).thenReturn(ids());
 
     assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
         .isInstanceOf(EntityNotFoundException.class);
@@ -761,10 +998,10 @@ class SosServiceImplTest {
             null);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
-        .thenReturn(List.of(mechanic));
+        .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(25_000.0)))
-        .thenReturn(List.of(mechanic));
+        .thenReturn(ids(mechanic));
     when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
 
     List<MechanicResponse> result = sosService.getNearbyMechanics(sosId, userId);
@@ -778,10 +1015,10 @@ class SosServiceImplTest {
     // broadcastRadiusKm left null — a legacy ticket predating the auto-expand feature.
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
-        .thenReturn(List.of(mechanic));
+        .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(15_000.0))) // sos.broadcast.default-km
-        .thenReturn(List.of(mechanic));
+        .thenReturn(ids(mechanic));
     when(mechanicMapper.toResponse(mechanic))
         .thenReturn(
             new MechanicResponse(
@@ -888,12 +1125,12 @@ class SosServiceImplTest {
   }
 
   @Test
-  void proposeStatusChange_terminalStatus_throwsIllegalStateException() {
+  void proposeStatusChange_terminalStatus_throwsIllegalArgumentException() {
     ProposeStatusChangeRequest request =
         new ProposeStatusChangeRequest(mechanicId, SosStatus.CANCELLED);
 
     assertThatThrownBy(() -> sosService.proposeStatusChange(sosId, request))
-        .isInstanceOf(IllegalStateException.class);
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -1017,7 +1254,7 @@ class SosServiceImplTest {
   @Test
   void updateStatus_completed_rejected_mustUseCompletionEndpoint() {
     assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.COMPLETED))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("POST /api/v1/sos/{sosId}/completion");
   }
 
@@ -1133,6 +1370,102 @@ class SosServiceImplTest {
     verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
   }
 
+  // ── rebroadcast: state change in a short transaction, broadcast outside it ─────
+
+  private SosRequest expiredSosWithRadius() {
+    SosRequest sos = sosAt(SosStatus.EXPIRED);
+    sos.setBroadcastRadiusKm(15);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    // Lenient: the broadcast stubs are not reached when the failure under test hits first.
+    lenient()
+        .when(mechanicRepository.findByH3CellsAndSkillTag(any(), any()))
+        .thenReturn(ids(mechanic));
+    lenient()
+        .when(
+            mechanicRepository.filterByRadiusAndBroadcast(
+                any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic));
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+    return sos;
+  }
+
+  @Test
+  void rebroadcast_expiredTicket_goesBackToPendingAndBroadcasts() {
+    SosRequest sos = expiredSosWithRadius();
+
+    sosService.rebroadcast(sosId, userId);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+    assertThat(sos.getRebroadcastCount()).isEqualTo(1);
+    verify(messagingTemplate)
+        .convertAndSendToUser(eq(mechanicId.toString()), eq("/queue/sos-new-request"), any());
+    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  /** The offer-estimate Google call and the broadcast must not hold the transaction open. */
+  @Test
+  void rebroadcast_broadcastRunsOutsideTheTransaction() {
+    java.util.concurrent.atomic.AtomicBoolean inTx =
+        new java.util.concurrent.atomic.AtomicBoolean(false);
+    doAnswer(
+            inv -> {
+              inTx.set(true);
+              try {
+                return ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null);
+              } finally {
+                inTx.set(false);
+              }
+            })
+        .when(transactionTemplate)
+        .execute(any());
+    expiredSosWithRadius();
+    when(googleMapsService.getDistanceInfos(any(), any()))
+        .thenAnswer(
+            inv -> {
+              assertThat(inTx.get()).as("Google called inside the transaction").isFalse();
+              return List.of(new DistanceInfo(800, 420, "0.8 km", "7 mins"));
+            });
+
+    sosService.rebroadcast(sosId, userId);
+
+    verify(googleMapsService).getDistanceInfos(any(), any());
+  }
+
+  @Test
+  void rebroadcast_broadcastFailsAfterCommit_stillReturnsAndSchedulesExpiry() {
+    expiredSosWithRadius();
+    doThrow(new RuntimeException("broker down"))
+        .when(messagingTemplate)
+        .convertAndSendToUser(anyString(), anyString(), any(Object.class));
+
+    SosRequestResponse result = sosService.rebroadcast(sosId, userId);
+
+    assertThat(result).isNotNull();
+    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  @Test
+  void rebroadcast_notYourTicket_isDeniedAndNothingChanges() {
+    SosRequest sos = sosAt(SosStatus.EXPIRED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+
+    assertThatThrownBy(() -> sosService.rebroadcast(sosId, UUID.randomUUID()))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  @Test
+  void rebroadcast_notExpired_isConflict() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosAt(SosStatus.PENDING)));
+
+    assertThatThrownBy(() -> sosService.rebroadcast(sosId, userId))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
   @Test
   void doExpire_zeroBidsAtMaxRebroadcast_expiresInsteadOfExpandingFurther() {
     SosRequest sos = sosAt(SosStatus.PENDING);
@@ -1157,5 +1490,15 @@ class SosServiceImplTest {
     verify(sosEventProducer).publishStatusUpdated(any());
     verify(sosEventProducer, never())
         .publishNotification(argThat(n -> n.type().equals("SOS_AUTO_REBROADCAST")));
+  }
+
+  private final java.util.Map<UUID, Mechanic> knownMechanics = new java.util.HashMap<>();
+
+  /**
+   * Ids for the geo-filter stubs; remembers the entities so findAllWithRateById can return them.
+   */
+  private List<UUID> ids(Mechanic... mechanics) {
+    for (Mechanic m : mechanics) knownMechanics.put(m.getMechanicId(), m);
+    return java.util.Arrays.stream(mechanics).map(Mechanic::getMechanicId).toList();
   }
 }

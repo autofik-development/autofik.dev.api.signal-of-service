@@ -46,3 +46,17 @@ gradlew.cmd
 .env
 .env.*
 !.env.example
+
+# Repo folders the image never copies (the Dockerfile only needs .mvn, mvnw, pom.xml, src)
+load-tests/
+graphify-out/
+reports/
+docs/
+postman/
+scripts/
+tools/
+.claude/
+.github/
+test-image.jpg
+test-ws.html
+api-tests.http

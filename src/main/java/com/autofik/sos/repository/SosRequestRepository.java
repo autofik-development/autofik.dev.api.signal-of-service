@@ -4,10 +4,13 @@ import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.enums.SosStatus;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -79,4 +82,15 @@ public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
    * @return requests still within their active bidding window
    */
   List<SosRequest> findByStatusAndBiddingExpiresAtAfter(SosStatus status, LocalDateTime threshold);
+
+  /**
+   * Locks the ticket row until the calling transaction ends and returns its status as committed in
+   * the database, not as cached in the persistence context. Placing a bid and accepting a bid both
+   * take this lock, so a bid can never be inserted between an accept's auto-reject and its commit,
+   * and two accepts on the same ticket cannot both win (or deadlock rejecting each other's bid).
+   */
+  @Query(
+      value = "SELECT status FROM sos_request WHERE sos_id = :sosId FOR UPDATE",
+      nativeQuery = true)
+  Optional<String> lockStatus(@Param("sosId") UUID sosId);
 }

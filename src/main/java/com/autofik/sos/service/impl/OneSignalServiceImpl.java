@@ -27,12 +27,30 @@ public class OneSignalServiceImpl implements OneSignalService {
   @Value("${onesignal.app-id}")
   private String appId;
 
+  // OneSignal accepts at most 2,000 aliases per notification request.
+  private static final int MAX_ALIASES_PER_REQUEST = 2_000;
+
   /**
    * WORKFLOW: Sends a targeted real-time push notification alert directly to a specific user's
    * mobile device.
    */
   @Override
   public void send(UUID recipientId, String title, String body, Map<String, String> data) {
+    sendChunk(List.of(recipientId), title, body, data);
+  }
+
+  @Override
+  public void sendToMany(
+      List<UUID> recipientIds, String title, String body, Map<String, String> data) {
+    for (int from = 0; from < recipientIds.size(); from += MAX_ALIASES_PER_REQUEST) {
+      List<UUID> chunk =
+          recipientIds.subList(from, Math.min(from + MAX_ALIASES_PER_REQUEST, recipientIds.size()));
+      sendChunk(chunk, title, body, data);
+    }
+  }
+
+  private void sendChunk(
+      List<UUID> recipients, String title, String body, Map<String, String> data) {
     try {
       // 1. INITIALIZATION: Instantiate a new OneSignal API notification container configuration
       // layout
@@ -44,7 +62,8 @@ public class OneSignalServiceImpl implements OneSignalService {
       // Crucial Architecture Note: The "external_id" keyword must exactly match what your Flutter
       // mobile app
       // registers using the client-side SDK function: `OneSignal.login(userId)`
-      notification.setIncludeAliases(Map.of("external_id", List.of(recipientId.toString())));
+      notification.setIncludeAliases(
+          Map.of("external_id", recipients.stream().map(UUID::toString).toList()));
 
       // 3. CHANNEL CONFIGURATION: Enforce that this transaction explicitly routes to the device's
       // native push alert center
@@ -70,19 +89,27 @@ public class OneSignalServiceImpl implements OneSignalService {
       // SDK-Specific Failure: Catch explicit HTTP errors returned directly by OneSignal's edge
       // gateways (e.g., HTTP 400 Bad Request)
       log.warn(
-          "OneSignal push failed recipient={} status={}: {}",
-          recipientId,
+          "OneSignal push failed recipients={} status={}: {}",
+          recipients.size() == 1 ? recipients.get(0) : recipients.size() + " ids",
           e.getCode(),
           e.getResponseBody());
-      sosEventProducer.publishOneSignalPushFailed(
-          new OneSignalPushFailedEvent(
-              recipientId, e.getCode(), e.getResponseBody(), LocalDateTime.now()));
+      // Reported per recipient, so a failed batch reads the same as N failed single pushes.
+      for (UUID recipientId : recipients) {
+        sosEventProducer.publishOneSignalPushFailed(
+            new OneSignalPushFailedEvent(
+                recipientId, e.getCode(), e.getResponseBody(), LocalDateTime.now()));
+      }
     } catch (Exception e) {
       // Generic System Failure: Protects the application thread against connection timeouts or
       // structural execution faults
-      log.warn("OneSignal push failed recipient={}: {}", recipientId, e.getMessage());
-      sosEventProducer.publishOneSignalPushFailed(
-          new OneSignalPushFailedEvent(recipientId, null, e.getMessage(), LocalDateTime.now()));
+      log.warn(
+          "OneSignal push failed recipients={}: {}",
+          recipients.size() == 1 ? recipients.get(0) : recipients.size() + " ids",
+          e.getMessage());
+      for (UUID recipientId : recipients) {
+        sosEventProducer.publishOneSignalPushFailed(
+            new OneSignalPushFailedEvent(recipientId, null, e.getMessage(), LocalDateTime.now()));
+      }
     }
   }
 }

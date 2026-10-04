@@ -12,6 +12,7 @@ import com.autofik.sos.dto.event.SosCreatedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
 import com.autofik.sos.dto.external.DistanceInfo;
+import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
@@ -41,6 +42,8 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -63,6 +66,7 @@ import org.springframework.scheduling.TaskScheduler;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Service implementation managing the lifecycles of emergency roadside requests (SOS). Employs a
@@ -103,6 +107,17 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.geo.earth-radius-m:6371000}")
   private double earthRadiusM;
 
+  // A stored offer estimate older than this is treated as stale and re-fetched (and re-billed)
+  // on the next fan-out, because the mechanic has probably moved. Short enough that a rebroadcast
+  // after the customer waited a while shows a current number; long enough that the usual
+  // back-to-back auto-expand windows reuse it.
+  @Value("${sos.eta.offer-estimate-max-age-seconds:300}")
+  private int offerEstimateMaxAgeSeconds;
+
+  // How many of the nearest mechanics get a real (billed) distance/time in the job offer.
+  @Value("${sos.eta.offer-max-mechanics:25}")
+  private int offerMaxMechanics;
+
   // Default broadcast radius used for fan-out when the SOS request has no user-defined limit.
   @Value("${sos.broadcast.default-km:15}")
   private int defaultBroadcastKm;
@@ -116,6 +131,14 @@ public class SosServiceImpl implements SosService {
   private int maxRebroadcast;
 
   private static final String SOS_COOLDOWN_KEY_PREFIX = "sos:cooldown:";
+
+  // Per-SOS memory of which mechanics already got a (billed) offer estimate. Outlives the bidding
+  // window plus every rebroadcast attempt; bounded so abandoned tickets do not pin the key.
+  private static final String OFFER_ETA_KEY_PREFIX = "sos:offer-eta:";
+  private static final Duration OFFER_ETA_TTL = Duration.ofHours(1);
+
+  // Google's Distance Matrix limit on origins per request.
+  private static final int MAX_MATRIX_ORIGINS = 25;
 
   // Minimum gap between two SOS creations by the same user.
   @Value("${sos.create.cooldown-seconds:60}")
@@ -156,6 +179,7 @@ public class SosServiceImpl implements SosService {
   private final SimpMessagingTemplate messagingTemplate;
   private final TaskScheduler taskScheduler;
   private final StringRedisTemplate redisTemplate;
+  private final TransactionTemplate transactionTemplate;
 
   // Lazy: SosMediaServiceImpl asks this service who may see a ticket, so injecting it directly
   // would close the cycle and fail startup.
@@ -178,8 +202,10 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.auto-expand.max-km:35}")
   private int autoExpandMaxKm;
 
+  // Not @Transactional, same as the per-ticket expiry timer below: doExpire may auto-expand, which
+  // calls Google (offer estimates) and pushes over the broker, and none of that should hold a
+  // Postgres connection. Each repository call is its own short transaction.
   @EventListener(ApplicationReadyEvent.class)
-  @Transactional
   public void expireOverduePendingRequests() {
     LocalDateTime now = LocalDateTime.now();
 
@@ -310,8 +336,11 @@ public class SosServiceImpl implements SosService {
    * @throws IllegalStateException If the initiating user holds an active ticket.
    * @throws TooManyRequestsException If throttling window rules are broken.
    */
+  // Deliberately NOT @Transactional. A single transaction here held a Postgres connection across
+  // Medusa, Google reverse-geocode and the offer-estimate call (up to 5 s each when Maps is slow),
+  // so a few slow broadcasts could drain the pool. Only the writes run in a transaction, and the
+  // slow external calls run outside it.
   @Override
-  @Transactional
   public SosRequestResponse create(CreateSosRequest request) {
     // Enforce structural restriction: A user can only process one active distress event at a time
     if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
@@ -319,20 +348,88 @@ public class SosServiceImpl implements SosService {
     }
 
     // Redis distributed lock prevents accidental double-tap double submissions
-    Boolean allowed =
-        redisTemplate
-            .opsForValue()
-            .setIfAbsent(
-                SOS_COOLDOWN_KEY_PREFIX + request.userId(),
-                "1",
-                Duration.ofSeconds(createCooldownSeconds));
+    // Fails open when Redis is unreachable: the active-ticket check above still stops a second
+    // live ticket, and refusing an emergency request because a cache is down is the worse outcome.
+    Boolean allowed;
+    try {
+      allowed =
+          redisTemplate
+              .opsForValue()
+              .setIfAbsent(
+                  SOS_COOLDOWN_KEY_PREFIX + request.userId(),
+                  "1",
+                  Duration.ofSeconds(createCooldownSeconds));
+    } catch (RuntimeException e) {
+      log.warn("Redis unavailable for create cooldown, allowing request: {}", e.getMessage());
+      allowed = Boolean.TRUE;
+    }
     if (!Boolean.TRUE.equals(allowed)) {
       throw new TooManyRequestsException(
           "Please wait 60 seconds before submitting another SOS request");
     }
 
+    // External call, outside any transaction.
     String problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
 
+    // The only transactional part: look up the projections, pick the radius, insert the ticket.
+    SosRequest sos = transactionTemplate.execute(status -> persistSos(request, problemTypeKey));
+    int startingRadiusKm = sos.getBroadcastRadiusKm();
+    User user = sos.getUser();
+
+    // Geocode coordinates to map a readable address. External call, outside any transaction; the
+    // update below is its own short write.
+    String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
+    if (address != null) {
+      sos.setLocationAddress(address);
+      sosRequestRepository.save(sos);
+    }
+
+    // Queue automated closing of the auction window if no responses come through. First, and
+    // before anything that can fail: the ticket is already committed, so it must always expire.
+    scheduleBiddingExpiry(sos);
+
+    // Everything below is notification. The ticket exists, so a failure here must not turn into a
+    // 500 for a request that succeeded (the customer would retry into "already have an active
+    // SOS").
+    try {
+      // Tell the customer up front if we already had to widen past their requested/default radius
+      // — otherwise they see a ticket sitting quietly and have no idea the system is already
+      // trying harder on their behalf, same concern the expiry-based widening already covers.
+      int requestedOrDefaultKm =
+          request.broadcastRadiusKm() != null ? request.broadcastRadiusKm() : defaultBroadcastKm;
+      if (startingRadiusKm > requestedOrDefaultKm) {
+        notifyRadiusWidened(sos.getSosId(), user.getUserId(), startingRadiusKm);
+      }
+
+      // Broadcast out to standard Kafka topic pipelines
+      sosEventProducer.publishSosCreated(
+          new SosCreatedEvent(
+              sos.getSosId(),
+              user.getUserId(),
+              sos.getVehicle().getId(),
+              sos.getProblemType(),
+              sos.getDescription(),
+              request.latitude(),
+              request.longitude(),
+              sos.getLocationAddress(),
+              sos.getCreatedAt()));
+
+      // Spatial dispatch step to find target mechanics
+      fanOutToNearbyMechanics(
+          sos.getSosId(),
+          request.latitude(),
+          request.longitude(),
+          problemTypeKey,
+          startingRadiusKm);
+    } catch (RuntimeException e) {
+      log.error("SOS {} was created but notifying/broadcasting failed", sos.getSosId(), e);
+    }
+
+    return toResponseWithMechanic(sos);
+  }
+
+  // Runs inside the transaction opened by create(); keep external calls out of it.
+  private SosRequest persistSos(CreateSosRequest request, String problemTypeKey) {
     // Both rows are projections of SSO. ponytail: no SSO round-trip for today's test (see
     // SsoProjection) — the vehicle lookup checks local ownership instead of SSO's per-user
     // scoping, so a driver still can't file a breakdown against a stranger's car.
@@ -357,44 +454,7 @@ public class SosServiceImpl implements SosService {
             .vehicle(vehicle)
             .build();
     sosRequestRepository.save(sos);
-
-    // Tell the customer up front if we already had to widen past their requested/default radius
-    // — otherwise they see a ticket sitting quietly and have no idea the system is already
-    // trying harder on their behalf, same concern the expiry-based widening already covers.
-    int requestedOrDefaultKm =
-        request.broadcastRadiusKm() != null ? request.broadcastRadiusKm() : defaultBroadcastKm;
-    if (startingRadiusKm > requestedOrDefaultKm) {
-      notifyRadiusWidened(sos.getSosId(), user.getUserId(), startingRadiusKm);
-    }
-
-    // Geocode coordinates asynchronously to map a readable address
-    String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
-    if (address != null) {
-      sos.setLocationAddress(address);
-      sosRequestRepository.save(sos);
-    }
-
-    // Broadcast out to standard Kafka topic pipelines
-    sosEventProducer.publishSosCreated(
-        new SosCreatedEvent(
-            sos.getSosId(),
-            user.getUserId(),
-            vehicle.getId(),
-            sos.getProblemType(),
-            sos.getDescription(),
-            request.latitude(),
-            request.longitude(),
-            sos.getLocationAddress(),
-            sos.getCreatedAt()));
-
-    // Spatial dispatch step to find target mechanics
-    fanOutToNearbyMechanics(
-        sos.getSosId(), request.latitude(), request.longitude(), problemTypeKey, startingRadiusKm);
-
-    // Queue automated closing of the auction window if no responses come through
-    scheduleBiddingExpiry(sos);
-
-    return toResponseWithMechanic(sos);
+    return sos;
   }
 
   @Override
@@ -436,12 +496,13 @@ public class SosServiceImpl implements SosService {
       double lat, double lng, String problemType, int radiusKm) {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
-    List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
+    List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
     if (coarse.isEmpty()) {
-      return coarse;
+      return List.of();
     }
-    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-    return mechanicRepository.filterByRadiusAndBroadcast(ids, lat, lng, radiusKm * 1000.0);
+    List<UUID> matched =
+        mechanicRepository.filterByRadiusAndBroadcast(coarse, lat, lng, radiusKm * 1000.0);
+    return matched.isEmpty() ? List.of() : mechanicRepository.findAllWithRateById(matched);
   }
 
   @Override
@@ -485,21 +546,19 @@ public class SosServiceImpl implements SosService {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
 
-    List<Mechanic> coarse =
+    List<UUID> coarse =
         mechanicRepository.findByH3CellsAndSkillTag(searchCells, sos.getProblemType());
 
-    if (coarse.isEmpty()) {
+    if (!coarse.contains(callerId)) {
       return false;
     }
 
-    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-
-    List<Mechanic> matched =
+    List<UUID> matched =
         sos.getBroadcastRadiusKm() != null
             ? mechanicRepository.filterByRadiusAndBroadcast(
-                ids, lat, lng, sos.getBroadcastRadiusKm() * 1000.0)
-            : mechanicRepository.filterByRadius(ids, lat, lng);
-    return matched.stream().anyMatch(mechanic -> mechanic.getMechanicId().equals(callerId));
+                coarse, lat, lng, sos.getBroadcastRadiusKm() * 1000.0)
+            : mechanicRepository.filterByRadius(coarse, lat, lng);
+    return matched.contains(callerId);
   }
 
   @Override
@@ -525,7 +584,9 @@ public class SosServiceImpl implements SosService {
     if (toStatus != SosStatus.ON_THE_WAY
         && toStatus != SosStatus.ARRIVED
         && toStatus != SosStatus.IN_PROGRESS) {
-      throw new IllegalStateException(
+      // The requested target status is not one this endpoint accepts: a bad request (400), not a
+      // conflict with the ticket's current state.
+      throw new IllegalArgumentException(
           "Only ON_THE_WAY, ARRIVED, and IN_PROGRESS can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
     }
     SosRequest sos = findSosOrThrow(sosId);
@@ -591,7 +652,7 @@ public class SosServiceImpl implements SosService {
   public SosStatusHistoryResponse proposeStatusChange(
       UUID sosId, ProposeStatusChangeRequest request) {
     if (request.toStatus() != SosStatus.COMPLETED) {
-      throw new IllegalStateException(
+      throw new IllegalArgumentException(
           "Only COMPLETED requires customer approval. Use PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
     }
     SosRequest sos = findSosOrThrow(sosId);
@@ -942,32 +1003,138 @@ public class SosServiceImpl implements SosService {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
 
-    List<Mechanic> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
+    List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
     if (coarse.isEmpty()) return;
 
-    List<UUID> ids = coarse.stream().map(Mechanic::getMechanicId).toList();
-    List<Mechanic> matched =
+    List<UUID> matchedIds =
         broadcastRadiusKm != null
             ? mechanicRepository.filterByRadiusAndBroadcast(
-                ids, lat, lng, broadcastRadiusKm * 1000.0)
-            : mechanicRepository.filterByRadius(ids, lat, lng);
+                coarse, lat, lng, broadcastRadiusKm * 1000.0)
+            : mechanicRepository.filterByRadius(coarse, lat, lng);
+    if (matchedIds.isEmpty()) return;
+    // Entities only for the offer estimates (they need each mechanic's location); one query.
+    List<Mechanic> matched = mechanicRepository.findAllWithRateById(matchedIds);
 
     // Photos are uploaded after the ticket is created, so this is empty on the first broadcast
     // and populated on a rebroadcast — which is the attempt where the mechanic most needs to see
     // what the job actually is before bidding.
-    SosNotificationEvent notification =
-        new SosNotificationEvent(
-            "SOS_CREATED",
-            null,
-            "MECHANIC",
-            sosId,
-            "New SOS request nearby",
-            "Problem: " + problemType,
-            sosMediaService.getObject().photoUrls(sosId));
+    List<String> photoUrls = sosMediaService.getObject().photoUrls(sosId);
+    Map<UUID, EtaInfo> estimates = offerEstimates(sosId, matched, lat, lng);
     matched.forEach(
         m ->
             messagingTemplate.convertAndSendToUser(
-                m.getMechanicId().toString(), "/queue/sos-new-request", notification));
+                m.getMechanicId().toString(),
+                "/queue/sos-new-request",
+                new SosNotificationEvent(
+                    "SOS_CREATED",
+                    null,
+                    "MECHANIC",
+                    sosId,
+                    "New SOS request nearby",
+                    "Problem: " + problemType,
+                    photoUrls,
+                    estimates.get(m.getMechanicId()))));
+  }
+
+  // Real road distance/time per mechanic for the job offer. Google bills per mechanic, so each
+  // mechanic is only ever paid for once per SOS: the estimate is remembered in Redis, and a later
+  // fan-out (auto-expand, manual rebroadcast) reuses it for mechanics already offered and asks
+  // Google only for the newly reached ones, in a single Distance Matrix request. Newly reached
+  // mechanics beyond offerMaxMechanics (nearest first) still get the offer without an estimate.
+  // A failed call or Redis outage yields no estimate for those mechanics — the offer never waits
+  // on or fails because of Maps, and a missing number is better than an invented one.
+  private Map<UUID, EtaInfo> offerEstimates(
+      UUID sosId, List<Mechanic> matched, double lat, double lng) {
+    String key = OFFER_ETA_KEY_PREFIX + sosId;
+    Map<UUID, EtaInfo> estimates = new HashMap<>(readOfferEstimates(key));
+
+    List<Mechanic> nearest =
+        matched.stream()
+            .filter(m -> m.getCurrentLocation() != null)
+            .filter(m -> !estimates.containsKey(m.getMechanicId()))
+            .sorted(
+                Comparator.comparingDouble(
+                    m ->
+                        GeoDistance.haversineMeters(
+                            m.getCurrentLocation().getY(),
+                            m.getCurrentLocation().getX(),
+                            lat,
+                            lng,
+                            earthRadiusM)))
+            .limit(Math.min(offerMaxMechanics, MAX_MATRIX_ORIGINS))
+            .toList();
+    if (nearest.isEmpty()) return estimates;
+
+    Point destination = GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat));
+    List<DistanceInfo> infos =
+        googleMapsService.getDistanceInfos(
+            nearest.stream().map(Mechanic::getCurrentLocation).toList(), destination);
+    if (infos == null || infos.size() != nearest.size()) return estimates;
+
+    Map<UUID, EtaInfo> fresh = new HashMap<>();
+    for (int i = 0; i < nearest.size(); i++) {
+      DistanceInfo d = infos.get(i);
+      if (d != null) {
+        fresh.put(
+            nearest.get(i).getMechanicId(),
+            new EtaInfo(
+                d.distanceMeters(), d.durationSeconds(), d.distanceText(), d.durationText()));
+      }
+    }
+    writeOfferEstimates(key, fresh);
+    estimates.putAll(fresh);
+    return estimates;
+  }
+
+  // Stored as mechanicId -> "meters<TAB>seconds<TAB>distanceText<TAB>durationText<TAB>epochSecond".
+  // Entries older than offerEstimateMaxAgeSeconds (or in the old 4-field format, with no
+  // timestamp) are skipped so those mechanics are re-estimated. Redis trouble degrades to "nobody
+  // offered yet" (one extra billed call), never to a failed broadcast.
+  private Map<UUID, EtaInfo> readOfferEstimates(String key) {
+    try {
+      long oldestAllowed = java.time.Instant.now().getEpochSecond() - offerEstimateMaxAgeSeconds;
+      Map<UUID, EtaInfo> out = new HashMap<>();
+      redisTemplate
+          .opsForHash()
+          .entries(key)
+          .forEach(
+              (k, v) -> {
+                String[] p = v.toString().split("	", 5);
+                if (p.length < 5 || Long.parseLong(p[4]) < oldestAllowed) return;
+                out.put(
+                    UUID.fromString(k.toString()),
+                    new EtaInfo(Long.parseLong(p[0]), Long.parseLong(p[1]), p[2], p[3]));
+              });
+      return out;
+    } catch (Exception e) {
+      log.warn("Could not read offer estimates {}: {}", key, e.getMessage());
+      return Map.of();
+    }
+  }
+
+  private void writeOfferEstimates(String key, Map<UUID, EtaInfo> fresh) {
+    if (fresh.isEmpty()) return;
+    try {
+      long now = java.time.Instant.now().getEpochSecond();
+      Map<String, String> entries = new HashMap<>();
+      fresh.forEach(
+          (id, e) ->
+              entries.put(
+                  id.toString(),
+                  e.remainingDistanceM()
+                      + "\t"
+                      + e.remainingDurationS()
+                      + "\t"
+                      + e.remainingDistanceText()
+                      + "\t"
+                      + e.remainingDurationText()
+                      + "	"
+                      + now));
+      redisTemplate.opsForHash().putAll(key, entries);
+      redisTemplate.expire(key, OFFER_ETA_TTL);
+    } catch (Exception e) {
+      log.warn("Could not store offer estimates {}: {}", key, e.getMessage());
+    }
   }
 
   // Converts a km radius into the minimum kRing depth that fully covers it at resolution 7.
@@ -978,9 +1145,56 @@ public class SosServiceImpl implements SosService {
 
   // Uses TaskScheduler (not @Scheduled) because each SOS has its own unique expiry time.
   // The lambda re-fetches the entity inside the transaction to avoid stale-state issues.
+  // Not @Transactional: the broadcast calls Google (offer estimates), and a transaction would hold
+  // a Postgres connection for the whole of it. Only the validation and the state change run in one;
+  // the response is built inside it too, because user and vehicle are lazy and the mapper needs a
+  // live session to read them.
   @Override
-  @Transactional
   public SosRequestResponse rebroadcast(UUID sosId, UUID userId) {
+    Rebroadcast reopened = transactionTemplate.execute(status -> reopenSos(sosId, userId));
+    SosRequest sos = reopened.sos();
+
+    // First, and before anything that can fail: the ticket is already back to PENDING and
+    // committed, so its bidding window must always close.
+    scheduleBiddingExpiry(sos);
+
+    // Back to bidding: the previous mechanic's route is meaningless now.
+    routeEtaService.clear(sosId);
+
+    // The ticket is committed, so a notification failure must not turn into a 500 for a request
+    // that succeeded — the customer would retry into "only EXPIRED requests can be rebroadcast".
+    try {
+      int attemptsLeft = maxRebroadcast - sos.getRebroadcastCount();
+      messagingTemplate.convertAndSendToUser(
+          userId.toString(),
+          "/queue/sos-updates",
+          Map.of(
+              "type",
+              "SOS_REBROADCAST",
+              "sosId",
+              sosId,
+              "rebroadcastCount",
+              sos.getRebroadcastCount(),
+              "attemptsLeft",
+              attemptsLeft));
+
+      fanOutToNearbyMechanics(
+          sosId,
+          sos.getLocation().getY(),
+          sos.getLocation().getX(),
+          sos.getProblemType(),
+          sos.getBroadcastRadiusKm());
+    } catch (RuntimeException e) {
+      log.error("SOS {} was rebroadcast but notifying/broadcasting failed", sosId, e);
+    }
+
+    return reopened.response();
+  }
+
+  private record Rebroadcast(SosRequest sos, SosRequestResponse response) {}
+
+  // Runs inside the transaction opened by rebroadcast(); keep external calls out of it.
+  private Rebroadcast reopenSos(UUID sosId, UUID userId) {
     SosRequest sos = findSosOrThrow(sosId);
 
     if (!sos.getUser().getUserId().equals(userId)) {
@@ -998,33 +1212,7 @@ public class SosServiceImpl implements SosService {
     sos.setRebroadcastCount(sos.getRebroadcastCount() + 1);
     sos.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(biddingWindowSeconds));
     sosRequestRepository.save(sos);
-    // Back to bidding: the previous mechanic's route is meaningless now.
-    routeEtaService.clear(sosId);
-
-    int attemptsLeft = maxRebroadcast - sos.getRebroadcastCount();
-    messagingTemplate.convertAndSendToUser(
-        userId.toString(),
-        "/queue/sos-updates",
-        Map.of(
-            "type",
-            "SOS_REBROADCAST",
-            "sosId",
-            sosId,
-            "rebroadcastCount",
-            sos.getRebroadcastCount(),
-            "attemptsLeft",
-            attemptsLeft));
-
-    fanOutToNearbyMechanics(
-        sosId,
-        sos.getLocation().getY(),
-        sos.getLocation().getX(),
-        sos.getProblemType(),
-        sos.getBroadcastRadiusKm());
-
-    scheduleBiddingExpiry(sos);
-
-    return toResponseWithMechanic(sos);
+    return new Rebroadcast(sos, toResponseWithMechanic(sos));
   }
 
   /**

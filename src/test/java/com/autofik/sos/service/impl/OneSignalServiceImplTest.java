@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -12,6 +13,7 @@ import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.onesignal.client.ApiException;
 import com.onesignal.client.api.DefaultApi;
 import com.onesignal.client.model.Notification;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -85,5 +87,40 @@ class OneSignalServiceImplTest {
     assertThat(event.status()).isNull();
     assertThat(event.error()).isEqualTo("Unexpected error");
     assertThat(event.failedAt()).isNotNull();
+  }
+
+  /** OneSignal takes at most 2,000 aliases per request; a bigger batch is split, none dropped. */
+  @Test
+  void sendToMany_targetsAllRecipientsInOneRequest_chunkedAt2000() throws ApiException {
+    List<UUID> recipients =
+        java.util.stream.Stream.generate(UUID::randomUUID).limit(2_500).toList();
+
+    oneSignalService.sendToMany(recipients, "t", "b", Map.of("type", "BID_REJECTED"));
+
+    ArgumentCaptor<Notification> sent = ArgumentCaptor.forClass(Notification.class);
+    verify(oneSignalApi, times(2)).createNotification(sent.capture());
+    List<String> targeted =
+        sent.getAllValues().stream()
+            .flatMap(n -> n.getIncludeAliases().get("external_id").stream())
+            .toList();
+    assertThat(sent.getAllValues().get(0).getIncludeAliases().get("external_id")).hasSize(2_000);
+    assertThat(targeted)
+        .containsExactlyElementsOf(recipients.stream().map(UUID::toString).toList());
+  }
+
+  /** A failed batch reports every recipient in it, same as a failed single push does. */
+  @Test
+  void sendToMany_failure_reportsEachRecipient() throws ApiException {
+    List<UUID> recipients = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+    doThrow(new RuntimeException("boom")).when(oneSignalApi).createNotification(any());
+
+    oneSignalService.sendToMany(recipients, "t", "b", Map.of());
+
+    ArgumentCaptor<OneSignalPushFailedEvent> failed =
+        ArgumentCaptor.forClass(OneSignalPushFailedEvent.class);
+    verify(sosEventProducer, times(3)).publishOneSignalPushFailed(failed.capture());
+    assertThat(failed.getAllValues())
+        .extracting(OneSignalPushFailedEvent::recipientId)
+        .containsExactlyElementsOf(recipients);
   }
 }

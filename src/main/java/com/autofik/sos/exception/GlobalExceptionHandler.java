@@ -8,13 +8,25 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingPathVariableException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -125,6 +137,102 @@ public class GlobalExceptionHandler {
     return new ErrorResponse(400, "Bad Request", "Validation failed", LocalDateTime.now(), details);
   }
 
+  /**
+   * A database constraint rejected the write — typically a unique constraint hit by a duplicate (a
+   * second feedback on the same SOS) or by two requests racing. The caller's request conflicts with
+   * existing state, so it is a 409 rather than a server fault. Maps to HTTP 409 Conflict.
+   *
+   * <p>The message is fixed: the driver's message names the constraint, table and column.
+   */
+  @ExceptionHandler(DataIntegrityViolationException.class)
+  @ResponseStatus(HttpStatus.CONFLICT)
+  public ErrorResponse handleDataIntegrity(DataIntegrityViolationException ex) {
+    log.warn("Data integrity violation: {}", ex.getMostSpecificCause().getMessage());
+    return new ErrorResponse(
+        HttpStatus.CONFLICT.value(),
+        HttpStatus.CONFLICT.getReasonPhrase(),
+        "The request conflicts with existing data",
+        LocalDateTime.now());
+  }
+
+  /**
+   * Request body that is not valid JSON, or has the wrong type for a field (a string where a UUID
+   * or number belongs, an unknown enum value). A client mistake, not a server fault. Maps to HTTP
+   * 400 Bad Request.
+   *
+   * <p>The message is fixed rather than Jackson's, which echoes the offending input and internal
+   * class names back to the caller.
+   */
+  @ExceptionHandler(HttpMessageNotReadableException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleUnreadableBody(HttpMessageNotReadableException ex) {
+    return new ErrorResponse(400, "Bad Request", "Malformed request body", LocalDateTime.now());
+  }
+
+  /**
+   * A path variable or query parameter that cannot be converted to its declared type (a non-UUID
+   * id, an unknown enum value such as {@code ?status=NOPE}). Maps to HTTP 400 Bad Request.
+   */
+  @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+    return new ErrorResponse(
+        400,
+        "Bad Request",
+        "Invalid value for parameter '" + ex.getName() + "'",
+        LocalDateTime.now());
+  }
+
+  /**
+   * A path variable that is present but blank, so conversion yields nothing (for example a UUID
+   * segment of just a space). Maps to HTTP 400 Bad Request.
+   */
+  @ExceptionHandler(MissingPathVariableException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleMissingPathVariable(MissingPathVariableException ex) {
+    return new ErrorResponse(
+        400,
+        "Bad Request",
+        "Invalid value for path parameter '" + ex.getVariableName() + "'",
+        LocalDateTime.now());
+  }
+
+  /**
+   * The request body's Content-Type is one the endpoint does not accept (a missing header, or
+   * something other than JSON). Maps to HTTP 415 Unsupported Media Type.
+   */
+  @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+  @ResponseStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+  public ErrorResponse handleUnsupportedMediaType(HttpMediaTypeNotSupportedException ex) {
+    return new ErrorResponse(
+        415, "Unsupported Media Type", "Unsupported content type", LocalDateTime.now());
+  }
+
+  /** The Accept header asks for something the endpoint cannot produce. Maps to HTTP 406. */
+  @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+  @ResponseStatus(HttpStatus.NOT_ACCEPTABLE)
+  public ErrorResponse handleNotAcceptable(HttpMediaTypeNotAcceptableException ex) {
+    return new ErrorResponse(406, "Not Acceptable", "Not acceptable", LocalDateTime.now());
+  }
+
+  /** The path exists but not for this HTTP method. Maps to HTTP 405 Method Not Allowed. */
+  @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+  @ResponseStatus(HttpStatus.METHOD_NOT_ALLOWED)
+  public ErrorResponse handleMethodNotAllowed(HttpRequestMethodNotSupportedException ex) {
+    return new ErrorResponse(405, "Method Not Allowed", "Method not allowed", LocalDateTime.now());
+  }
+
+  /** A required query parameter is absent. Maps to HTTP 400 Bad Request. */
+  @ExceptionHandler(MissingServletRequestParameterException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleMissingParameter(MissingServletRequestParameterException ex) {
+    return new ErrorResponse(
+        400,
+        "Bad Request",
+        "Missing required parameter '" + ex.getParameterName() + "'",
+        LocalDateTime.now());
+  }
+
   /** Handles invalid parameters passed to methods or controllers. Maps to HTTP 400 Bad Request. */
   @ExceptionHandler(IllegalArgumentException.class)
   @ResponseStatus(HttpStatus.BAD_REQUEST)
@@ -143,6 +251,32 @@ public class GlobalExceptionHandler {
         "Service Unavailable",
         ex.getMessage(),
         LocalDateTime.now());
+  }
+
+  /**
+   * No database connection within the pool timeout: the pool is exhausted under load, or the
+   * database is down. Opening a transaction raises CannotCreateTransactionException; a repository
+   * call outside one raises DataAccessResourceFailureException. Either way the server is
+   * temporarily unable, not broken, so 503 with Retry-After tells the app and the gateway to back
+   * off and retry, where the catch-all's 500 told them nothing. Logged as one WARN line, not a
+   * stack trace: under load this fires in bursts, and the cause is in the pool metrics, not the
+   * stack.
+   */
+  @ExceptionHandler({
+    CannotCreateTransactionException.class,
+    DataAccessResourceFailureException.class
+  })
+  public ResponseEntity<ErrorResponse> handleDatabaseUnavailable(Exception ex) {
+    log.warn("Database unavailable, answering 503: {}", ex.getMessage());
+    return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+        // Matches the 5 s pool timeout: a retry sooner would mostly queue behind the same backlog.
+        .header(HttpHeaders.RETRY_AFTER, "5")
+        .body(
+            new ErrorResponse(
+                HttpStatus.SERVICE_UNAVAILABLE.value(),
+                "Service Unavailable",
+                "The service is busy, please retry shortly",
+                LocalDateTime.now()));
   }
 
   /** Handles API rate-limiting violations. Maps to HTTP 429 Too Many Requests. */

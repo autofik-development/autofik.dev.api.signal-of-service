@@ -20,6 +20,12 @@ public class SosMediaUploadedConsumer {
       groupId = "${spring.kafka.consumer.group-id}",
       containerFactory = "mediaUploadedListenerContainerFactory")
   public void consume(SosMediaUploadedEvent event) {
+    // A null record (tombstone, or a payload that failed to deserialize) has nothing to relay.
+    // Throwing here would only make the container retry the same record.
+    if (event == null) {
+      log.warn("Ignoring null media-uploaded record");
+      return;
+    }
     try {
       messagingTemplate.convertAndSend("/topic/sos/" + event.sosId() + "/media", event);
     } catch (Exception e) {

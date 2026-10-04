@@ -3,6 +3,8 @@ package com.autofik.sos.service.impl;
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
+import com.autofik.sos.domain.entity.SosStatusHistory;
+import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.BidSortFilter;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
@@ -20,6 +22,7 @@ import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosRequestRepository;
+import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.service.BidService;
 import com.autofik.sos.service.GoogleMapsService;
 import jakarta.persistence.EntityNotFoundException;
@@ -44,6 +47,7 @@ public class BidServiceImpl implements BidService {
   // --- DEPENDENCIES (REPOSITORIES & EXTERNAL SERVICES) ---
   private final BidSosRepository bidSosRepository;
   private final SosRequestRepository sosRequestRepository;
+  private final SosStatusHistoryRepository sosStatusHistoryRepository;
   private final MechanicRepository mechanicRepository;
   private final BidSosMapper bidSosMapper; // Converts between Database Entities and DTO Responses
   private final GoogleMapsService googleMapsService; // Calculates real road mileage and times
@@ -108,6 +112,21 @@ public class BidServiceImpl implements BidService {
             .estimatedDistanceText(info.distanceText())
             .estimatedDurationText(info.durationText());
       }
+    }
+
+    // RACE GUARD: the checks above read the ticket without a lock, and the Maps call can take a
+    // while.
+    // Lock the ticket and re-check against the database: a driver accepting another bid meanwhile
+    // either committed first (we see it and refuse) or waits until this bid is in, so their
+    // auto-reject sees it. Re-checking the duplicate here also closes a mechanic's double-tap.
+    if (!SosStatus.PENDING
+        .name()
+        .equals(sosRequestRepository.lockStatus(request.sosId()).orElse(null))) {
+      throw new IllegalStateException("Bids can only be placed on PENDING requests");
+    }
+    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(
+        request.sosId(), request.mechanicId())) {
+      throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
     }
 
     // Save the compiled Bid object into the PostgreSQL database table
@@ -219,7 +238,8 @@ public class BidServiceImpl implements BidService {
 
     // Mechanics are blocked from using this endpoint to back out; they must use the cancel endpoint
     if (request.status() == BidStatus.CANCELLED) {
-      throw new IllegalStateException(
+      // Wrong endpoint for what was asked — a malformed request (400), not a state conflict.
+      throw new IllegalArgumentException(
           "Use the cancel endpoint for mechanic-initiated cancellation");
     }
 
@@ -233,6 +253,16 @@ public class BidServiceImpl implements BidService {
     UUID sosOwnerId = bid.getSosRequest().getUser().getUserId();
     if (!sosOwnerId.equals(request.userId())) {
       throw new AccessDeniedException("You can only respond to bids on your own SOS request");
+    }
+
+    // RACE GUARD: lock the ticket before touching any bid. Concurrent bid placements and a second
+    // accept on the same ticket now queue behind this one; the status is read fresh under the lock,
+    // so whoever comes second sees ACCEPTED and is refused instead of leaving a PENDING bid behind.
+    if (request.status() == BidStatus.ACCEPTED
+        && !SosStatus.PENDING
+            .name()
+            .equals(sosRequestRepository.lockStatus(bid.getSosRequest().getSosId()).orElse(null))) {
+      throw new IllegalStateException("This SOS request is no longer open for accepting bids");
     }
 
     // A bid already responded to cannot be responded to again — without this, re-accepting an
@@ -259,6 +289,20 @@ public class BidServiceImpl implements BidService {
       SosRequest sos = bid.getSosRequest();
       sos.setStatus(SosStatus.ACCEPTED);
       sosRequestRepository.save(sos);
+
+      // 2b. HISTORY: record PENDING -> ACCEPTED like every other transition. The winning
+      // mechanic proposed it (their bid) and the driver approved it (this accept).
+      sosStatusHistoryRepository.save(
+          SosStatusHistory.builder()
+              .sosRequest(sos)
+              .fromStatus(SosStatus.PENDING)
+              .toStatus(SosStatus.ACCEPTED)
+              .proposedBy(bid.getMechanic())
+              .proposedAt(bid.getBidAt())
+              .approvedStatus(ApprovedStatus.ACCEPTED)
+              .approvedBy(sos.getUser())
+              .approveAt(bid.getRespondedAt())
+              .build());
 
       Mechanic mechanic = bid.getMechanic();
       UUID userId = sos.getUser().getUserId();
@@ -297,16 +341,21 @@ public class BidServiceImpl implements BidService {
       if (!rejectedBids.isEmpty()) {
         List<UUID> rejectedBidIds = rejectedBids.stream().map(BidSos::getBidId).toList();
         sosEventProducer.publishBidRejected(new BidRejectedEvent(sos.getSosId(), rejectedBidIds));
+        // One push event for every runner-up: the content is identical, so it goes out as a
+        // single multi-recipient OneSignal request instead of a burst of one per loser.
+        sosEventProducer.publishNotification(
+            new SosNotificationEvent(
+                "BID_REJECTED",
+                null,
+                "MECHANIC",
+                sos.getSosId(),
+                "Another mechanic was selected",
+                "Your bid was not selected for this request",
+                null,
+                null,
+                rejectedBids.stream().map(r -> r.getMechanic().getMechanicId()).toList()));
         rejectedBids.forEach(
             rejected -> {
-              sosEventProducer.publishNotification(
-                  new SosNotificationEvent(
-                      "BID_REJECTED",
-                      rejected.getMechanic().getMechanicId(),
-                      "MECHANIC",
-                      sos.getSosId(),
-                      "Another mechanic was selected",
-                      "Your bid was not selected for this request"));
               // The winner already gets a socket message; the losers only got a push, so their
               // open bid screen kept showing a live auction that had already been decided.
               // Their own bid id and nothing else — the winning price is not theirs to see.

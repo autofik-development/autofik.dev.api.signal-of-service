@@ -63,6 +63,8 @@ class BidServiceImplTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock SimpMessagingTemplate messagingTemplate;
 
+  @Mock com.autofik.sos.repository.SosStatusHistoryRepository sosStatusHistoryRepository;
+
   @InjectMocks BidServiceImpl bidService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -81,6 +83,9 @@ class BidServiceImplTest {
 
   @BeforeEach
   void setUp() {
+    // The ticket row lock re-reads the status from the database; by default the ticket is still
+    // open.
+    lenient().when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of("PENDING"));
     user = User.builder().userId(userId).name("Alice").build();
     vehicle = Vehicle.builder().id(UUID.randomUUID()).carBrand("Honda").carModel("Civic").build();
     mechanic =
@@ -393,6 +398,87 @@ class BidServiceImplTest {
 
   // A losing mechanic is told their own bid lost and nothing else — the winning price is not
   // theirs to see.
+  // Every loser gets the same push ({type, sosId}; their own bid id goes over the socket), so all
+  // of them go out as one multi-recipient event: one Kafka record and one OneSignal request per
+  // accept, not one per runner-up. Per-loser events made each accept a burst of pushes that the
+  // ~570 ms-per-call consumer could not keep up with (bidding load test).
+  // The accept is a status transition like any other: the winning mechanic proposed it (their bid)
+  // and the driver approved it. Without this row the history skipped PENDING -> ACCEPTED.
+  @Test
+  void updateStatus_accepted_recordsPendingToAcceptedInTheStatusHistory() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenReturn(List.of());
+    when(sosRequestRepository.save(pendingSos)).thenReturn(pendingSos);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED));
+
+    ArgumentCaptor<com.autofik.sos.domain.entity.SosStatusHistory> row =
+        ArgumentCaptor.forClass(com.autofik.sos.domain.entity.SosStatusHistory.class);
+    verify(sosStatusHistoryRepository).save(row.capture());
+    assertThat(row.getValue().getFromStatus()).isEqualTo(SosStatus.PENDING);
+    assertThat(row.getValue().getToStatus()).isEqualTo(SosStatus.ACCEPTED);
+    assertThat(row.getValue().getProposedBy()).isSameAs(mechanic);
+    assertThat(row.getValue().getApprovedBy()).isSameAs(user);
+    assertThat(row.getValue().getApprovedStatus())
+        .isEqualTo(com.autofik.sos.domain.enums.ApprovedStatus.ACCEPTED);
+    assertThat(row.getValue().getSosRequest()).isSameAs(pendingSos);
+    assertThat(row.getValue().getApproveAt()).isNotNull();
+  }
+
+  @Test
+  void updateStatus_rejected_recordsNoStatusHistory() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.REJECTED));
+
+    verify(sosStatusHistoryRepository, never()).save(any());
+  }
+
+  @Test
+  void updateStatus_accepted_rejectsAllLosersInOneMultiRecipientPush() {
+    List<BidSos> losers = new java.util.ArrayList<>();
+    for (int i = 0; i < 3; i++) {
+      losers.add(
+          BidSos.builder()
+              .bidId(UUID.randomUUID())
+              .price(BigDecimal.valueOf(400 + i))
+              .sosRequest(pendingSos)
+              .mechanic(
+                  Mechanic.builder()
+                      .mechanicId(UUID.randomUUID())
+                      .fullName("Loser " + i)
+                      .phoneNumber("08" + i)
+                      .availableStatus(true)
+                      .build())
+              .build());
+    }
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenReturn(losers);
+    when(bidSosRepository.saveAll(anyList())).thenReturn(losers);
+    when(sosRequestRepository.save(pendingSos)).thenReturn(pendingSos);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED));
+
+    ArgumentCaptor<SosNotificationEvent> pushes =
+        ArgumentCaptor.forClass(SosNotificationEvent.class);
+    verify(sosEventProducer, atLeastOnce()).publishNotification(pushes.capture());
+    List<SosNotificationEvent> rejected =
+        pushes.getAllValues().stream().filter(e -> e.type().equals("BID_REJECTED")).toList();
+    assertThat(rejected).hasSize(1);
+    assertThat(rejected.get(0).recipientId()).isNull();
+    assertThat(rejected.get(0).recipientIds())
+        .containsExactlyInAnyOrderElementsOf(
+            losers.stream().map(b -> b.getMechanic().getMechanicId()).toList());
+  }
+
   @Test
   void updateStatus_accepted_notifiesLosersWithOnlyTheirOwnBidId() {
     UUID otherMechanicId = UUID.randomUUID();
@@ -450,6 +536,40 @@ class BidServiceImplTest {
     assertThat(asMap(payload.getValue()))
         .containsEntry("type", "BID_CANCELLED")
         .containsEntry("bidId", bidId);
+  }
+
+  // A driver accepted another bid between this bid's first status check and its insert: the
+  // re-check under the row lock sees it and nothing is stored.
+  @Test
+  void create_ticketAcceptedWhileThisBidWasInFlight_refusedUnderTheLock_andNothingSaved() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of("ACCEPTED"));
+
+    assertThatThrownBy(
+            () ->
+                bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500))))
+        .isInstanceOf(IllegalStateException.class);
+
+    verify(bidSosRepository, never()).save(any());
+    verify(sosEventProducer, never()).publishBidCreated(any());
+  }
+
+  // A second accept on the same ticket waits on the lock, then sees ACCEPTED and touches no bid.
+  @Test
+  void updateStatus_accept_ticketNoLongerPendingUnderTheLock_refusedAndNoBidChanged() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of("ACCEPTED"));
+
+    assertThatThrownBy(
+            () ->
+                bidService.updateStatus(
+                    bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED)))
+        .isInstanceOf(IllegalStateException.class);
+
+    assertThat(bid.getStatus()).isNotEqualTo(BidStatus.ACCEPTED);
+    verify(bidSosRepository, never()).save(any());
+    verify(bidSosRepository, never()).saveAll(anyList());
   }
 
   @Test
@@ -526,11 +646,11 @@ class BidServiceImplTest {
   }
 
   @Test
-  void updateStatus_cancelledStatus_throwsIllegalStateException() {
+  void updateStatus_cancelledStatus_throwsIllegalArgumentException() {
     UpdateBidStatusRequest request = new UpdateBidStatusRequest(userId, BidStatus.CANCELLED);
 
     assertThatThrownBy(() -> bidService.updateStatus(bidId, request))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("cancel endpoint");
 
     verify(bidSosRepository, never()).findById(any());

@@ -156,4 +156,17 @@ class GoogleMapsServiceImplTest {
       assertThat(googleMapsService.getDistanceInfo(origin, destination)).isNull();
     }
   }
+
+  @Test
+  void blankApiKey_skipsEveryGoogleCall_andReturnsNull() {
+    org.springframework.test.util.ReflectionTestUtils.setField(googleMapsService, "apiKey", "");
+    org.locationtech.jts.geom.Point p =
+        new org.locationtech.jts.geom.GeometryFactory()
+            .createPoint(new org.locationtech.jts.geom.Coordinate(104.9, 11.5));
+
+    assertThat(googleMapsService.reverseGeocode(11.5, 104.9)).isNull();
+    assertThat(googleMapsService.getDistanceInfo(p, p)).isNull();
+    assertThat(googleMapsService.getDistanceInfos(java.util.List.of(p), p)).isNull();
+    verifyNoInteractions(geoApiContext);
+  }
 }

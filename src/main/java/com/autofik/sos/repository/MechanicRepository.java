@@ -50,6 +50,11 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
   @Query("SELECT m FROM Mechanic m WHERE m.currentH3Index IN :cellIds AND m.availableStatus = true")
   List<Mechanic> findByH3Cells(@Param("cellIds") List<String> cellIds);
 
+  // The three native geo filters below return ids, never entities. A native query cannot carry the
+  // "rate" entity graph, so every Mechanic it hydrated pulled its inverse @OneToOne rating with a
+  // SELECT of its own: 5,532 statements for one SOS create against the load-test seed. Callers
+  // filter by id, and load the few entities they really need through findAllWithRateById.
+
   /**
    * GEOSPATIAL SEARCH - STAGE 2: Precise Radius Calculation (Accurate) PostGIS ST_DWithin exact
    * distance check on the Stage 1 shortlist. service_radius_km is multiplied by 1000 to convert to
@@ -58,7 +63,7 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
   @Query(
       value =
           """
-            SELECT * FROM mechanic m
+            SELECT m.id FROM mechanic m
             WHERE m.id IN :ids
               AND ST_DWithin(
                     m.current_location,
@@ -67,7 +72,7 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
                   )
             """,
       nativeQuery = true)
-  List<Mechanic> filterByRadius(
+  List<UUID> filterByRadius(
       @Param("ids") List<UUID> ids, @Param("lat") double lat, @Param("lng") double lng);
 
   /**
@@ -86,7 +91,7 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
   @Query(
       value =
           """
-            SELECT * FROM mechanic m
+            SELECT m.id FROM mechanic m
             WHERE m.id IN :ids
               AND ST_DWithin(
                     m.current_location,
@@ -95,7 +100,7 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
                   )
             """,
       nativeQuery = true)
-  List<Mechanic> filterByRadiusAndBroadcast(
+  List<UUID> filterByRadiusAndBroadcast(
       @Param("ids") List<UUID> ids,
       @Param("lat") double lat,
       @Param("lng") double lng,
@@ -108,7 +113,7 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
   @Query(
       value =
           """
-            SELECT DISTINCT m.* FROM mechanic m
+            SELECT DISTINCT m.id FROM mechanic m
             JOIN mechanic_skill ms ON ms.mechanic_profile_id = m.id
             WHERE m.current_h3_index IN :cellIds
               AND m.available_status = true
@@ -118,6 +123,11 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
               )
             """,
       nativeQuery = true)
-  List<Mechanic> findByH3CellsAndSkillTag(
+  List<UUID> findByH3CellsAndSkillTag(
       @Param("cellIds") List<String> cellIds, @Param("problemType") String problemType);
+
+  /** Mechanics by id with their rating joined in, so mapping them costs one query, not N + 1. */
+  @EntityGraph(attributePaths = "rate")
+  @Query("SELECT m FROM Mechanic m WHERE m.mechanicId IN :ids")
+  List<Mechanic> findAllWithRateById(@Param("ids") List<UUID> ids);
 }
