@@ -236,6 +236,77 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
   }
 
   /**
+   * A cancelled job used to reach the assigned mechanic never: they kept driving. They now get a
+   * frame on their private queue, and a mechanic who only had a pending bid is told too.
+   */
+  @Test
+  void aCancelledJob_isPushedToTheAssignedMechanic_andToPendingBidders() throws Exception {
+    Driver d = newDriver();
+    Mechanic assigned = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic bidder = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    placeBidOk(bidder, sosId);
+    acceptBidOk(d, placeBidOk(assigned, sosId));
+    // The accept above rejects the bidder's bid; a fresh pending bid needs its own ticket, so the
+    // pending-bidder case is covered separately below.
+
+    StompSession mechanic =
+        stomp.connect(port, "mechanic-context", mechanicContext(assigned.getMechanicId()));
+    StompSession bystander =
+        stomp.connect(port, "mechanic-context", mechanicContext(bidder.getMechanicId()));
+    Tap frames = subscribe(mechanic, "/user/queue/sos-updates");
+    Tap other = subscribe(bystander, "/user/queue/sos-updates");
+    awaitSubscriptions("/user/queue/sos-updates", 2);
+
+    HttpResponse<String> cancel =
+        send(
+            req("/api/v1/sos/" + sosId + "/cancel")
+                .header("user-context", userContextHeader(d))
+                .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancel.statusCode()).as(cancel.body()).isEqualTo(200);
+
+    JsonNode frame = awaitTypedFrame(frames, sosId, "SOS_CANCELLED", Duration.ofSeconds(10));
+    assertThat(frame.get("type").asString()).isEqualTo("SOS_CANCELLED");
+    assertThat(frame.get("fromStatus").asString()).isEqualTo("ACCEPTED");
+    assertThat(other.next(Duration.ofSeconds(1)))
+        .as("a mechanic whose bid was already rejected is not told")
+        .isNull();
+    mechanic.disconnect();
+    bystander.disconnect();
+  }
+
+  @Test
+  void aCancelledRequest_isPushedToMechanicsWithAPendingBid() throws Exception {
+    Driver d = newDriver();
+    Mechanic bidder = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic outsider = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    placeBidOk(bidder, sosId);
+
+    StompSession bidderSession =
+        stomp.connect(port, "mechanic-context", mechanicContext(bidder.getMechanicId()));
+    StompSession outsiderSession =
+        stomp.connect(port, "mechanic-context", mechanicContext(outsider.getMechanicId()));
+    Tap frames = subscribe(bidderSession, "/user/queue/sos-updates");
+    Tap other = subscribe(outsiderSession, "/user/queue/sos-updates");
+    awaitSubscriptions("/user/queue/sos-updates", 2);
+
+    HttpResponse<String> cancel =
+        send(
+            req("/api/v1/sos/" + sosId + "/cancel")
+                .header("user-context", userContextHeader(d))
+                .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancel.statusCode()).as(cancel.body()).isEqualTo(200);
+
+    JsonNode frame = awaitTypedFrame(frames, sosId, "SOS_CANCELLED", Duration.ofSeconds(10));
+    assertThat(frame.get("type").asString()).isEqualTo("SOS_CANCELLED");
+    assertThat(frame.get("fromStatus").asString()).isEqualTo("PENDING");
+    assertThat(other.next(Duration.ofSeconds(1))).as("a mechanic who never bid").isNull();
+    bidderSession.disconnect();
+    outsiderSession.disconnect();
+  }
+
+  /**
    * A customer who never answers must not leave the job open: it blocks a new SOS and keeps the
    * mechanic tied to it. After the approval window the sweep approves the request as the system.
    */
@@ -795,6 +866,27 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
       if (n.has("toStatus") && sosId.toString().equals(n.get("sosId").asString())) return n;
     }
     throw new AssertionError("no status event for " + sosId + " within " + wait);
+  }
+
+  /**
+   * Skips to the frame of the given {@code type} for this ticket (frames without a type are
+   * ignored).
+   */
+  private static JsonNode awaitTypedFrame(Tap tap, UUID sosId, String type, Duration wait)
+      throws Exception {
+    long deadline = System.currentTimeMillis() + wait.toMillis();
+    while (System.currentTimeMillis() < deadline) {
+      String frame = tap.next(Duration.ofMillis(deadline - System.currentTimeMillis()));
+      if (frame == null) break;
+      JsonNode n = parse(frame);
+      if (n.has("type")
+          && type.equals(n.get("type").asString())
+          && n.has("sosId")
+          && sosId.toString().equals(n.get("sosId").asString())) {
+        return n;
+      }
+    }
+    throw new AssertionError("no " + type + " frame for " + sosId + " within " + wait);
   }
 
   private static H3Core h3() {

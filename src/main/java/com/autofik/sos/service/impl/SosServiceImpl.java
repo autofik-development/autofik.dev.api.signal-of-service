@@ -968,9 +968,26 @@ public class SosServiceImpl implements SosService {
     sosRequestRepository.save(sos);
     routeEtaService.clear(sosId); // job is over — drop any countdown still cached
 
+    // Whoever was on the job, or had bid on it, must hear it is off: an assigned mechanic would
+    // otherwise keep driving to a cancelled job.
+    UUID assignedMechanicId =
+        bidSosRepository
+            .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+            .map(bid -> bid.getMechanic().getMechanicId())
+            .orElse(null);
+    List<UUID> pendingBidders =
+        bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING).stream()
+            .map(bid -> bid.getMechanic().getMechanicId())
+            .toList();
+
     sosEventProducer.publishStatusUpdated(
         new SosStatusUpdatedEvent(
-            sos.getSosId(), null, userId, fromStatus, SosStatus.CANCELLED, LocalDateTime.now()));
+            sos.getSosId(),
+            assignedMechanicId,
+            userId,
+            fromStatus,
+            SosStatus.CANCELLED,
+            LocalDateTime.now()));
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
             "STATUS_CANCELLED",
@@ -979,8 +996,53 @@ public class SosServiceImpl implements SosService {
             sos.getSosId(),
             "SOS request cancelled",
             "Your SOS request has been cancelled"));
+    notifyMechanicsOfCancellation(sos, fromStatus, assignedMechanicId, pendingBidders);
 
     return toResponseWithMechanic(sos);
+  }
+
+  /**
+   * Tells the assigned mechanic (a frame and a push) and every mechanic with a pending bid (a frame
+   * each and one batched push) that the customer cancelled. The frame carries the status the
+   * request was in, so the app can tell "my job was cancelled" from "a request I bid on was".
+   */
+  private void notifyMechanicsOfCancellation(
+      SosRequest sos, SosStatus fromStatus, UUID assignedMechanicId, List<UUID> pendingBidders) {
+    if (assignedMechanicId != null) {
+      messagingTemplate.convertAndSendToUser(
+          assignedMechanicId.toString(),
+          "/queue/sos-updates",
+          Map.of(
+              "type", "SOS_CANCELLED", "sosId", sos.getSosId(), "fromStatus", fromStatus.name()));
+      sosEventProducer.publishNotification(
+          new SosNotificationEvent(
+              "SOS_CANCELLED",
+              assignedMechanicId,
+              "MECHANIC",
+              sos.getSosId(),
+              "Job cancelled",
+              "The customer has cancelled this job"));
+    }
+    if (!pendingBidders.isEmpty()) {
+      for (UUID bidder : pendingBidders) {
+        messagingTemplate.convertAndSendToUser(
+            bidder.toString(),
+            "/queue/sos-updates",
+            Map.of(
+                "type", "SOS_CANCELLED", "sosId", sos.getSosId(), "fromStatus", fromStatus.name()));
+      }
+      sosEventProducer.publishNotification(
+          new SosNotificationEvent(
+              "SOS_CANCELLED",
+              null,
+              "MECHANIC",
+              sos.getSosId(),
+              "Request cancelled",
+              "The customer cancelled a request you bid on",
+              null,
+              null,
+              pendingBidders));
+    }
   }
 
   // SosRequest has no direct mechanic relation — the assigned mechanic is resolved

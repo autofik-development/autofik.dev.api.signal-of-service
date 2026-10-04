@@ -1599,6 +1599,105 @@ class SosServiceImplTest {
     verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
   }
 
+  private BidSos bidBy(UUID mechanicUuid, BidStatus status, SosRequest sos) {
+    Mechanic bidder =
+        Mechanic.builder()
+            .mechanicId(mechanicUuid)
+            .fullName("M")
+            .phoneNumber("1")
+            .email("m@x.com")
+            .build();
+    return BidSos.builder()
+        .bidId(UUID.randomUUID())
+        .status(status)
+        .sosRequest(sos)
+        .mechanic(bidder)
+        .build();
+  }
+
+  // An assigned mechanic used to keep driving to a job the customer had cancelled: nobody told
+  // them.
+  @Test
+  void cancel_acceptedJob_tellsTheAssignedMechanic_withAFrameAndAPush() {
+    SosRequest accepted =
+        SosRequest.builder()
+            .sosId(sosId)
+            .status(SosStatus.ON_THE_WAY)
+            .user(user)
+            .vehicle(vehicle)
+            .build();
+    UUID assigned = UUID.randomUUID();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(accepted));
+    when(sosRequestRepository.save(accepted)).thenReturn(accepted);
+    when(sosMapper.toResponse(accepted)).thenReturn(sosResponse);
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(bidBy(assigned, BidStatus.ACCEPTED, accepted)));
+
+    sosService.cancel(sosId, userId);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(assigned.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "SOS_CANCELLED", "sosId", sosId, "fromStatus", "ON_THE_WAY")));
+    ArgumentCaptor<SosNotificationEvent> pushes =
+        ArgumentCaptor.forClass(SosNotificationEvent.class);
+    verify(sosEventProducer, times(2)).publishNotification(pushes.capture());
+    assertThat(pushes.getAllValues())
+        .anySatisfy(
+            p -> {
+              assertThat(p.type()).isEqualTo("SOS_CANCELLED");
+              assertThat(p.recipientId()).isEqualTo(assigned);
+              assertThat(p.recipientRole()).isEqualTo("MECHANIC");
+            });
+    ArgumentCaptor<SosStatusUpdatedEvent> event =
+        ArgumentCaptor.forClass(SosStatusUpdatedEvent.class);
+    verify(sosEventProducer).publishStatusUpdated(event.capture());
+    assertThat(event.getValue().mechanicId())
+        .as("the Kafka event names the mechanic")
+        .isEqualTo(assigned);
+  }
+
+  @Test
+  void cancel_pendingBids_tellsEachBidder_withOneBatchedPush() {
+    UUID a = UUID.randomUUID();
+    UUID b = UUID.randomUUID();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(sosRequestRepository.save(pendingSos)).thenReturn(pendingSos);
+    when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenReturn(
+            List.of(
+                bidBy(a, BidStatus.PENDING, pendingSos), bidBy(b, BidStatus.PENDING, pendingSos)));
+
+    sosService.cancel(sosId, userId);
+
+    for (UUID bidder : List.of(a, b)) {
+      verify(messagingTemplate)
+          .convertAndSendToUser(
+              eq(bidder.toString()),
+              eq("/queue/sos-updates"),
+              eq(Map.of("type", "SOS_CANCELLED", "sosId", sosId, "fromStatus", "PENDING")));
+    }
+    ArgumentCaptor<SosNotificationEvent> pushes =
+        ArgumentCaptor.forClass(SosNotificationEvent.class);
+    verify(sosEventProducer, times(2)).publishNotification(pushes.capture());
+    assertThat(pushes.getAllValues())
+        .anySatisfy(p -> assertThat(p.recipientIds()).containsExactlyInAnyOrder(a, b));
+  }
+
+  @Test
+  void cancel_withNoBids_sendsNoMechanicFramesOrPushes() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(sosRequestRepository.save(pendingSos)).thenReturn(pendingSos);
+    when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
+
+    sosService.cancel(sosId, userId);
+
+    verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
+    verify(sosEventProducer, times(1)).publishNotification(any(SosNotificationEvent.class));
+  }
+
   @Test
   void cancel_completedStatus_throwsIllegalStateException() {
     SosRequest completedSos =

@@ -142,17 +142,17 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 |---|---|---|
 | `/user/queue/sos-new-request` | eligible mechanics | `SOS_CREATED`: `type, sosId, title, body, photoUrls[≤3], estimate{remainingDistanceM, remainingDurationS, remainingDistanceText, remainingDurationText}` (recipient fields are null) |
 | `/user/queue/sos-updates` (customer) | the owner | `BID_RECEIVED {type, sosId, bid}`, `BID_CANCELLED {type, sosId, bidId}`, `COMPLETION_REQUESTED {type, sosId, historyId, approveBy}` (`approveBy` is when it will be approved automatically), `COMPLETION_AUTO_APPROVED {type, sosId}`, `BIDDING_EXPIRED {type, sosId, retriesLeft, attemptsLeft}`, `SOS_AUTO_REBROADCAST {type, sosId, newRadiusKm, …}`, `SOS_REBROADCAST {type, sosId, rebroadcastCount, attemptsLeft}`; and **status frames without a `type`**: `{sosId, mechanicId, userId, fromStatus, toStatus, changedAt}` for ON_THE_WAY, ARRIVED and IN_PROGRESS |
-| `/user/queue/sos-updates` (mechanic) | the winner / the losers | winner: `{bidId, sosId, mechanicId, userId, latitude, longitude, acceptedAt}` (no `type`); losers: `BID_REJECTED {type, sosId, bidId}`; `COMPLETION_REJECTED {type, sosId, historyId}`; a status frame after the customer approves completion |
+| `/user/queue/sos-updates` (mechanic) | the winner / the losers / cancelled | winner: `{bidId, sosId, mechanicId, userId, latitude, longitude, acceptedAt}` (no `type`); losers: `BID_REJECTED {type, sosId, bidId}`; `COMPLETION_REJECTED {type, sosId, historyId}`; a status frame after the customer approves completion; **`SOS_CANCELLED {type, sosId, fromStatus}` when the customer cancels**, sent to the assigned mechanic (`fromStatus` is `ACCEPTED`, `ON_THE_WAY`, `ARRIVED` or `IN_PROGRESS`: stop driving) and to every mechanic with a pending bid (`fromStatus` is `PENDING`) |
 | `/topic/sos/{sosId}/location` | subscribers of that SOS | `{sosId, mechanicId, latitude, longitude, timestamp (+07:00), remainingDistanceM, remainingDurationS, remainingDistanceText, remainingDurationText}`; the `remaining*` fields are null when there is no ETA |
 | `/topic/sos/{sosId}/media` | subscribers of that SOS | `{sosId, mediaId, uploadedByRole, uploadedById, uploadedAt}` |
 
 Location frames normally arrive through Redis pub/sub and through Kafka when Redis is unavailable. Order by `timestamp` if you must be exact.
 
-**Not sent over WebSocket:** customer cancel, expiry (other than `BIDDING_EXPIRED`), and a single bid reject. See Known gaps.
+**Not sent over WebSocket:** expiry to bidders (the owner gets `BIDDING_EXPIRED`) and a single bid reject. See Known gaps.
 
 ## 6. Push notifications (OneSignal)
 
-Pushes target the OneSignal alias `external_id` = the user's/mechanic's UUID, so **both apps must call `OneSignal.login(<uuid>)`**. The push `data` is `{type, sosId}`. Types used: `SOS_CREATED` (not pushed, WebSocket only), `BID_RECEIVED`, `BID_ACCEPTED`, `BID_REJECTED` (one batched push for all losers), `BID_CANCELLED`, `BIDDING_EXPIRED`, `SOS_AUTO_REBROADCAST`, `COMPLETION_REQUESTED`, `COMPLETION_REJECTED`, `STATUS_ON_THE_WAY`, `STATUS_ARRIVED`, `STATUS_IN_PROGRESS`, `STATUS_COMPLETED`, `STATUS_CANCELLED`. Delivery is best-effort: a failed push is logged and published to `sos.dlq`, never retried. A redelivered Kafka record does not send a second push (idempotency key).
+Pushes target the OneSignal alias `external_id` = the user's/mechanic's UUID, so **both apps must call `OneSignal.login(<uuid>)`**. The push `data` is `{type, sosId}`. Types used: `SOS_CREATED` (not pushed, WebSocket only), `BID_RECEIVED`, `BID_ACCEPTED`, `BID_REJECTED` (one batched push for all losers), `BID_CANCELLED`, `BIDDING_EXPIRED`, `SOS_AUTO_REBROADCAST`, `COMPLETION_REQUESTED`, `COMPLETION_REJECTED`, `STATUS_ON_THE_WAY`, `STATUS_ARRIVED`, `STATUS_IN_PROGRESS`, `STATUS_COMPLETED`, `STATUS_CANCELLED` (to the customer), `SOS_CANCELLED` (to the assigned mechanic, and one batched push to mechanics with a pending bid). Delivery is best-effort: a failed push is logged and published to `sos.dlq`, never retried. A redelivered Kafka record does not send a second push (idempotency key).
 
 ## 7. Kafka topics
 
@@ -165,7 +165,7 @@ Partitions default to 3, replication factor 1 unless configured. Key is the `sos
 | `sos.bid.accepted` | sosId | `{bidId, sosId, mechanicId, userId, latitude, longitude, acceptedAt}` |
 | `sos.bid.rejected` | sosId | `{sosId, bidIds[]}` |
 | `sos.bid.cancelled` | sosId | `{bidId, sosId, mechanicId, cancelledAt}` |
-| `sos.status.updated` | sosId | `{sosId, mechanicId, userId, fromStatus, toStatus, changedAt}`; published for mechanic status changes, completion approval, cancel and expiry |
+| `sos.status.updated` | sosId | `{sosId, mechanicId, userId, fromStatus, toStatus, changedAt}`; published for mechanic status changes, completion approval, cancel and expiry (on cancel `mechanicId` is the assigned mechanic, null when none) |
 | `sos.notification` | recipient id (null for fan-out) | `{type, recipientId, recipientRole, sosId, title, body, photoUrls, estimate, recipientIds}` |
 | `sos.media.uploaded` | sosId | `{sosId, mediaId, uploadedByRole, uploadedById, uploadedAt}` |
 | `mechanic.location.updated` | sosId | the location event; **only used when Redis is down** |
@@ -180,7 +180,7 @@ Events are published inside the database transaction, before commit, with no out
 What the other teams must know before integrating. Tracked in the vault audit and the repository issues.
 
 1. **No user or vehicle provisioning.** `POST /sos` returns 404 "User not found" unless the user and vehicle already exist in SOS's tables. The internal team decides how that data arrives.
-2. **Customer cancel does not notify the assigned mechanic** (no WebSocket frame, no push), and there is no mechanic-side cancel. Pending bids stay PENDING after cancel or expiry.
+2. **There is no mechanic-side cancel.** A mechanic who cannot attend cannot release the job; the customer must cancel. After a customer cancel the assigned mechanic and pending bidders are notified (`SOS_CANCELLED`), but pending bids stay `PENDING` in the database until withdrawn.
 3. **The completion push does not carry the `historyId`.** After a push or a missed `COMPLETION_REQUESTED` frame the app reads `pendingCompletionHistoryId` and `pendingCompletionApproveBy` from `GET /sos/{sosId}`. An unanswered request is approved automatically after the window (default 2 minutes, `SOS_COMPLETION_APPROVAL_WINDOW_SECONDS`); the product owner should confirm that is the wanted behaviour and the length.
 4. **Expiry and a single bid reject send no WebSocket frame** to bidders.
 5. **A mechanic cannot re-bid after withdrawing**, and rebroadcast re-offers the SOS to mechanics who already bid.
