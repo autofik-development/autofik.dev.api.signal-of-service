@@ -121,4 +121,7 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
    * to tell a true zero-response expiry from one where bids just weren't accepted in time.
    */
   boolean existsBySosRequestSosId(UUID sosId);
+
+  /** Drops every bid on the SOS in the given status; the caller must be in a transaction. */
+  void deleteBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
 }

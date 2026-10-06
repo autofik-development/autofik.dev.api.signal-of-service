@@ -117,4 +117,14 @@ public interface SosService {
    * @return the updated SOS ticket now back in PENDING state
    */
   SosRequestResponse rebroadcast(UUID sosId, UUID userId);
+
+  /**
+   * Use case: the assigned mechanic backs out of an accepted job before ARRIVED. The ticket returns
+   * to PENDING with a fresh bidding window and is offered again, except to the releasing mechanic.
+   *
+   * @param sosId the SOS the mechanic was assigned to
+   * @param mechanicId security check, must be the mechanic holding the ACCEPTED bid
+   * @return the ticket, back in PENDING state
+   */
+  SosRequestResponse releaseByMechanic(UUID sosId, UUID mechanicId);
 }

@@ -91,6 +91,14 @@ public class SosController {
     return sosService.updateStatus(sosId, mechanic.id(), toStatus);
   }
 
+  // PATCH /api/v1/sos/{sosId}/mechanic-release — Assigned mechanic backs out before ARRIVED; the
+  // SOS goes back to PENDING and is offered again to other mechanics
+  @PatchMapping("/{sosId}/mechanic-release")
+  public SosRequestResponse releaseByMechanic(
+      @PathVariable UUID sosId, @AuthMechanic CurrentUser mechanic) {
+    return sosService.releaseByMechanic(sosId, mechanic.id());
+  }
+
   // POST /api/v1/sos/{sosId}/completion — Mechanic proposes COMPLETED; creates a PENDING_APPROVAL
   // record
   // The user is notified via WebSocket and must confirm via PATCH /completion

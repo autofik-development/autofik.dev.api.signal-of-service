@@ -795,6 +795,135 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     return out;
   }
 
+  private HttpResponse<String> release(Mechanic m, UUID sosId) throws Exception {
+    return send(
+        req("/api/v1/sos/" + sosId + "/mechanic-release")
+            .header("mechanic-context", mechanicContext(m.getMechanicId()))
+            .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+  }
+
+  /**
+   * The assigned mechanic backs out: the ticket is open for bidding again, the customer is told,
+   * everyone but the releaser is offered the job, a mechanic whose bid was auto-rejected at the
+   * accept can bid again, and the history records the release.
+   */
+  @Test
+  void aReleasedJob_goesBackToBidding_andIsOfferedToEveryoneButTheReleaser() throws Exception {
+    Driver d = newDriver();
+    Mechanic releaser = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic other = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    UUID otherBid = placeBidOk(other, sosId);
+    acceptBidOk(d, placeBidOk(releaser, sosId));
+    assertThat(updateStatus(releaser, sosId, SosStatus.ON_THE_WAY).statusCode()).isEqualTo(200);
+
+    StompSession customer = stomp.connect(port, "user-context", userContextHeader(d));
+    StompSession otherMechanic =
+        stomp.connect(port, "mechanic-context", mechanicContext(other.getMechanicId()));
+    StompSession releasingMechanic =
+        stomp.connect(port, "mechanic-context", mechanicContext(releaser.getMechanicId()));
+    Tap customerFrames = subscribe(customer, "/user/queue/sos-updates");
+    Tap otherOffers = subscribe(otherMechanic, "/user/queue/sos-new-request");
+    Tap releaserOffers = subscribe(releasingMechanic, "/user/queue/sos-new-request");
+    awaitSubscriptions("/user/queue/sos-updates", 1);
+    awaitSubscriptions("/user/queue/sos-new-request", 2);
+
+    HttpResponse<String> released = release(releaser, sosId);
+    assertThat(released.statusCode()).as(released.body()).isEqualTo(200);
+    assertThat(sosStatus(d, sosId)).isEqualTo("PENDING");
+
+    JsonNode frame =
+        awaitTypedFrame(customerFrames, sosId, "MECHANIC_RELEASED", Duration.ofSeconds(10));
+    assertThat(frame.get("fromStatus").asString()).isEqualTo("ON_THE_WAY");
+    assertThat(awaitTypedFrame(otherOffers, sosId, "SOS_CREATED", Duration.ofSeconds(10)))
+        .as("the other mechanic is offered the job again")
+        .isNotNull();
+    assertThat(releaserOffers.next(Duration.ofSeconds(1)))
+        .as("the mechanic who released it is not offered it again")
+        .isNull();
+
+    List<String> transitions = new ArrayList<>();
+    for (SosStatusHistory h : historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)) {
+      transitions.add(h.getFromStatus() + ">" + h.getToStatus());
+    }
+    assertThat(transitions)
+        .containsExactly("PENDING>ACCEPTED", "ACCEPTED>ON_THE_WAY", "ON_THE_WAY>PENDING");
+
+    assertThat(placeBid(releaser, sosId).statusCode())
+        .as("the mechanic who released it cannot bid on it again")
+        .isEqualTo(409);
+    UUID rebid = placeBidOk(other, sosId);
+    assertThat(rebid).as("the rejected mechanic bids afresh").isNotEqualTo(otherBid);
+    acceptBidOk(d, rebid);
+    assertThat(sosStatus(d, sosId)).isEqualTo("ACCEPTED");
+    assertThat(updateStatus(other, sosId, SosStatus.ON_THE_WAY).statusCode()).isEqualTo(200);
+
+    customer.disconnect();
+    otherMechanic.disconnect();
+    releasingMechanic.disconnect();
+  }
+
+  @Test
+  void aJobCannotBeReleasedFromArrived_orByAnotherMechanic() throws Exception {
+    Driver d = newDriver();
+    Mechanic assigned = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic outsider = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    assignMechanic(d, assigned, sosId);
+
+    assertThat(release(outsider, sosId).statusCode()).isEqualTo(403);
+    assertThat(sosStatus(d, sosId)).isEqualTo("ACCEPTED");
+
+    for (SosStatus next : List.of(SosStatus.ON_THE_WAY, SosStatus.ARRIVED)) {
+      assertThat(updateStatus(assigned, sosId, next).statusCode()).isEqualTo(200);
+    }
+    HttpResponse<String> late = release(assigned, sosId);
+    assertThat(late.statusCode()).as(late.body()).isEqualTo(409);
+    assertThat(sosStatus(d, sosId)).isEqualTo("ARRIVED");
+  }
+
+  /**
+   * The mechanic releases at the same instant as they mark ARRIVED. Both take the ticket lock, so
+   * exactly one wins and the ticket never ends ARRIVED with its accepted bid cancelled.
+   */
+  @Test
+  void releaseAgainstArrived_exactlyOneWins() throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      for (int round = 0; round < 5; round++) {
+        Driver d = newDriver();
+        Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+        UUID sosId = createSosOk(d);
+        assignMechanic(d, m, sosId);
+        assertThat(updateStatus(m, sosId, SosStatus.ON_THE_WAY).statusCode()).isEqualTo(200);
+
+        CountDownLatch go = new CountDownLatch(1);
+        Future<HttpResponse<String>> arrive =
+            pool.submit(
+                () -> {
+                  go.await();
+                  return updateStatus(m, sosId, SosStatus.ARRIVED);
+                });
+        Future<HttpResponse<String>> leave =
+            pool.submit(
+                () -> {
+                  go.await();
+                  return release(m, sosId);
+                });
+        go.countDown();
+        int arrived = arrive.get(30, TimeUnit.SECONDS).statusCode();
+        int left = leave.get(30, TimeUnit.SECONDS).statusCode();
+
+        assertThat(List.of(arrived, left).stream().filter(c -> c == 200).count())
+            .as("round %d: arrived=%d released=%d", round, arrived, left)
+            .isEqualTo(1);
+        assertThat(sosStatus(d, sosId)).isEqualTo(arrived == 200 ? "ARRIVED" : "PENDING");
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
   private HttpResponse<String> updateStatus(Mechanic m, UUID sosId, SosStatus to) throws Exception {
     return send(
         req("/api/v1/sos/" + sosId + "/status?toStatus=" + to)
