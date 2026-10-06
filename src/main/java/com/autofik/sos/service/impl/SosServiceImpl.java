@@ -20,6 +20,7 @@ import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
+import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
@@ -543,6 +544,32 @@ public class SosServiceImpl implements SosService {
             .build();
     sosRequestRepository.save(sos);
     return sos;
+  }
+
+  // The owner and the mechanic whose bid is accepted: narrower than isVisibleTo, which also lets
+  // every bidder and every eligible mechanic in. A released mechanic's bid is CANCELLED, so they
+  // lose access with the job. Not 403: telling an outsider "forbidden" tells them the id is real.
+  @Override
+  @Transactional(readOnly = true)
+  public List<SosStatusHistoryEntry> getHistory(UUID sosId, UUID callerId) {
+    SosRequest sos = findSosOrThrow(sosId);
+    boolean assigned =
+        bidSosRepository
+            .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+            .map(bid -> bid.getMechanic().getMechanicId().equals(callerId))
+            .orElse(false);
+    if (!sos.getUser().getUserId().equals(callerId) && !assigned) {
+      throw new EntityNotFoundException("SOS request not found: " + sosId);
+    }
+    return sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId).stream()
+        .map(
+            h ->
+                new SosStatusHistoryEntry(
+                    h.getFromStatus(),
+                    h.getToStatus(),
+                    h.getApproveAt() != null ? h.getApproveAt() : h.getChangeAt(),
+                    h.getApprovedStatus()))
+        .toList();
   }
 
   @Override

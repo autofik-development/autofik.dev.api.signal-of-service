@@ -2,6 +2,7 @@ package com.autofik.sos.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -18,6 +19,7 @@ import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
+import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
@@ -2984,6 +2986,144 @@ class SosServiceImplTest {
         .hasMessageContaining("is off");
 
     verify(sosRequestRepository, never()).lockStatus(any());
+  }
+
+  // ── getHistory: the job timeline, for the owner and the accepted mechanic ──────────
+
+  private SosStatusHistory historyRow(
+      SosStatus from,
+      SosStatus to,
+      ApprovedStatus decision,
+      LocalDateTime changedAt,
+      LocalDateTime decidedAt) {
+    return SosStatusHistory.builder()
+        .fromStatus(from)
+        .toStatus(to)
+        .approvedStatus(decision)
+        .changeAt(changedAt)
+        .approveAt(decidedAt)
+        .proposedBy(mechanic)
+        .build();
+  }
+
+  @Test
+  void getHistory_owner_getsTheEntriesInOrder_withTheTimeTheStepTookEffect() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    stubAssignedMechanic(sos);
+    LocalDateTime t = LocalDateTime.of(2026, 10, 7, 10, 0);
+    when(sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId))
+        .thenReturn(
+            List.of(
+                historyRow(SosStatus.PENDING, SosStatus.ACCEPTED, ApprovedStatus.ACCEPTED, t, t),
+                historyRow(
+                    SosStatus.ACCEPTED,
+                    SosStatus.ON_THE_WAY,
+                    ApprovedStatus.ACCEPTED,
+                    t.plusMinutes(3),
+                    t.plusMinutes(3)),
+                // Rejected, then asked again and still waiting: both show, with their decision.
+                historyRow(
+                    SosStatus.ON_THE_WAY,
+                    SosStatus.ARRIVED,
+                    ApprovedStatus.REJECTED,
+                    t.plusMinutes(10),
+                    t.plusMinutes(11)),
+                historyRow(
+                    SosStatus.ON_THE_WAY,
+                    SosStatus.ARRIVED,
+                    ApprovedStatus.PENDING_APPROVAL,
+                    t.plusMinutes(12),
+                    null)));
+
+    List<SosStatusHistoryEntry> entries = sosService.getHistory(sosId, userId);
+
+    assertThat(entries)
+        .extracting(
+            SosStatusHistoryEntry::fromStatus,
+            SosStatusHistoryEntry::toStatus,
+            SosStatusHistoryEntry::at,
+            SosStatusHistoryEntry::decision)
+        .containsExactly(
+            tuple(SosStatus.PENDING, SosStatus.ACCEPTED, t, ApprovedStatus.ACCEPTED),
+            tuple(
+                SosStatus.ACCEPTED,
+                SosStatus.ON_THE_WAY,
+                t.plusMinutes(3),
+                ApprovedStatus.ACCEPTED),
+            tuple(
+                SosStatus.ON_THE_WAY,
+                SosStatus.ARRIVED,
+                t.plusMinutes(11),
+                ApprovedStatus.REJECTED),
+            tuple(
+                SosStatus.ON_THE_WAY,
+                SosStatus.ARRIVED,
+                t.plusMinutes(12),
+                ApprovedStatus.PENDING_APPROVAL));
+  }
+
+  // The mechanic whose bid was accepted reads the same list the customer does.
+  @Test
+  void getHistory_theMechanicWhoseBidWasAccepted_getsTheSameEntries() {
+    SosRequest sos = sosAt(SosStatus.COMPLETED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    stubAssignedMechanic(sos);
+    LocalDateTime t = LocalDateTime.of(2026, 10, 7, 10, 0);
+    when(sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId))
+        .thenReturn(
+            List.of(
+                historyRow(SosStatus.PENDING, SosStatus.ACCEPTED, ApprovedStatus.ACCEPTED, t, t)));
+
+    assertThat(sosService.getHistory(sosId, mechanicId)).hasSize(1);
+    assertThat(sosService.getHistory(sosId, userId)).hasSize(1);
+  }
+
+  // Not every bidder: the ticket rule lets a bidder read the ticket, the timeline is not theirs.
+  @Test
+  void getHistory_aMechanicWhoBidButWasNotChosen_getsNotFound() {
+    SosRequest sos = sosAt(SosStatus.ACCEPTED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    stubAssignedMechanic(sos); // someone else holds the accepted bid, not this caller
+
+    assertThatThrownBy(() -> sosService.getHistory(sosId, UUID.randomUUID()))
+        .isInstanceOf(EntityNotFoundException.class)
+        .hasMessageContaining(sosId.toString());
+
+    verify(sosStatusHistoryRepository, never()).findBySosRequestSosIdOrderByChangeAtAsc(any());
+  }
+
+  // A mechanic who released the job (or was released) has a CANCELLED bid: it is not their job now.
+  @Test
+  void getHistory_aMechanicWhoReleasedTheJob_getsNotFound() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.getHistory(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+
+    verify(sosStatusHistoryRepository, never()).findBySosRequestSosIdOrderByChangeAtAsc(any());
+  }
+
+  @Test
+  void getHistory_anotherDriver_getsNotFound() {
+    SosRequest sos = sosAt(SosStatus.ACCEPTED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.getHistory(sosId, UUID.randomUUID()))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void getHistory_unknownTicket_getsNotFound() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.getHistory(sosId, userId))
+        .isInstanceOf(EntityNotFoundException.class);
   }
 
   private List<UUID> ids(Mechanic... mechanics) {
