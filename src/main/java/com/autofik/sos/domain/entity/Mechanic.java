@@ -1,6 +1,5 @@
 package com.autofik.sos.domain.entity;
 
-import com.autofik.sos.domain.enums.ApprovalStatus;
 import com.autofik.sos.domain.enums.MechanicRole;
 import jakarta.persistence.*;
 import java.util.List;
@@ -55,13 +54,6 @@ public class Mechanic {
   @Column(name = "referral_code", unique = true)
   private String referralCode;
 
-  // Identity document check (ID card, license) — done during onboarding.
-  @Enumerated(EnumType.STRING)
-  @Column(name = "kyc_status", nullable = false)
-  @Builder.Default
-  @ToString.Include
-  private ApprovalStatus kycStatus = ApprovalStatus.PENDING;
-
   @Column(columnDefinition = "TEXT")
   private String address;
 
@@ -105,13 +97,6 @@ public class Mechanic {
   @Builder.Default
   @ToString.Include
   private Boolean availableStatus = true;
-
-  // Admin verification of mechanic credentials/skills — separate from KYC.
-  @Enumerated(EnumType.STRING)
-  @Column(name = "verification_status", nullable = false)
-  @Builder.Default
-  @ToString.Include
-  private ApprovalStatus verificationStatus = ApprovalStatus.PENDING;
 
   // Relations
   @OneToOne(mappedBy = "mechanic", cascade = CascadeType.ALL)

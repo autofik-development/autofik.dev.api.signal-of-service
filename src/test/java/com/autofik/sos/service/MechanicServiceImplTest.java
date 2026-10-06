@@ -7,7 +7,6 @@ import static org.mockito.Mockito.*;
 
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.MechanicSkill;
-import com.autofik.sos.domain.enums.ApprovalStatus;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.request.CreateMechanicSkillRequest;
@@ -97,13 +96,11 @@ class MechanicServiceImplTest {
             "bob@fix.com",
             null,
             null,
-            ApprovalStatus.PENDING,
             null,
             10,
             BigDecimal.ZERO,
             0,
             true,
-            ApprovalStatus.PENDING,
             null,
             null);
   }
@@ -166,13 +163,11 @@ class MechanicServiceImplTest {
             "b@fix.com",
             null,
             null,
-            ApprovalStatus.PENDING,
             null,
             10,
             BigDecimal.ZERO,
             0,
             true,
-            ApprovalStatus.PENDING,
             null,
             null);
 

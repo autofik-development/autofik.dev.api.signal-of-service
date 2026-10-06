@@ -1231,9 +1231,7 @@ class SosServiceImplTest {
             null,
             null,
             null,
-            null,
             true,
-            null,
             null,
             null);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
@@ -1356,9 +1354,7 @@ class SosServiceImplTest {
             null,
             null,
             null,
-            null,
             true,
-            null,
             null,
             null);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
@@ -1397,9 +1393,7 @@ class SosServiceImplTest {
                 null,
                 null,
                 null,
-                null,
                 true,
-                null,
                 null,
                 null));
 

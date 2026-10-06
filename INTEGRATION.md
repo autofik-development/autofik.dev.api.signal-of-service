@@ -130,7 +130,7 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 ### Main response shapes
 - `SosRequestResponse`: `sosId, problemType, description, locationAddress, status, latitude, longitude, broadcastRadiusKm, createdAt, updatedAt, biddingExpiresAt, jobStartedAt, jobCompletedAt, durationSeconds, rebroadcastCount, user{userId,name,phone,status,refererCode}, vehicle{id,carBrand,carModel,carModelYear,fuelType}, mechanic{…}, pendingCompletionHistoryId`.
 - `BidSosResponse`: `bidId, price, status, estimatedDistanceM, estimatedDurationS, estimatedDistanceText, estimatedDurationText, bidAt, respondedAt, mechanic{…}`.
-- `MechanicResponse`: `mechanicId, fullName, phoneNumber, email, mechanicRole (UNDER_GARAGE|FREELANCE), referralCode, kycStatus, address, serviceRadiusKm, avgRate, rateCount, availableStatus, verificationStatus, latitude, longitude`.
+- `MechanicResponse`: `mechanicId, fullName, phoneNumber, email, mechanicRole (UNDER_GARAGE|FREELANCE), referralCode, address, serviceRadiusKm, avgRate, rateCount, availableStatus, latitude, longitude`.
 - `SosStatusHistoryResponse`: `id, fromStatus, toStatus, changeAt, proposedAt, approveAt, approvedStatus (PENDING_APPROVAL|ACCEPTED|REJECTED), proposedBy, approvedBy`.
 - Enums: `SosStatus` PENDING, ACCEPTED, ON_THE_WAY, ARRIVED, IN_PROGRESS, COMPLETED, CANCELLED, EXPIRED. `BidStatus` PENDING, ACCEPTED, REJECTED, CANCELLED.
 
@@ -188,8 +188,8 @@ What the other teams must know before integrating. Tracked in the vault audit an
 4. **Expiry and a single bid reject send no WebSocket frame** to bidders.
 5. **A mechanic cannot re-bid after withdrawing**, and rebroadcast re-offers the SOS to mechanics who already bid.
 6. **A mechanic who misses the WebSocket frame never sees a new SOS:** there is no REST list of open nearby SOS.
-7. **`POST /mechanics` is not idempotent.** Calling it again for an existing mechanic overwrites the row (likely resetting KYC and verification status, availability and location) and duplicates skills. Call it once.
-8. **Dispatch ignores KYC and verification status, busy mechanics and location age.** Bid create does not check that the mechanic is eligible (skill, radius).
+7. **`POST /mechanics` is not idempotent.** Calling it again for an existing mechanic overwrites the row (likely resetting availability and location) and duplicates skills. Call it once.
+8. **SOS does not store or check KYC.** A mechanic must be KYC-verified to bid; SSO or the gateway has to refuse unverified mechanics before the request reaches this service.
 9. **Mechanic profile fields are limited:** `fullName` and `email` 30 characters, `phoneNumber` 20, with no validation message; longer values fail with 409.
 10. **Plan, subscription and tag-verification endpoints do not exist,** and there is no service-to-service authentication.
 11. **Run one replica:** the WebSocket broker and the bidding-expiry timers are in memory.
