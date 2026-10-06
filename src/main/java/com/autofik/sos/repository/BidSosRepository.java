@@ -128,6 +128,10 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
    */
   boolean existsBySosRequestSosIdAndMechanicMechanicId(UUID sosId, UUID mechanicId);
 
+  /** The mechanic's bid on this SOS, if any (the latest, should history ever hold two). */
+  Optional<BidSos> findFirstBySosRequestSosIdAndMechanicMechanicIdOrderByBidAtDesc(
+      UUID sosId, UUID mechanicId);
+
   /**
    * Checks whether any bid at all exists for a SOS request, regardless of status or mechanic — used
    * to tell a true zero-response expiry from one where bids just weren't accepted in time.

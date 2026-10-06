@@ -2472,6 +2472,115 @@ class SosServiceImplTest {
         .isInstanceOf(jakarta.persistence.EntityNotFoundException.class);
   }
 
+  // ── bids are closed with the request ──────────────────────────────────────────────
+
+  @Test
+  void cancel_closesThePendingBids_andTellsKafka_butLeavesTheAcceptedOneAlone() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    UUID bidderA = UUID.randomUUID();
+    UUID bidderB = UUID.randomUUID();
+    BidSos a = bidBy(bidderA, BidStatus.PENDING, sos);
+    BidSos b = bidBy(bidderB, BidStatus.PENDING, sos);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosRequestRepository.save(sos)).thenReturn(sos);
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenReturn(List.of(a, b));
+
+    sosService.cancel(sosId, userId);
+
+    assertThat(a.getStatus()).isEqualTo(BidStatus.REJECTED);
+    assertThat(b.getStatus()).isEqualTo(BidStatus.REJECTED);
+    assertThat(a.getRespondedAt()).isNotNull();
+    verify(bidSosRepository).saveAll(List.of(a, b));
+    verify(sosEventProducer)
+        .publishBidRejected(
+            argThat(
+                e ->
+                    e.sosId().equals(sosId)
+                        && e.bidIds().containsAll(List.of(a.getBidId(), b.getBidId()))));
+    // They are still told the request was cancelled.
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(bidderA.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "SOS_CANCELLED", "sosId", sosId, "fromStatus", "PENDING")));
+  }
+
+  @Test
+  void expiry_withBids_closesThem_andTellsEachBidderOnce_withOneBatchedPush() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    UUID bidderA = UUID.randomUUID();
+    UUID bidderB = UUID.randomUUID();
+    BidSos a = bidBy(bidderA, BidStatus.PENDING, sos);
+    BidSos b = bidBy(bidderB, BidStatus.PENDING, sos);
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenReturn(List.of(a, b));
+
+    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+    assertThat(a.getStatus()).isEqualTo(BidStatus.REJECTED);
+    assertThat(b.getStatus()).isEqualTo(BidStatus.REJECTED);
+    verify(sosEventProducer).publishBidRejected(any());
+    for (UUID bidder : List.of(bidderA, bidderB)) {
+      verify(messagingTemplate)
+          .convertAndSendToUser(
+              eq(bidder.toString()),
+              eq("/queue/sos-updates"),
+              eq(Map.of("type", "SOS_EXPIRED", "sosId", sosId)));
+    }
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(
+                n ->
+                    n.type().equals("SOS_EXPIRED")
+                        && n.recipientIds() != null
+                        && n.recipientIds().containsAll(List.of(bidderA, bidderB))));
+    // The customer is told as before.
+    verify(messagingTemplate)
+        .convertAndSendToUser(eq(userId.toString()), eq("/queue/sos-updates"), any());
+  }
+
+  @Test
+  void expiry_withNoBids_touchesNoBidAndSendsNoBidderFrame() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    sos.setRebroadcastCount(3);
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
+
+    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+    verify(bidSosRepository, never()).saveAll(any());
+    verify(messagingTemplate, never())
+        .convertAndSendToUser(
+            any(), eq("/queue/sos-updates"), eq(Map.of("type", "SOS_EXPIRED", "sosId", sosId)));
+  }
+
+  @Test
+  void expiry_aFailureClosingTheBids_stillExpiresTheTicket() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenThrow(new RuntimeException("db hiccup"));
+
+    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+    verify(messagingTemplate)
+        .convertAndSendToUser(eq(userId.toString()), eq("/queue/sos-updates"), any());
+  }
+
+  @Test
+  void rebroadcast_startsACleanRound_byDeletingTheLastRoundsRejectedBids() {
+    expiredSosWithRadius();
+
+    sosService.rebroadcast(sosId, userId);
+
+    verify(bidSosRepository).deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
+  }
+
   private final java.util.Map<UUID, Mechanic> knownMechanics = new java.util.HashMap<>();
 
   /**

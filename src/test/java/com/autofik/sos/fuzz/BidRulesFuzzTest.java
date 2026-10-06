@@ -10,6 +10,7 @@ import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
+import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
@@ -112,8 +113,17 @@ class BidRulesFuzzTest {
                     .phoneNumber("081")
                     .availableStatus(available)
                     .build()));
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
-        .thenReturn(alreadyBid);
+    when(bidSosRepository.findFirstBySosRequestSosIdAndMechanicMechanicIdOrderByBidAtDesc(
+            sosId, mechanicId))
+        .thenReturn(
+            alreadyBid
+                ? Optional.of(
+                    BidSos.builder()
+                        .bidId(UUID.randomUUID())
+                        .status(BidStatus.PENDING)
+                        .sosRequest(sos)
+                        .build())
+                : Optional.empty());
     when(sosService.isEligibleMechanic(any(), any())).thenReturn(eligible);
     when(bidSosRepository.save(any(BidSos.class))).thenAnswer(inv -> inv.getArgument(0));
     when(bidSosMapper.toResponse(any()))

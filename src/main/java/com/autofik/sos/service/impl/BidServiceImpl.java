@@ -32,6 +32,7 @@ import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.locationtech.jts.geom.Point;
@@ -101,10 +102,7 @@ public class BidServiceImpl implements BidService {
     if (!sosService.isEligibleMechanic(sosRequest, request.mechanicId())) {
       throw new EntityNotFoundException("SOS request not found: " + request.sosId());
     }
-    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(
-        request.sosId(), request.mechanicId())) {
-      throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
-    }
+    priorBid(request.sosId(), request.mechanicId());
     return new Route(mechanic.getCurrentLocation(), sosRequest.getLocation());
   }
 
@@ -136,6 +134,27 @@ public class BidServiceImpl implements BidService {
     return mechanic;
   }
 
+  /**
+   * The mechanic's earlier bid on this ticket, if it may be replaced. A live bid, an accepted one
+   * and one the customer rejected all refuse a second bid. A withdrawn one is fine, unless the
+   * mechanic walked away from the job after being assigned to it (it shows as a move back to
+   * PENDING in the history), which is final.
+   */
+  private Optional<BidSos> priorBid(UUID sosId, UUID mechanicId) {
+    Optional<BidSos> prior =
+        bidSosRepository.findFirstBySosRequestSosIdAndMechanicMechanicIdOrderByBidAtDesc(
+            sosId, mechanicId);
+    if (prior.isEmpty()) return prior;
+    if (prior.get().getStatus() != BidStatus.CANCELLED) {
+      throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
+    }
+    if (sosStatusHistoryRepository.existsBySosRequestSosIdAndProposedByMechanicIdAndToStatus(
+        sosId, mechanicId, SosStatus.PENDING)) {
+      throw new IllegalStateException("Mechanic released this job and cannot bid on it again");
+    }
+    return prior;
+  }
+
   // Runs inside the transaction opened by create(). The first phase's checks are repeated because
   // the Maps call between the two phases can take a while and the ticket may have moved on.
   private BidSosResponse persistBid(CreateBidRequest request, DistanceInfo info) {
@@ -161,10 +180,14 @@ public class BidServiceImpl implements BidService {
         .equals(sosRequestRepository.lockStatus(request.sosId()).orElse(null))) {
       throw new IllegalStateException("Bids can only be placed on PENDING requests");
     }
-    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(
-        request.sosId(), request.mechanicId())) {
-      throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
-    }
+    // A mechanic who withdrew may bid again: the old, withdrawn row goes and a fresh one is saved,
+    // so there is still one row per mechanic and ticket and the new bid has its own time.
+    priorBid(request.sosId(), request.mechanicId())
+        .ifPresent(
+            withdrawn -> {
+              bidSosRepository.delete(withdrawn);
+              bidSosRepository.flush();
+            });
 
     // Save the compiled Bid object into the PostgreSQL database table
     BidSos savedBid = bidSosRepository.save(bidBuilder.build());
@@ -420,7 +443,31 @@ public class BidServiceImpl implements BidService {
       }
     }
 
+    if (request.status() == BidStatus.REJECTED) {
+      notifyBidRejected(bid);
+    }
+
     return bidSosMapper.toResponse(bid);
+  }
+
+  // The customer turned this one bid down. The same frame the auto-reject at accept sends, so the
+  // app has one place to handle it, plus a push and the Kafka event.
+  private void notifyBidRejected(BidSos bid) {
+    UUID sosId = bid.getSosRequest().getSosId();
+    UUID mechanicId = bid.getMechanic().getMechanicId();
+    sosEventProducer.publishBidRejected(new BidRejectedEvent(sosId, List.of(bid.getBidId())));
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "BID_REJECTED",
+            mechanicId,
+            "MECHANIC",
+            sosId,
+            "Your bid was declined",
+            "The customer declined your bid"));
+    messagingTemplate.convertAndSendToUser(
+        mechanicId.toString(),
+        "/queue/sos-updates",
+        Map.of("type", "BID_REJECTED", "sosId", sosId, "bidId", bid.getBidId()));
   }
 
   /** WORKFLOW: A mechanic withdraws their bid before a driver accepts it. */

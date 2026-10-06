@@ -9,6 +9,7 @@ import com.autofik.sos.domain.entity.Vehicle;
 import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
+import com.autofik.sos.dto.event.BidRejectedEvent;
 import com.autofik.sos.dto.event.SosCreatedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
@@ -269,6 +270,14 @@ public class SosServiceImpl implements SosService {
     }
 
     s.setStatus(SosStatus.EXPIRED);
+    // The bids die with the request. A failure here must not keep the ticket from expiring, so it
+    // is logged and the bids are left as they were.
+    List<RejectedBid> closedBids = List.of();
+    try {
+      closedBids = transactionTemplate.execute(status -> rejectPendingBids(sosId));
+    } catch (RuntimeException e) {
+      log.error("SOS {} expired but its bids could not be closed", sosId, e);
+    }
     UUID userId = s.getUser().getUserId();
     sosEventProducer.publishStatusUpdated(
         new SosStatusUpdatedEvent(
@@ -293,6 +302,11 @@ public class SosServiceImpl implements SosService {
             retriesLeft,
             "attemptsLeft",
             maxRebroadcast - s.getRebroadcastCount()));
+    try {
+      notifyBiddersOfExpiry(sosId, closedBids == null ? List.of() : closedBids);
+    } catch (RuntimeException e) {
+      log.error("SOS {} expired but its bidders could not be told", sosId, e);
+    }
   }
 
   // Zero bids at expiry: widen the net and try again automatically, instead of the customer
@@ -1007,10 +1021,10 @@ public class SosServiceImpl implements SosService {
             .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
             .map(bid -> bid.getMechanic().getMechanicId())
             .orElse(null);
+    // Their bids are over with the request: leaving them PENDING showed a live bid on a dead
+    // ticket.
     List<UUID> pendingBidders =
-        bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING).stream()
-            .map(bid -> bid.getMechanic().getMechanicId())
-            .toList();
+        rejectPendingBids(sosId).stream().map(RejectedBid::mechanicId).toList();
 
     sosEventProducer.publishStatusUpdated(
         new SosStatusUpdatedEvent(
@@ -1031,6 +1045,52 @@ public class SosServiceImpl implements SosService {
     notifyMechanicsOfCancellation(sos, fromStatus, assignedMechanicId, pendingBidders);
 
     return toResponseWithMechanic(sos);
+  }
+
+  private record RejectedBid(UUID bidId, UUID mechanicId) {}
+
+  /**
+   * Closes every PENDING bid on the ticket as REJECTED, for a cancelled or an expired request, and
+   * tells Kafka. REJECTED because there is no status for "the request ended"; the frame the
+   * mechanic gets says why. Runs inside a transaction (the mechanic is read lazily).
+   */
+  private List<RejectedBid> rejectPendingBids(UUID sosId) {
+    List<BidSos> pending =
+        bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING);
+    if (pending.isEmpty()) return List.of();
+    LocalDateTime now = LocalDateTime.now();
+    pending.forEach(
+        b -> {
+          b.setStatus(BidStatus.REJECTED);
+          b.setRespondedAt(now);
+        });
+    bidSosRepository.saveAll(pending);
+    sosEventProducer.publishBidRejected(
+        new BidRejectedEvent(sosId, pending.stream().map(BidSos::getBidId).toList()));
+    return pending.stream()
+        .map(b -> new RejectedBid(b.getBidId(), b.getMechanic().getMechanicId()))
+        .toList();
+  }
+
+  /** The request ran out of time: every mechanic who had a bid on it hears so (frame, one push). */
+  private void notifyBiddersOfExpiry(UUID sosId, List<RejectedBid> closed) {
+    if (closed.isEmpty()) return;
+    List<UUID> bidders = closed.stream().map(RejectedBid::mechanicId).toList();
+    for (UUID bidder : bidders) {
+      messagingTemplate.convertAndSendToUser(
+          bidder.toString(), "/queue/sos-updates", Map.of("type", "SOS_EXPIRED", "sosId", sosId));
+    }
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "SOS_EXPIRED",
+            null,
+            "MECHANIC",
+            sosId,
+            "Request expired",
+            "The request you bid on ran out of time",
+            null,
+            null,
+            bidders));
   }
 
   /**
@@ -1753,6 +1813,10 @@ public class SosServiceImpl implements SosService {
       throw new TooManyRequestsException(
           "Maximum rebroadcast attempts (" + maxRebroadcast + ") reached. Please call support.");
     }
+
+    // A new round: the last one's bids were closed at expiry (or turned down by the customer) and
+    // would only refuse those mechanics a second bid on a job they are offered again.
+    bidSosRepository.deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
 
     sos.setStatus(SosStatus.PENDING);
     sos.setRebroadcastCount(sos.getRebroadcastCount() + 1);
