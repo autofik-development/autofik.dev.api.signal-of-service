@@ -2,6 +2,7 @@ package com.autofik.sos.repository;
 
 import com.autofik.sos.domain.entity.SosStatusHistory;
 import com.autofik.sos.domain.enums.ApprovedStatus;
+import com.autofik.sos.domain.enums.SosStatus;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -19,6 +20,14 @@ import org.springframework.stereotype.Repository;
 public interface SosStatusHistoryRepository extends JpaRepository<SosStatusHistory, UUID> {
   // list all status log by sosId sort from Ascending order.
   List<SosStatusHistory> findBySosRequestSosIdOrderByChangeAtAsc(UUID sosId);
+
+  /**
+   * True when this mechanic walked away from the job after it was assigned to them (released it, or
+   * was released for not coming): those transitions are the only ones that put a mechanic's name on
+   * a move back to PENDING.
+   */
+  boolean existsBySosRequestSosIdAndProposedByMechanicIdAndToStatus(
+      UUID sosId, UUID mechanicId, SosStatus toStatus);
 
   /**
    * The approval state as it is in the database right now. A scalar query, so it is not answered
