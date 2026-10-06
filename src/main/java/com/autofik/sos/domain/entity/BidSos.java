@@ -65,6 +65,11 @@ public class BidSos {
   // --- ROUTING / MATRIX ESTIMATIONS ---
   // These fields store raw metrics and user-friendly text, likely derived from a maps API (like
   // Google Maps)
+  // When the assigned mechanic was last asked "are you still coming?" because they stopped moving;
+  // null when no question is pending. Cleared when they answer or move again.
+  @Column(name = "no_show_prompted_at")
+  private LocalDateTime noShowPromptedAt;
+
   @Column(name = "estimated_distance_m") // Distance in meters (e.g., 5200)
   private Long estimatedDistanceM;
 

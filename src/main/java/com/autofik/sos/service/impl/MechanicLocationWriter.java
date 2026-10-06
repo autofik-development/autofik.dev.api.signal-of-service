@@ -3,6 +3,7 @@ package com.autofik.sos.service.impl;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
+import com.autofik.sos.util.GeoDistance;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
 import java.io.IOException;
@@ -52,6 +53,13 @@ public class MechanicLocationWriter {
 
   @Value("${sos.location.pg-sync-seconds:10}")
   private int pgSyncSeconds;
+
+  // A persisted ping this far from the previous one counts as the mechanic having moved.
+  @Value("${sos.location.moved-threshold-meters:20}")
+  private int movedThresholdMeters;
+
+  @Value("${sos.geo.earth-radius-m:6371000}")
+  private double earthRadiusM;
 
   private final MechanicRepository mechanicRepository;
   private final BidSosRepository bidSosRepository;
@@ -110,6 +118,15 @@ public class MechanicLocationWriter {
           mechanicRepository
               .findById(mechanicId)
               .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+      org.locationtech.jts.geom.Point previous = mechanic.getCurrentLocation();
+      // ponytail: compares ping to ping, so GPS jitter can look like movement (the mechanic is not
+      // released) and a crawl under the threshold per ping can look parked. Compare against an
+      // anchor point instead if that turns out to matter.
+      if (previous == null
+          || GeoDistance.haversineMeters(previous.getY(), previous.getX(), lat, lng, earthRadiusM)
+              >= movedThresholdMeters) {
+        mechanic.setLocationMovedAt(LocalDateTime.now());
+      }
       mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
       mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, h3Resolution));
       mechanic.setLocationUpdatedAt(LocalDateTime.now());

@@ -137,4 +137,14 @@ public interface SosService {
    * @param mechanicId the bidding mechanic
    */
   boolean isEligibleMechanic(com.autofik.sos.domain.entity.SosRequest sos, UUID mechanicId);
+
+  /**
+   * Use case: the assigned mechanic answers "are you still coming?" with yes. Restarts the clock
+   * that releases a mechanic who stands still.
+   *
+   * @param sosId the SOS the mechanic is assigned to
+   * @param mechanicId security check, must be the mechanic holding the ACCEPTED bid
+   * @return the ticket
+   */
+  SosRequestResponse confirmStillComing(UUID sosId, UUID mechanicId);
 }

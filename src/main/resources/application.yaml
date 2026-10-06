@@ -136,6 +136,15 @@ sos:
     # than the customer ever asked for.
     step-km: ${SOS_AUTO_EXPAND_STEP_KM:5}
     max-km: ${SOS_AUTO_EXPAND_MAX_KM:35}
+  no-show:
+    # An assigned mechanic who has not moved for this many minutes is asked "are you still coming?".
+    # 0 turns the sweep off. Needs the mobile app to show the question (frame STILL_COMING_CHECK)
+    # and answer it with PATCH /sos/{id}/still-coming or /sos/{id}/mechanic-release.
+    stalled-minutes: ${SOS_NO_SHOW_STALLED_MINUTES:5}
+    # How long they have to answer before the job is released and offered to someone else.
+    prompt-response-seconds: ${SOS_NO_SHOW_PROMPT_RESPONSE_SECONDS:60}
+    # How often the check runs.
+    sweep-interval-ms: ${SOS_NO_SHOW_SWEEP_INTERVAL_MS:30000}
   dispatch:
     # A mechanic whose last location ping is older than this is not offered jobs and cannot bid
     # (they have probably closed the app). A mechanic with no recorded ping yet is treated as
@@ -168,6 +177,8 @@ sos:
     # Mechanic GPS is written to Postgres at most once per this many seconds (Redis/Kafka carry
     # every ping). Lower = fresher current_location for the ARRIVED proximity check, more DB writes.
     pg-sync-seconds: ${MECHANIC_LOCATION_PG_SYNC_SECONDS:10}
+    # A persisted ping this far (metres) from the previous one counts as the mechanic having moved.
+    moved-threshold-meters: ${SOS_LOCATION_MOVED_THRESHOLD_M:20}
   h3:
     # WARNING: every stored mechanic current_h3_index was computed at this resolution. Changing it
     # breaks nearby-mechanic search until all rows are recomputed. center-to-center-km must match

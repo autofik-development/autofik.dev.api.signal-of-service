@@ -249,6 +249,17 @@ abstract class FlowTestSupport extends IntegrationTestBase {
                         + "\",\"price\":25.00}")));
   }
 
+  /** The ticket's status as its owner sees it. */
+  protected String sosStatus(Driver d, UUID sosId) throws Exception {
+    HttpResponse<String> r =
+        send(
+            req("/api/v1/sos/" + sosId)
+                .header("user-context", userContext(d.user().getUserId()))
+                .GET());
+    assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
+    return parse(r.body()).get("status").asString();
+  }
+
   protected UUID placeBidOk(Mechanic m, UUID sosId) throws Exception {
     HttpResponse<String> r = placeBid(m, sosId);
     assertThat(r.statusCode()).as("place bid: %s", r.body()).isEqualTo(201);

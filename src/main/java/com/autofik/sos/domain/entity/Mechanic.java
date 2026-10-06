@@ -81,6 +81,13 @@ public class Mechanic {
   @Column(name = "location_updated_at")
   private java.time.LocalDateTime locationUpdatedAt;
 
+  // When the mechanic last moved: set when a persisted ping is at least
+  // sos.location.moved-threshold-meters from the previous one. Unlike locationUpdatedAt (stamped on
+  // every ping) this stays put while the phone sits still, so the no-show sweep can tell a parked
+  // mechanic from a moving one. null (not seen since this column existed) counts as moving.
+  @Column(name = "location_moved_at")
+  private java.time.LocalDateTime locationMovedAt;
+
   // H3 hex-cell address (resolution 7, ~5 km² per cell) derived from currentLocation.
   // Stored as a plain string so the B-tree index above can serve Stage 1 lookups.
   @Column(name = "current_h3_index", length = 16)

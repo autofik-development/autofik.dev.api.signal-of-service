@@ -122,6 +122,8 @@ class SosServiceImplTest {
     ReflectionTestUtils.setField(sosService, "defaultBroadcastKm", 15);
     ReflectionTestUtils.setField(sosService, "biddingWindowSeconds", 60);
     ReflectionTestUtils.setField(sosService, "maxRebroadcast", 3);
+    ReflectionTestUtils.setField(sosService, "noShowStalledMinutes", 5);
+    ReflectionTestUtils.setField(sosService, "noShowPromptResponseSeconds", 60);
     ReflectionTestUtils.setField(sosService, "locationMaxAgeMinutes", 5);
     ReflectionTestUtils.setField(sosService, "maxRoadEtaMinutes", 30);
     ReflectionTestUtils.setField(sosService, "createCooldownSeconds", 60);
@@ -2145,6 +2147,234 @@ class SosServiceImplTest {
     verify(messagingTemplate)
         .convertAndSendToUser(
             eq(far.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+  }
+
+  // ── no-show: ask a mechanic who stopped moving, release them if they do not answer ──
+
+  private BidSos noShowJob(SosStatus status, LocalDateTime movedAt, LocalDateTime promptedAt) {
+    SosRequest sos = sosAt(status);
+    sos.setBroadcastRadiusKm(15);
+    // The mock template runs executeWithoutResult as a no-op; run it inline for the nudge record.
+    lenient()
+        .doAnswer(
+            inv -> {
+              ((java.util.function.Consumer<org.springframework.transaction.TransactionStatus>)
+                      inv.getArgument(0))
+                  .accept(null);
+              return null;
+            })
+        .when(transactionTemplate)
+        .executeWithoutResult(any());
+    mechanic.setLocationMovedAt(movedAt);
+    BidSos bid =
+        BidSos.builder()
+            .bidId(UUID.randomUUID())
+            .status(BidStatus.ACCEPTED)
+            .sosRequest(sos)
+            .mechanic(mechanic)
+            .noShowPromptedAt(promptedAt)
+            .build();
+    lenient().when(bidSosRepository.findAcceptedBeforeArrival()).thenReturn(List.of(bid));
+    lenient().when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    lenient()
+        .when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(bid));
+    lenient().when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+    return bid;
+  }
+
+  private static LocalDateTime minutesAgo(long m) {
+    return LocalDateTime.now().minusMinutes(m);
+  }
+
+  @Test
+  void noShow_aMovingMechanic_isLeftAlone_andAPendingQuestionIsWithdrawn() {
+    BidSos bid = noShowJob(SosStatus.ON_THE_WAY, minutesAgo(1), minutesAgo(3));
+
+    sosService.checkNoShowJobs();
+
+    assertThat(bid.getNoShowPromptedAt()).isNull();
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
+  @Test
+  void noShow_aMechanicWithNoRecordedMovement_isTreatedAsMoving() {
+    noShowJob(SosStatus.ACCEPTED, null, null);
+
+    sosService.checkNoShowJobs();
+
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+    verify(bidSosRepository, never()).save(any());
+  }
+
+  @Test
+  void noShow_standingStill_isAskedOnce_withAFrameAndAPush_andTheQuestionIsRecorded() {
+    BidSos bid = noShowJob(SosStatus.ON_THE_WAY, minutesAgo(6), null);
+
+    sosService.checkNoShowJobs();
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "STILL_COMING_CHECK", "sosId", sosId, "respondBySeconds", 60)));
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(
+                n -> n.type().equals("STILL_COMING_CHECK") && n.recipientId().equals(mechanicId)));
+    assertThat(bid.getNoShowPromptedAt()).isNotNull();
+    assertThat(bid.getStatus()).as("only asked, not released").isEqualTo(BidStatus.ACCEPTED);
+  }
+
+  @Test
+  void noShow_aQuestionThatCouldNotBeSent_isNotRecorded_soItIsAskedAgain() {
+    BidSos bid = noShowJob(SosStatus.ACCEPTED, minutesAgo(6), null);
+    doThrow(new RuntimeException("broker down"))
+        .when(messagingTemplate)
+        .convertAndSendToUser(eq(mechanicId.toString()), eq("/queue/sos-updates"), any());
+
+    sosService.checkNoShowJobs();
+
+    assertThat(bid.getNoShowPromptedAt()).isNull();
+  }
+
+  @Test
+  void noShow_askedAndStillWithinTheTimeToAnswer_isLeftAlone() {
+    BidSos bid =
+        noShowJob(SosStatus.ON_THE_WAY, minutesAgo(6), LocalDateTime.now().minusSeconds(20));
+
+    sosService.checkNoShowJobs();
+
+    assertThat(bid.getStatus()).isEqualTo(BidStatus.ACCEPTED);
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
+  @Test
+  void noShow_askedAndNotAnswered_isReleased_bothSidesToldAndTheJobOfferedToOthers() {
+    BidSos bid = noShowJob(SosStatus.ON_THE_WAY, minutesAgo(8), minutesAgo(2));
+    SosRequest sos = bid.getSosRequest();
+    Mechanic other =
+        Mechanic.builder()
+            .mechanicId(UUID.randomUUID())
+            .fullName("Other")
+            .phoneNumber("2")
+            .email("o@x.com")
+            .build();
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic, other));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic, other));
+
+    sosService.checkNoShowJobs();
+
+    assertThat(bid.getStatus()).isEqualTo(BidStatus.CANCELLED);
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+    assertThat(sos.getBiddingExpiresAt()).isAfter(LocalDateTime.now());
+    verify(bidSosRepository).deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
+    verify(sosStatusHistoryRepository).save(any(SosStatusHistory.class));
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(userId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "MECHANIC_NO_SHOW", "sosId", sosId, "fromStatus", "ON_THE_WAY")));
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "JOB_RELEASED", "sosId", sosId, "reason", "NO_SHOW")));
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(other.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+    verify(messagingTemplate, never())
+        .convertAndSendToUser(eq(mechanicId.toString()), eq("/queue/sos-new-request"), any());
+    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+    verify(routeEtaService).clear(sosId);
+  }
+
+  @Test
+  void noShow_aJobThatMovedOnBeforeTheSweepGotTheLock_isSkippedWithNoSideEffects() {
+    for (SosStatus now : List.of(SosStatus.ARRIVED, SosStatus.CANCELLED, SosStatus.COMPLETED)) {
+      reset(bidSosRepository, sosRequestRepository, messagingTemplate, sosEventProducer);
+      BidSos bid = noShowJob(now, minutesAgo(8), minutesAgo(2));
+
+      sosService.checkNoShowJobs();
+
+      assertThat(bid.getStatus()).as("%s", now).isEqualTo(BidStatus.ACCEPTED);
+      verify(bidSosRepository, never()).deleteBySosRequestSosIdAndStatus(any(), any());
+      verifyNoInteractions(messagingTemplate, sosEventProducer);
+    }
+  }
+
+  @Test
+  void noShow_switchedOff_doesNotEvenLookForJobs() {
+    ReflectionTestUtils.setField(sosService, "noShowStalledMinutes", 0);
+
+    sosService.checkNoShowJobs();
+
+    verify(bidSosRepository, never()).findAcceptedBeforeArrival();
+  }
+
+  @Test
+  void noShow_oneJobThatFails_doesNotStopTheNext() {
+    BidSos first = noShowJob(SosStatus.ACCEPTED, minutesAgo(8), minutesAgo(2));
+    UUID otherSos = UUID.randomUUID();
+    SosRequest second = sosAt(SosStatus.ACCEPTED);
+    second.setSosId(otherSos);
+    Mechanic other =
+        Mechanic.builder()
+            .mechanicId(UUID.randomUUID())
+            .fullName("O")
+            .phoneNumber("3")
+            .email("o2@x.com")
+            .locationMovedAt(minutesAgo(8))
+            .build();
+    BidSos secondBid =
+        BidSos.builder()
+            .bidId(UUID.randomUUID())
+            .status(BidStatus.ACCEPTED)
+            .sosRequest(second)
+            .mechanic(other)
+            .noShowPromptedAt(minutesAgo(2))
+            .build();
+    when(bidSosRepository.findAcceptedBeforeArrival()).thenReturn(List.of(first, secondBid));
+    // The first job blows up when it is looked up; the second is normal.
+    when(sosRequestRepository.findById(sosId)).thenThrow(new RuntimeException("db hiccup"));
+    when(sosRequestRepository.findById(otherSos)).thenReturn(Optional.of(second));
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(otherSos, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(secondBid));
+
+    sosService.checkNoShowJobs();
+
+    assertThat(secondBid.getStatus()).isEqualTo(BidStatus.CANCELLED);
+  }
+
+  @Test
+  void confirmStillComing_restartsTheClock_andWithdrawsTheQuestion() {
+    BidSos bid = noShowJob(SosStatus.ON_THE_WAY, minutesAgo(8), minutesAgo(1));
+
+    sosService.confirmStillComing(sosId, mechanicId);
+
+    assertThat(mechanic.getLocationMovedAt()).isAfter(minutesAgo(1));
+    assertThat(bid.getNoShowPromptedAt()).isNull();
+    verify(mechanicRepository).save(mechanic);
+  }
+
+  @Test
+  void confirmStillComing_byAnotherMechanic_isDenied() {
+    noShowJob(SosStatus.ON_THE_WAY, minutesAgo(8), minutesAgo(1));
+
+    assertThatThrownBy(() -> sosService.confirmStillComing(sosId, UUID.randomUUID()))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    verify(mechanicRepository, never()).save(any());
+  }
+
+  @Test
+  void confirmStillComing_afterArrived_isConflict() {
+    noShowJob(SosStatus.ARRIVED, minutesAgo(8), null);
+
+    assertThatThrownBy(() -> sosService.confirmStillComing(sosId, mechanicId))
+        .isInstanceOf(IllegalStateException.class);
   }
 
   private final java.util.Map<UUID, Mechanic> knownMechanics = new java.util.HashMap<>();

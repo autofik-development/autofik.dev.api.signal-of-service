@@ -140,6 +140,9 @@ public abstract class IntegrationTestBase {
     r.add("DB_USERNAME", POSTGRES::getUsername);
     r.add("DB_PASSWORD", POSTGRES::getPassword);
     r.add("REDIS_TIMEOUT_MS", () -> "1000"); // a local .env must not change what the tests measure
+    // The no-show sweep is called directly by the tests that exercise it; its own timer must not
+    // fire in the middle of someone else's test.
+    r.add("sos.no-show.sweep-interval-ms", () -> "3600000");
     // application.yaml imports .env for every profile, and a developer's .env turns the insecure
     // WebSocket handshake on for local work. Tests must run with the real handshake, and the
     // app refuses to start with that flag outside the dev profile.

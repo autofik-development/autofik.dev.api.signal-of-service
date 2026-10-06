@@ -127,6 +127,14 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.dispatch.max-road-eta-minutes:30}")
   private int maxRoadEtaMinutes;
 
+  // How long an assigned mechanic may stand still before being asked "are you still coming?"
+  // (0 turns the no-show sweep off), and how long they have to answer before the job is released.
+  @Value("${sos.no-show.stalled-minutes:5}")
+  private int noShowStalledMinutes;
+
+  @Value("${sos.no-show.prompt-response-seconds:60}")
+  private int noShowPromptResponseSeconds;
+
   private LocalDateTime locationFreshSince() {
     return LocalDateTime.now().minusMinutes(locationMaxAgeMinutes);
   }
@@ -1444,10 +1452,19 @@ public class SosServiceImpl implements SosService {
   @Override
   public SosRequestResponse releaseByMechanic(UUID sosId, UUID mechanicId) {
     Released released = transactionTemplate.execute(status -> releaseJob(sosId, mechanicId));
-    SosRequest sos = released.sos();
+    finishRelease(released, mechanicId, false);
+    return released.response();
+  }
 
-    // First, and before anything that can fail: the ticket is PENDING and committed, so its
-    // bidding window must always close.
+  /**
+   * Everything that follows a committed release. The ticket is PENDING and committed, so none of
+   * this may turn the release into a failure. {@code noShow} is the system releasing a mechanic who
+   * stopped answering; that mechanic did not ask for it, so they are told as well.
+   */
+  private void finishRelease(Released released, UUID mechanicId, boolean noShow) {
+    SosRequest sos = released.sos();
+    UUID sosId = sos.getSosId();
+    // First, and before anything that can fail: the bidding window must always close.
     scheduleBiddingExpiry(sos);
     // Back to bidding: the released mechanic's route is meaningless now.
     routeEtaService.clear(sosId);
@@ -1462,24 +1479,35 @@ public class SosServiceImpl implements SosService {
               released.fromStatus(),
               SosStatus.PENDING,
               LocalDateTime.now()));
+      String type = noShow ? "MECHANIC_NO_SHOW" : "MECHANIC_RELEASED";
       messagingTemplate.convertAndSendToUser(
           userId.toString(),
           "/queue/sos-updates",
-          Map.of(
-              "type",
-              "MECHANIC_RELEASED",
-              "sosId",
-              sosId,
-              "fromStatus",
-              released.fromStatus().name()));
+          Map.of("type", type, "sosId", sosId, "fromStatus", released.fromStatus().name()));
       sosEventProducer.publishNotification(
           new SosNotificationEvent(
-              "MECHANIC_RELEASED",
+              type,
               userId,
               "USER",
               sosId,
-              "Mechanic released the job",
-              "Your mechanic can no longer take this job. We are finding you another one."));
+              noShow ? "Your mechanic is not coming" : "Mechanic released the job",
+              noShow
+                  ? "Your mechanic stopped moving and did not answer. We are finding you another one."
+                  : "Your mechanic can no longer take this job. We are finding you another one."));
+      if (noShow) {
+        messagingTemplate.convertAndSendToUser(
+            mechanicId.toString(),
+            "/queue/sos-updates",
+            Map.of("type", "JOB_RELEASED", "sosId", sosId, "reason", "NO_SHOW"));
+        sosEventProducer.publishNotification(
+            new SosNotificationEvent(
+                "JOB_RELEASED",
+                mechanicId,
+                "MECHANIC",
+                sosId,
+                "Job released",
+                "You were removed from a job because you stopped moving and did not answer."));
+      }
       fanOutToNearbyMechanics(
           sosId,
           sos.getLocation().getY(),
@@ -1490,8 +1518,6 @@ public class SosServiceImpl implements SosService {
     } catch (RuntimeException e) {
       log.error("SOS {} was released but notifying/broadcasting failed", sosId, e);
     }
-
-    return released.response();
   }
 
   // Runs inside the transaction opened by releaseByMechanic(); keep external calls out of it.
@@ -1516,6 +1542,14 @@ public class SosServiceImpl implements SosService {
           "A job can only be released before ARRIVED, current status: " + fromStatus);
     }
 
+    return applyRelease(sos, bid);
+  }
+
+  // The write of a release, shared by the mechanic's own release and the no-show sweep. Runs inside
+  // a transaction that already holds the ticket lock.
+  private Released applyRelease(SosRequest sos, BidSos bid) {
+    UUID sosId = sos.getSosId();
+    SosStatus fromStatus = sos.getStatus();
     LocalDateTime now = LocalDateTime.now();
     bid.setStatus(BidStatus.CANCELLED);
     bid.setRespondedAt(now);
@@ -1540,6 +1574,127 @@ public class SosServiceImpl implements SosService {
             .build());
 
     return new Released(sos, fromStatus, toResponseWithMechanic(sos));
+  }
+
+  private record NoShowStep(boolean nudge, Released released) {}
+
+  /**
+   * An assigned mechanic who stops moving is asked whether they are still coming, and released if
+   * they do not answer. Moving, or never recorded (null), is never stalled. Each job is re-checked
+   * under the ticket lock before anything happens, so a cancel, an ARRIVED update or the mechanic's
+   * own release that lands first wins and the sweep does nothing.
+   *
+   * <p>ponytail: tapping "continue" only restarts the clock, so a mechanic can answer every few
+   * minutes without ever moving; the customer can cancel at any time. Cap the confirmations if that
+   * is ever abused.
+   */
+  @Scheduled(fixedDelayString = "${sos.no-show.sweep-interval-ms:30000}")
+  public void checkNoShowJobs() {
+    if (noShowStalledMinutes <= 0) return;
+    for (BidSos candidate : bidSosRepository.findAcceptedBeforeArrival()) {
+      UUID sosId = candidate.getSosRequest().getSosId();
+      UUID mechanicId = candidate.getMechanic().getMechanicId();
+      try {
+        NoShowStep step = transactionTemplate.execute(status -> noShowStep(sosId, mechanicId));
+        if (step == null) continue;
+        if (step.released() != null) {
+          finishRelease(step.released(), mechanicId, true);
+        } else if (step.nudge()) {
+          // Send first, record after: a send that fails is tried again on the next sweep.
+          messagingTemplate.convertAndSendToUser(
+              mechanicId.toString(),
+              "/queue/sos-updates",
+              Map.of(
+                  "type",
+                  "STILL_COMING_CHECK",
+                  "sosId",
+                  sosId,
+                  "respondBySeconds",
+                  noShowPromptResponseSeconds));
+          sosEventProducer.publishNotification(
+              new SosNotificationEvent(
+                  "STILL_COMING_CHECK",
+                  mechanicId,
+                  "MECHANIC",
+                  sosId,
+                  "Are you still coming?",
+                  "You have not moved for a while. Tell us if you are still on your way."));
+          transactionTemplate.executeWithoutResult(status -> markNudged(sosId, mechanicId));
+        }
+      } catch (RuntimeException e) {
+        // One bad job must not stop the others; it is looked at again on the next sweep.
+        log.error("No-show check for SOS {} failed: {}", sosId, e.getMessage());
+      }
+    }
+  }
+
+  // Runs inside a transaction: decides what to do about one assigned mechanic, after the lock.
+  private NoShowStep noShowStep(UUID sosId, UUID mechanicId) {
+    sosRequestRepository.lockStatus(sosId);
+    SosRequest sos = findSosOrThrow(sosId);
+    if (sos.getStatus() != SosStatus.ACCEPTED && sos.getStatus() != SosStatus.ON_THE_WAY) {
+      return null;
+    }
+    BidSos bid =
+        bidSosRepository
+            .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+            .filter(b -> b.getMechanic().getMechanicId().equals(mechanicId))
+            .orElse(null);
+    if (bid == null) return null;
+
+    LocalDateTime now = LocalDateTime.now();
+    LocalDateTime moved = bid.getMechanic().getLocationMovedAt();
+    boolean stalled = moved != null && moved.isBefore(now.minusMinutes(noShowStalledMinutes));
+    if (!stalled) {
+      if (bid.getNoShowPromptedAt() != null) {
+        bid.setNoShowPromptedAt(null); // moving again, or confirmed: the question is withdrawn
+        bidSosRepository.save(bid);
+      }
+      return null;
+    }
+    if (bid.getNoShowPromptedAt() == null) return new NoShowStep(true, null);
+    if (bid.getNoShowPromptedAt().isAfter(now.minusSeconds(noShowPromptResponseSeconds))) {
+      return null; // asked, still within the time to answer
+    }
+    log.warn("SOS {}: mechanic {} stopped moving and did not answer, releasing", sosId, mechanicId);
+    return new NoShowStep(false, applyRelease(sos, bid));
+  }
+
+  private void markNudged(UUID sosId, UUID mechanicId) {
+    sosRequestRepository.lockStatus(sosId);
+    bidSosRepository
+        .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+        .filter(b -> b.getMechanic().getMechanicId().equals(mechanicId))
+        .filter(b -> b.getNoShowPromptedAt() == null)
+        .ifPresent(
+            b -> {
+              b.setNoShowPromptedAt(LocalDateTime.now());
+              bidSosRepository.save(b);
+            });
+  }
+
+  /** The assigned mechanic answers "are you still coming?": yes. Restarts the stationary clock. */
+  @Override
+  @Transactional
+  public SosRequestResponse confirmStillComing(UUID sosId, UUID mechanicId) {
+    sosRequestRepository.lockStatus(sosId);
+    SosRequest sos = findSosOrThrow(sosId);
+    requireAssignedMechanic(sos, mechanicId);
+    if (sos.getStatus() != SosStatus.ACCEPTED && sos.getStatus() != SosStatus.ON_THE_WAY) {
+      throw new IllegalStateException(
+          "Only a job before ARRIVED can be confirmed, current status: " + sos.getStatus());
+    }
+    BidSos bid =
+        bidSosRepository
+            .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+            .orElseThrow();
+    // "I am coming" counts as a sign of life, so the clock starts again from now.
+    Mechanic mechanic = bid.getMechanic();
+    mechanic.setLocationMovedAt(LocalDateTime.now());
+    mechanicRepository.save(mechanic);
+    bid.setNoShowPromptedAt(null);
+    bidSosRepository.save(bid);
+    return toResponseWithMechanic(sos);
   }
 
   // Runs inside the transaction opened by rebroadcast(); keep external calls out of it.

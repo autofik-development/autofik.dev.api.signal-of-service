@@ -99,6 +99,14 @@ public class SosController {
     return sosService.releaseByMechanic(sosId, mechanic.id());
   }
 
+  // PATCH /api/v1/sos/{sosId}/still-coming — Assigned mechanic answers "are you still coming?" with
+  // yes; the alternative answer is mechanic-release
+  @PatchMapping("/{sosId}/still-coming")
+  public SosRequestResponse confirmStillComing(
+      @PathVariable UUID sosId, @AuthMechanic CurrentUser mechanic) {
+    return sosService.confirmStillComing(sosId, mechanic.id());
+  }
+
   // POST /api/v1/sos/{sosId}/completion — Mechanic proposes COMPLETED; creates a PENDING_APPROVAL
   // record
   // The user is notified via WebSocket and must confirm via PATCH /completion
