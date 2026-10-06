@@ -7,6 +7,7 @@ import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
 import java.io.IOException;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -111,6 +112,7 @@ public class MechanicLocationWriter {
               .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
       mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
       mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, h3Resolution));
+      mechanic.setLocationUpdatedAt(LocalDateTime.now());
       mechanicRepository.save(mechanic);
     } else if (!mechanicRepository.existsById(mechanicId)) {
       throw new EntityNotFoundException("Mechanic not found: " + mechanicId);

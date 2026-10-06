@@ -1,15 +1,20 @@
 package com.autofik.sos.integration;
 
 import com.autofik.sos.domain.entity.Mechanic;
+import com.autofik.sos.domain.entity.MechanicSkill;
 import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.entity.Vehicle;
 import com.autofik.sos.repository.MechanicRepository;
+import com.autofik.sos.repository.MechanicSkillRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.repository.VehicleRepository;
 import com.autofik.sos.service.GoogleMapsService;
 import com.autofik.sos.service.MedusaService;
 import com.autofik.sos.service.OneSignalService;
 import com.github.dockerjava.api.command.CreateContainerCmd;
+import com.uber.h3core.H3Core;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -170,6 +175,7 @@ public abstract class IntegrationTestBase {
   @Autowired protected UserRepository userRepository;
   @Autowired protected VehicleRepository vehicleRepository;
   @Autowired protected MechanicRepository mechanicRepository;
+  @Autowired protected MechanicSkillRepository mechanicSkillRepository;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
 
@@ -209,6 +215,30 @@ public abstract class IntegrationTestBase {
             .email(unique.substring(0, 8) + "@it.test")
             .currentLocation(GEO.createPoint(new Coordinate(lng, lat)))
             .build());
+  }
+
+  private static final H3Core H3 = h3();
+
+  private static H3Core h3() {
+    try {
+      return H3Core.newInstance();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  /**
+   * A mechanic the matcher can find: parked at the point, with the H3 cell the location PATCH would
+   * have written and one skill row carrying the given tag. Dispatch and bidding only reach
+   * mechanics like this one; {@link #newMechanic} makes one that is never offered anything.
+   */
+  protected Mechanic skilledMechanic(double lat, double lng, String skillTag) {
+    Mechanic m = newMechanic(lat, lng);
+    m.setCurrentH3Index(H3.geoToH3Address(lat, lng, 7));
+    m = mechanicRepository.save(m);
+    mechanicSkillRepository.save(
+        MechanicSkill.builder().mechanic(m).skillTags(new String[] {skillTag}).build());
+    return m;
   }
 
   // ── gateway identity: the headers the real gateway sends ───────────────────

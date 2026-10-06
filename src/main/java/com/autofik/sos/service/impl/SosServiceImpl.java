@@ -116,6 +116,21 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.eta.offer-estimate-max-age-seconds:300}")
   private int offerEstimateMaxAgeSeconds;
 
+  // A mechanic whose last location ping is older than this is not offered jobs (they have
+  // probably closed the app); a mechanic with no recorded ping is kept.
+  @Value("${sos.dispatch.location-max-age-minutes:5}")
+  private int locationMaxAgeMinutes;
+
+  // A mechanic whose road ETA to the SOS is longer than this is not offered the job. Straight-line
+  // radius ignores rivers and one-way roads. Only applied where an estimate already exists.
+  // 0 disables.
+  @Value("${sos.dispatch.max-road-eta-minutes:30}")
+  private int maxRoadEtaMinutes;
+
+  private LocalDateTime locationFreshSince() {
+    return LocalDateTime.now().minusMinutes(locationMaxAgeMinutes);
+  }
+
   // How many of the nearest mechanics get a real (billed) distance/time in the job offer.
   @Value("${sos.eta.offer-max-mechanics:25}")
   private int offerMaxMechanics;
@@ -539,7 +554,8 @@ public class SosServiceImpl implements SosService {
       double lat, double lng, String problemType, int radiusKm) {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
-    List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
+    List<UUID> coarse =
+        mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType, locationFreshSince());
     if (coarse.isEmpty()) {
       return List.of();
     }
@@ -575,7 +591,8 @@ public class SosServiceImpl implements SosService {
     return isEligibleMechanic(sos, callerId);
   }
 
-  private boolean isEligibleMechanic(SosRequest sos, UUID callerId) {
+  @Override
+  public boolean isEligibleMechanic(SosRequest sos, UUID callerId) {
     Point location = sos.getLocation();
     if (location == null || sos.getProblemType() == null) {
       return false;
@@ -590,7 +607,8 @@ public class SosServiceImpl implements SosService {
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
 
     List<UUID> coarse =
-        mechanicRepository.findByH3CellsAndSkillTag(searchCells, sos.getProblemType());
+        mechanicRepository.findByH3CellsAndSkillTag(
+            searchCells, sos.getProblemType(), locationFreshSince());
 
     if (!coarse.contains(callerId)) {
       return false;
@@ -1189,7 +1207,9 @@ public class SosServiceImpl implements SosService {
   private boolean hasNoCandidates(double lat, double lng, String problemType, int radiusKm) {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
-    return mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType).isEmpty();
+    return mechanicRepository
+        .findByH3CellsAndSkillTag(searchCells, problemType, locationFreshSince())
+        .isEmpty();
   }
 
   private void fanOutToNearbyMechanics(
@@ -1208,7 +1228,8 @@ public class SosServiceImpl implements SosService {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
 
-    List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
+    List<UUID> coarse =
+        mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType, locationFreshSince());
     if (coarse.isEmpty()) return;
 
     List<UUID> inRange =
@@ -1227,7 +1248,19 @@ public class SosServiceImpl implements SosService {
     // what the job actually is before bidding.
     List<String> photoUrls = sosMediaService.getObject().photoUrls(sosId);
     Map<UUID, EtaInfo> estimates = offerEstimates(sosId, matched, lat, lng);
-    matched.forEach(
+    // Straight-line radius ignores the road network: drop anyone the estimate says is too far to
+    // drive. No estimate (beyond the nearest few, or Google down) never blocks an offer.
+    List<Mechanic> reachable =
+        maxRoadEtaMinutes <= 0
+            ? matched
+            : matched.stream()
+                .filter(
+                    m -> {
+                      EtaInfo eta = estimates.get(m.getMechanicId());
+                      return eta == null || eta.remainingDurationS() <= maxRoadEtaMinutes * 60L;
+                    })
+                .toList();
+    reachable.forEach(
         m ->
             messagingTemplate.convertAndSendToUser(
                 m.getMechanicId().toString(),

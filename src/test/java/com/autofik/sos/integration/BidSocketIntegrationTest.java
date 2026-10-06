@@ -61,8 +61,8 @@ class BidSocketIntegrationTest extends FlowTestSupport {
   @Test
   void mechanicBids_driverSeesIt_driverAccepts_winnerAndLoserAreTold() throws Exception {
     Driver d = newDriver();
-    Mechanic winner = newMechanic(11.55, 104.92);
-    Mechanic loser = newMechanic(11.56, 104.93);
+    Mechanic winner = skilledMechanic(11.55, 104.92, "TOW");
+    Mechanic loser = skilledMechanic(11.56, 104.93, "TOW");
     UUID sosId = createSosOk(d);
     Party driver = driverSocket(d);
     Party w = mechanicSocket(winner);
@@ -94,7 +94,7 @@ class BidSocketIntegrationTest extends FlowTestSupport {
   @Test
   void mechanicWithdraws_driverIsTold() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     Party driver = driverSocket(d);
     Party mech = mechanicSocket(m);
@@ -114,7 +114,7 @@ class BidSocketIntegrationTest extends FlowTestSupport {
   void failuresGetOneErrorFrame_withTheRestStatus_andTheSocketStaysOpen() throws Exception {
     Driver d = newDriver();
     Driver other = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     Party driver = driverSocket(d);
     Party intruder = driverSocket(other);
@@ -150,8 +150,8 @@ class BidSocketIntegrationTest extends FlowTestSupport {
   @Test
   void doubleAccept_givesOneWinner_theSecondGets409() throws Exception {
     Driver d = newDriver();
-    Mechanic a = newMechanic(11.55, 104.92);
-    Mechanic b = newMechanic(11.56, 104.93);
+    Mechanic a = skilledMechanic(11.55, 104.92, "TOW");
+    Mechanic b = skilledMechanic(11.56, 104.93, "TOW");
     UUID sosId = createSosOk(d);
     Party driver = driverSocket(d);
     UUID bidA = bidOnSocket(mechanicSocket(a), sosId, "a");
@@ -173,7 +173,7 @@ class BidSocketIntegrationTest extends FlowTestSupport {
   @Test
   void reconnectedClient_recoversItsBids_overTheSocket() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     UUID bidId = bidOnSocket(mechanicSocket(m), sosId, "b-1");
     Party driver = driverSocket(d); // connects after the bid; nothing was replayed
@@ -190,7 +190,7 @@ class BidSocketIntegrationTest extends FlowTestSupport {
   @Test
   void sendOutsideApp_isRefused_andNothingIsRelayedToSubscribers() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     Party driver = driverSocket(d);
     Party mech = mechanicSocket(m);

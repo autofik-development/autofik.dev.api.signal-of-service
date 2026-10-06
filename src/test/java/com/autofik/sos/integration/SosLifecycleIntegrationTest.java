@@ -3,18 +3,13 @@ package com.autofik.sos.integration;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.autofik.sos.domain.entity.Mechanic;
-import com.autofik.sos.domain.entity.MechanicSkill;
 import com.autofik.sos.domain.entity.SosStatusHistory;
 import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.SosStatus;
-import com.autofik.sos.repository.MechanicSkillRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.service.impl.MechanicLocationWriter;
 import com.autofik.sos.service.impl.SosServiceImpl;
-import com.uber.h3core.H3Core;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
@@ -46,9 +41,6 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
   // FlowTestSupport stubs Medusa to resolve every service group to this problem type.
   private static final String PROBLEM_TYPE = "TOW";
 
-  private static final H3Core H3 = h3();
-
-  @Autowired private MechanicSkillRepository mechanicSkillRepository;
   @Autowired private SosStatusHistoryRepository historyRepository;
   @Autowired private SosRequestRepository sosRequestRepository;
   @Autowired private SosServiceImpl sosService;
@@ -733,19 +725,6 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
-  /**
-   * A mechanic the matcher can find: parked at the point, with the H3 cell the location PATCH would
-   * have written and one skill row carrying the given tag.
-   */
-  private Mechanic skilledMechanic(double lat, double lng, String skillTag) {
-    Mechanic m = newMechanic(lat, lng);
-    m.setCurrentH3Index(H3.geoToH3Address(lat, lng, 7));
-    m = mechanicRepository.save(m);
-    mechanicSkillRepository.save(
-        MechanicSkill.builder().mechanic(m).skillTags(new String[] {skillTag}).build());
-    return m;
-  }
-
   private UUID inProgressSos(Driver d, Mechanic m) throws Exception {
     UUID sosId = createSosOk(d);
     acceptBidOk(d, placeBidOk(m, sosId));
@@ -1016,13 +995,5 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
       }
     }
     throw new AssertionError("no " + type + " frame for " + sosId + " within " + wait);
-  }
-
-  private static H3Core h3() {
-    try {
-      return H3Core.newInstance();
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
   }
 }

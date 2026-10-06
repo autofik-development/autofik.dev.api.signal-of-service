@@ -37,7 +37,7 @@ class DependencyFailureIntegrationTest extends FlowTestSupport {
   @Test
   void redisPaused_pingStillReachesTheCustomer_throughTheKafkaFallback() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     assignMechanic(d, m, sosId); // only the assigned mechanic's pings are broadcast
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
@@ -78,7 +78,7 @@ class DependencyFailureIntegrationTest extends FlowTestSupport {
   @Test
   void redisStallShorterThanTheCommandTimeout_isAbsorbed_withoutALostPing() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     assignMechanic(d, m, sosId); // only the assigned mechanic's pings are broadcast
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));

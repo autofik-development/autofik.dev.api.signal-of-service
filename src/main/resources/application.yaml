@@ -136,6 +136,16 @@ sos:
     # than the customer ever asked for.
     step-km: ${SOS_AUTO_EXPAND_STEP_KM:5}
     max-km: ${SOS_AUTO_EXPAND_MAX_KM:35}
+  dispatch:
+    # A mechanic whose last location ping is older than this is not offered jobs and cannot bid
+    # (they have probably closed the app). A mechanic with no recorded ping yet is treated as
+    # fresh, so a deploy does not drop everyone who is offline at that moment.
+    location-max-age-minutes: ${SOS_DISPATCH_LOCATION_MAX_AGE_MINUTES:5}
+    # A mechanic whose road ETA to the SOS is longer than this is not offered the job, and a bid
+    # carrying a longer ETA is refused. Straight-line radius ignores rivers and one-way roads.
+    # Only applied where a Google estimate exists (the nearest offer-max-mechanics, and the bid's
+    # own); no estimate never blocks. 0 disables.
+    max-road-eta-minutes: ${SOS_DISPATCH_MAX_ROAD_ETA_MINUTES:30}
   eta:
     # How often a mechanic's location ping is allowed to trigger a real Google Distance Matrix
     # call while ACCEPTED/ON_THE_WAY; every other ping in the window interpolates against the
