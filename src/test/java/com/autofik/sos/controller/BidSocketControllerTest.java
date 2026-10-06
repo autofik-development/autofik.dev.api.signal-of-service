@@ -49,6 +49,8 @@ class BidSocketControllerTest {
   private static final JsonMapper JSON = JsonMapper.builder().build();
 
   private final BidService bidService = mock(BidService.class);
+  private final com.autofik.sos.service.SosService sosService =
+      mock(com.autofik.sos.service.SosService.class);
   private SimpAnnotationMethodMessageHandler handler;
   private final List<Message<?>> replies = new CopyOnWriteArrayList<>();
 
@@ -59,7 +61,8 @@ class BidSocketControllerTest {
   private ExecutorSubscribableChannel replyChannel;
 
   private BidSocketController controller(BidCommandExecutor executor) {
-    return new BidSocketController(bidService, executor, new SimpMessagingTemplate(replyChannel));
+    return new BidSocketController(
+        bidService, sosService, executor, new SimpMessagingTemplate(replyChannel));
   }
 
   @BeforeEach
@@ -291,6 +294,99 @@ class BidSocketControllerTest {
     JsonNode error = onlyReply("/queue/errors");
     assertThat(error.get("status").asInt()).isEqualTo(503);
     assertThat(error.get("clientMessageId").asString()).isEqualTo("a-3");
+  }
+
+  private com.autofik.sos.dto.event.SosNotificationEvent offer(UUID id) {
+    return new com.autofik.sos.dto.event.SosNotificationEvent(
+        "SOS_CREATED",
+        null,
+        "MECHANIC",
+        id,
+        "New SOS request nearby",
+        "Problem: TOW",
+        List.of(),
+        null);
+  }
+
+  @Test
+  void syncOpen_resendsEachOfferOnTheOffersQueue_thenAcksWithTheCount() {
+    UUID other = UUID.randomUUID();
+    when(sosService.openOffersFor(callerId)).thenReturn(List.of(offer(sosId), offer(other)));
+
+    send("/app/sos/open", GatewayIdentityFilter.ROLE_MECHANIC, "{\"clientMessageId\":\"s-1\"}");
+
+    assertThat(replies).hasSize(3);
+    assertThat(StompHeaderAccessor.wrap(replies.get(0)).getDestination())
+        .endsWith("/queue/sos-new-request");
+    assertThat(body(replies.get(0)).get("type").asString()).isEqualTo("SOS_CREATED");
+    assertThat(body(replies.get(0)).get("sosId").asString()).isEqualTo(sosId.toString());
+    assertThat(body(replies.get(1)).get("sosId").asString()).isEqualTo(other.toString());
+    assertThat(StompHeaderAccessor.wrap(replies.get(2)).getDestination())
+        .endsWith("/queue/bid-results");
+    JsonNode ack = body(replies.get(2));
+    assertThat(ack.get("type").asString()).isEqualTo("OPEN_SOS_SYNCED");
+    assertThat(ack.get("clientMessageId").asString()).isEqualTo("s-1");
+    assertThat(ack.get("count").asInt()).isEqualTo(2);
+  }
+
+  @Test
+  void syncOpen_withNothingOpen_stillAcks_withZero() {
+    when(sosService.openOffersFor(callerId)).thenReturn(List.of());
+
+    send("/app/sos/open", GatewayIdentityFilter.ROLE_MECHANIC, "{}");
+
+    JsonNode ack = onlyReply("/queue/bid-results");
+    assertThat(ack.get("count").asInt()).isZero();
+  }
+
+  @Test
+  void syncOpen_asksForTheSocketsMechanic_notOneNamedInTheFrame() {
+    when(sosService.openOffersFor(any())).thenReturn(List.of());
+
+    send(
+        "/app/sos/open",
+        GatewayIdentityFilter.ROLE_MECHANIC,
+        "{\"mechanicId\":\"" + UUID.randomUUID() + "\"}");
+
+    verify(sosService).openOffersFor(callerId);
+  }
+
+  @Test
+  void syncOpen_aDriverIsRefused() {
+    send("/app/sos/open", GatewayIdentityFilter.ROLE_USER, "{\"clientMessageId\":\"s-2\"}");
+
+    verify(sosService, never()).openOffersFor(any());
+    JsonNode error = onlyReply("/queue/errors");
+    assertThat(error.get("status").asInt()).isEqualTo(403);
+    assertThat(error.get("clientMessageId").asString()).isEqualTo("s-2");
+  }
+
+  @Test
+  void syncOpen_whenTheExecutorIsFull_answers503() {
+    BidCommandExecutor full =
+        new BidCommandExecutor(1, 1) {
+          @Override
+          public void execute(Runnable command) {
+            throw new java.util.concurrent.RejectedExecutionException("full");
+          }
+        };
+    rewire(full);
+
+    send("/app/sos/open", GatewayIdentityFilter.ROLE_MECHANIC, "{\"clientMessageId\":\"s-3\"}");
+
+    JsonNode error = onlyReply("/queue/errors");
+    assertThat(error.get("status").asInt()).isEqualTo(503);
+  }
+
+  @Test
+  void syncOpen_aServiceFailure_isAnErrorFrame_notASilentDrop() {
+    when(sosService.openOffersFor(callerId)).thenThrow(new EntityNotFoundException("gone"));
+
+    send("/app/sos/open", GatewayIdentityFilter.ROLE_MECHANIC, "{\"clientMessageId\":\"s-4\"}");
+
+    JsonNode error = onlyReply("/queue/errors");
+    assertThat(error.get("status").asInt()).isEqualTo(404);
+    assertThat(error.get("clientMessageId").asString()).isEqualTo("s-4");
   }
 
   /** Database and availability failures map the way GlobalExceptionHandler maps them for REST. */

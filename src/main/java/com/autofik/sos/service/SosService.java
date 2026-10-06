@@ -147,4 +147,14 @@ public interface SosService {
    * @return the ticket
    */
   SosRequestResponse confirmStillComing(UUID sosId, UUID mechanicId);
+
+  /**
+   * Use case: a mechanic whose socket dropped asks for the offers still open for them. Returns the
+   * same offer frames the broadcast sends, for tickets they would still be offered and have not bid
+   * on, newest first.
+   *
+   * @param mechanicId the asking mechanic
+   * @return their open offers; empty when the mechanic has no stored location
+   */
+  java.util.List<com.autofik.sos.dto.event.SosNotificationEvent> openOffersFor(UUID mechanicId);
 }

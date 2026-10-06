@@ -43,6 +43,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -1273,15 +1274,56 @@ public class SosServiceImpl implements SosService {
             messagingTemplate.convertAndSendToUser(
                 m.getMechanicId().toString(),
                 "/queue/sos-new-request",
-                new SosNotificationEvent(
-                    "SOS_CREATED",
-                    null,
-                    "MECHANIC",
-                    sosId,
-                    "New SOS request nearby",
-                    "Problem: " + problemType,
-                    photoUrls,
-                    estimates.get(m.getMechanicId()))));
+                offerFrame(sosId, problemType, photoUrls, estimates.get(m.getMechanicId()))));
+  }
+
+  // The offer a mechanic receives, shared by the broadcast and the reconnect sync so the two cannot
+  // drift apart.
+  private static SosNotificationEvent offerFrame(
+      UUID sosId, String problemType, List<String> photoUrls, EtaInfo estimate) {
+    return new SosNotificationEvent(
+        "SOS_CREATED",
+        null,
+        "MECHANIC",
+        sosId,
+        "New SOS request nearby",
+        "Problem: " + problemType,
+        photoUrls,
+        estimate);
+  }
+
+  // A 60 s bidding window keeps the number of open tickets around one mechanic tiny, so a small cap
+  // is plenty. ponytail: raise it, or page, if windows get long.
+  private static final int OPEN_OFFERS_LIMIT = 20;
+
+  @Override
+  @Transactional(readOnly = true)
+  public List<SosNotificationEvent> openOffersFor(UUID mechanicId) {
+    Mechanic mechanic =
+        mechanicRepository
+            .findById(mechanicId)
+            .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+    if (mechanic.getCurrentLocation() == null) return List.of();
+
+    List<UUID> ids =
+        sosRequestRepository.findOpenIdsNear(mechanicId, LocalDateTime.now(), OPEN_OFFERS_LIMIT);
+    if (ids.isEmpty()) return List.of();
+    Map<UUID, SosRequest> byId = new HashMap<>();
+    sosRequestRepository.findAllById(ids).forEach(sos -> byId.put(sos.getSosId(), sos));
+
+    List<SosNotificationEvent> offers = new ArrayList<>();
+    for (UUID id : ids) { // the query's order: newest first
+      SosRequest sos = byId.get(id);
+      // The query is a cheap superset; this is the rule the broadcast itself applies.
+      if (sos == null || !isEligibleMechanic(sos, mechanicId)) continue;
+      offers.add(
+          offerFrame(
+              id,
+              sos.getProblemType(),
+              sosMediaService.getObject().photoUrls(id),
+              readOfferEstimates(OFFER_ETA_KEY_PREFIX + id).get(mechanicId)));
+    }
+    return offers;
   }
 
   // Real road distance/time per mechanic for the job offer. Google bills per mechanic, so each

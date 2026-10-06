@@ -67,7 +67,10 @@ class BidSocketFuzzTest {
         .registerSingleton(
             "bidSocketController",
             new BidSocketController(
-                bidService, BidCommandExecutor.inline(), new SimpMessagingTemplate(channel)));
+                bidService,
+                mock(com.autofik.sos.service.SosService.class),
+                BidCommandExecutor.inline(),
+                new SimpMessagingTemplate(channel)));
     handler =
         new SimpAnnotationMethodMessageHandler(
             channel, channel, new SimpMessagingTemplate(channel));
