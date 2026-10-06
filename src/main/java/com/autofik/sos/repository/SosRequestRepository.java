@@ -93,4 +93,34 @@ public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
       value = "SELECT status FROM sos_request WHERE sos_id = :sosId FOR UPDATE",
       nativeQuery = true)
   Optional<String> lockStatus(@Param("sosId") UUID sosId);
+
+  /**
+   * PENDING tickets whose bidding window is still open, inside the mechanic's own service radius,
+   * of a kind the mechanic has a skill for, that the mechanic has not bid on: newest first. A cheap
+   * superset of what the mechanic is offered; the caller applies the real eligibility rule to it.
+   */
+  @Query(
+      value =
+          """
+            SELECT s.sos_id FROM sos_request s
+            JOIN mechanic m ON m.id = :mechanicId
+            WHERE s.status = 'PENDING'
+              AND s.bidding_expires_at > :now
+              AND ST_DWithin(s.location, m.current_location, m.service_radius_km * 1000)
+              AND EXISTS (
+                  SELECT 1 FROM mechanic_skill ms, unnest(ms.skill_tags) tag
+                  WHERE ms.mechanic_profile_id = m.id AND UPPER(tag) = s.problem_type
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM bid_sos b
+                  WHERE b.sos_id = s.sos_id AND b.mechanic_id = m.id
+              )
+            ORDER BY s.created_at DESC
+            LIMIT :limit
+            """,
+      nativeQuery = true)
+  List<UUID> findOpenIdsNear(
+      @Param("mechanicId") UUID mechanicId,
+      @Param("now") LocalDateTime now,
+      @Param("limit") int limit);
 }

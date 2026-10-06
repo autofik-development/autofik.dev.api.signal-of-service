@@ -2377,6 +2377,101 @@ class SosServiceImplTest {
         .isInstanceOf(IllegalStateException.class);
   }
 
+  // ── reconnect sync: the offers still open for a mechanic ──────────────────────
+
+  private SosRequest openTicket(UUID id, String problemType) {
+    return SosRequest.builder()
+        .sosId(id)
+        .problemType(problemType)
+        .status(SosStatus.PENDING)
+        .location(GEO.createPoint(new Coordinate(104.9282, 11.5573)))
+        .user(user)
+        .vehicle(vehicle)
+        .biddingExpiresAt(LocalDateTime.now().plusSeconds(30))
+        .build();
+  }
+
+  @Test
+  void openOffers_areTheSameFramesTheBroadcastSends_forTicketsTheMechanicIsStillEligibleFor() {
+    UUID second = UUID.randomUUID();
+    SosRequest a = openTicket(sosId, resolvedKey);
+    SosRequest b = openTicket(second, resolvedKey);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
+        .thenReturn(List.of(second, sosId)); // newest first
+    when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a, b));
+    // Both pass the real rule: the mechanic is in the H3 ring and inside the radius.
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(List.of(mechanicId));
+    when(mechanicRepository.filterByRadius(any(), anyDouble(), anyDouble()))
+        .thenReturn(List.of(mechanicId));
+    when(sosMediaServiceBean.photoUrls(any())).thenReturn(List.of("https://x/p.jpg"));
+
+    List<SosNotificationEvent> offers = sosService.openOffersFor(mechanicId);
+
+    assertThat(offers).extracting(SosNotificationEvent::sosId).containsExactly(second, sosId);
+    SosNotificationEvent offer = offers.get(0);
+    assertThat(offer.type()).isEqualTo("SOS_CREATED");
+    assertThat(offer.recipientRole()).isEqualTo("MECHANIC");
+    assertThat(offer.body()).isEqualTo("Problem: " + resolvedKey);
+    assertThat(offer.photoUrls()).containsExactly("https://x/p.jpg");
+  }
+
+  @Test
+  void openOffers_dropATicketTheQueryFoundButTheRealRuleRejects() {
+    SosRequest a = openTicket(sosId, resolvedKey);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
+        .thenReturn(List.of(sosId));
+    when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a));
+    // Not in the mechanic's reach by the H3 + skill rule (busy, stale, or the ring misses them).
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any())).thenReturn(List.of());
+
+    assertThat(sosService.openOffersFor(mechanicId)).isEmpty();
+  }
+
+  @Test
+  void openOffers_attachTheCachedRoadEstimate_whenThereIsOne() {
+    SosRequest a = openTicket(sosId, resolvedKey);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
+        .thenReturn(List.of(sosId));
+    when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(List.of(mechanicId));
+    when(mechanicRepository.filterByRadius(any(), anyDouble(), anyDouble()))
+        .thenReturn(List.of(mechanicId));
+    when(redisTemplate.opsForHash()).thenReturn(hashOps);
+    when(hashOps.entries(anyString()))
+        .thenReturn(
+            Map.of(
+                mechanicId.toString(),
+                "800\t420\t0.8 km\t7 mins\t" + java.time.Instant.now().getEpochSecond()));
+
+    SosNotificationEvent offer = sosService.openOffersFor(mechanicId).get(0);
+
+    assertThat(offer.estimate()).isNotNull();
+    assertThat(offer.estimate().remainingDurationS()).isEqualTo(420);
+  }
+
+  @Test
+  void openOffers_aMechanicWithNoStoredLocation_getsNothing_andNoQueryRuns() {
+    mechanic.setCurrentLocation(null);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+
+    assertThat(sosService.openOffersFor(mechanicId)).isEmpty();
+
+    verify(sosRequestRepository, never()).findOpenIdsNear(any(), any(), anyInt());
+  }
+
+  @Test
+  void openOffers_unknownMechanic_isNotFound() {
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.openOffersFor(mechanicId))
+        .isInstanceOf(jakarta.persistence.EntityNotFoundException.class);
+  }
+
   private final java.util.Map<UUID, Mechanic> knownMechanics = new java.util.HashMap<>();
 
   /**

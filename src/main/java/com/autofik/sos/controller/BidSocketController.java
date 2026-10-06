@@ -2,6 +2,7 @@ package com.autofik.sos.controller;
 
 import com.autofik.sos.config.BidCommandExecutor;
 import com.autofik.sos.domain.enums.BidStatus;
+import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
@@ -9,6 +10,7 @@ import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.security.GatewayIdentityFilter;
 import com.autofik.sos.service.BidService;
+import com.autofik.sos.service.SosService;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Valid;
@@ -57,6 +59,7 @@ public class BidSocketController {
   private static final JsonMapper JSON = JsonMapper.builder().build();
 
   private final BidService bidService;
+  private final SosService sosService;
   private final BidCommandExecutor bidCommandExecutor;
   private final SimpMessagingTemplate messagingTemplate;
 
@@ -70,6 +73,8 @@ public class BidSocketController {
       @NotNull UUID bidId, @NotNull BidStatus status, @Size(max = 64) String clientMessageId) {}
 
   public record WithdrawBid(@NotNull UUID bidId, @Size(max = 64) String clientMessageId) {}
+
+  public record SyncOpen(@Size(max = 64) String clientMessageId) {}
 
   public record SyncBids(@NotNull UUID sosId, @Size(max = 64) String clientMessageId) {}
 
@@ -128,6 +133,36 @@ public class BidSocketController {
     reply.put("clientMessageId", in.clientMessageId());
     reply.put("bids", bids);
     return reply;
+  }
+
+  /**
+   * A mechanic whose socket dropped asks for the offers still open for them: each is re-sent as the
+   * same SOS_CREATED frame the broadcast uses, on the same queue, then one ack with the count. Runs
+   * on the bid executor like {@link #place}, so a burst of syncs cannot hold the shared inbound
+   * threads.
+   */
+  @MessageMapping("/sos/open")
+  public void syncOpen(@Valid @Payload SyncOpen in, Authentication caller) {
+    UUID mechanicId =
+        requireRole(caller, GatewayIdentityFilter.ROLE_MECHANIC, "sync open requests");
+    String user = caller.getName();
+    bidCommandExecutor.execute(
+        () -> {
+          try {
+            List<SosNotificationEvent> offers = sosService.openOffersFor(mechanicId);
+            offers.forEach(
+                offer ->
+                    messagingTemplate.convertAndSendToUser(user, "/queue/sos-new-request", offer));
+            Map<String, Object> ack = new LinkedHashMap<>();
+            ack.put("type", "OPEN_SOS_SYNCED");
+            ack.put("clientMessageId", in.clientMessageId());
+            ack.put("count", offers.size());
+            messagingTemplate.convertAndSendToUser(user, "/queue/bid-results", ack);
+          } catch (Exception ex) {
+            messagingTemplate.convertAndSendToUser(
+                user, "/queue/errors", errorFrame(ex, in.clientMessageId()));
+          }
+        });
   }
 
   /**

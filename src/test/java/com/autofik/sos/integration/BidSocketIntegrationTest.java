@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.autofik.sos.domain.entity.Mechanic;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -17,6 +18,9 @@ import tools.jackson.databind.JsonNode;
  * socket.
  */
 class BidSocketIntegrationTest extends FlowTestSupport {
+
+  @org.springframework.beans.factory.annotation.Autowired
+  private com.autofik.sos.repository.SosRequestRepository sosRequestRepository;
 
   private static final Duration WAIT = Duration.ofSeconds(10);
 
@@ -208,5 +212,105 @@ class BidSocketIntegrationTest extends FlowTestSupport {
     JsonNode error = parse(frame);
     assertThat(error.get("status").asInt()).isEqualTo(status);
     assertThat(error.get("clientMessageId").asString()).isEqualTo(clientMessageId);
+  }
+
+  // ── reconnect sync: the offers still open for a mechanic who was not connected ──
+
+  private static final String OFFERS = "/user/queue/sos-new-request";
+
+  /** The mechanic connects only after the SOS was created, so the broadcast never reached them. */
+  @Test
+  void aMechanicWhoReconnects_asksForOpenOffers_andGetsTheMissedOneAndAnAck() throws Exception {
+    Mechanic m = skilledMechanic(11.5564, 104.9282, "TOW");
+    UUID sosId = createSosOk(newDriver()); // m is not connected: the frame goes nowhere
+
+    Party mechanic = mechanicSocket(m);
+    Tap offers = subscribe(mechanic.session(), OFFERS);
+    awaitSubscriptions(OFFERS, 1);
+    mechanic.session().send("/app/sos/open", msg("clientMessageId", "sync-1"));
+
+    // Other tests' open tickets may be re-sent too (shared database); find this one.
+    JsonNode offer = null;
+    for (String frame = offers.next(WAIT); frame != null; frame = offers.next(WAIT)) {
+      JsonNode n = parse(frame);
+      if (sosId.toString().equals(n.get("sosId").asString())) {
+        offer = n;
+        break;
+      }
+    }
+    assertThat(offer).as("the missed offer is re-sent").isNotNull();
+    assertThat(offer.get("type").asString()).isEqualTo("SOS_CREATED");
+    JsonNode ack = parse(mechanic.results().next(WAIT));
+    assertThat(ack.get("type").asString()).isEqualTo("OPEN_SOS_SYNCED");
+    assertThat(ack.get("clientMessageId").asString()).isEqualTo("sync-1");
+    assertThat(ack.get("count").asInt()).isGreaterThanOrEqualTo(1);
+    mechanic.session().disconnect();
+  }
+
+  @Test
+  void theSync_leavesOutTicketsTheMechanicCouldNotBidOn() throws Exception {
+    Mechanic wrongSkill = skilledMechanic(11.5564, 104.9282, "BATTERY");
+    Mechanic alreadyBid = skilledMechanic(11.5564, 104.9282, "TOW");
+    Mechanic farAway = skilledMechanic(13.0, 105.5, "TOW");
+    Driver d = newDriver();
+    UUID sosId = createSosOk(d);
+    placeBidOk(alreadyBid, sosId);
+
+    for (Mechanic m : List.of(wrongSkill, alreadyBid, farAway)) {
+      Party p = mechanicSocket(m);
+      Tap offers = subscribe(p.session(), OFFERS);
+      awaitSubscriptions(OFFERS, 1);
+      p.session().send("/app/sos/open", msg("clientMessageId", "sync-x"));
+
+      JsonNode ack = parse(p.results().next(WAIT));
+      assertThat(ack.get("type").asString()).isEqualTo("OPEN_SOS_SYNCED");
+      JsonNode offered = null;
+      for (String frame = offers.next(Duration.ofMillis(500));
+          frame != null;
+          frame = offers.next(Duration.ofMillis(500))) {
+        JsonNode n = parse(frame);
+        if (sosId.toString().equals(n.get("sosId").asString())) offered = n;
+      }
+      assertThat(offered)
+          .as("this mechanic must not be re-sent a ticket they cannot bid on")
+          .isNull();
+      p.session().disconnect();
+    }
+  }
+
+  @Test
+  void aTicketWhoseBiddingWindowClosed_isNotResent() throws Exception {
+    Mechanic m = skilledMechanic(11.5564, 104.9282, "TOW");
+    UUID sosId = createSosOk(newDriver());
+    var sos = sosRequestRepository.findById(sosId).orElseThrow();
+    sos.setBiddingExpiresAt(java.time.LocalDateTime.now().minusMinutes(1));
+    sosRequestRepository.save(sos);
+
+    Party mechanic = mechanicSocket(m);
+    Tap offers = subscribe(mechanic.session(), OFFERS);
+    awaitSubscriptions(OFFERS, 1);
+    mechanic.session().send("/app/sos/open", msg("clientMessageId", "sync-2"));
+
+    // Other tests' tickets may still be open in the shared database and are rightly re-sent, so
+    // check only that this one, whose window is closed, is not.
+    parse(mechanic.results().next(WAIT));
+    for (String frame = offers.next(Duration.ofMillis(500));
+        frame != null;
+        frame = offers.next(Duration.ofMillis(500))) {
+      assertThat(parse(frame).get("sosId").asString()).isNotEqualTo(sosId.toString());
+    }
+    mechanic.session().disconnect();
+  }
+
+  @Test
+  void aDriverSendingTheSync_getsA403ErrorFrame() throws Exception {
+    Party driver = driverSocket(newDriver());
+
+    driver.session().send("/app/sos/open", msg("clientMessageId", "sync-3"));
+
+    JsonNode error = parse(driver.errors().next(WAIT));
+    assertThat(error.get("status").asInt()).isEqualTo(403);
+    assertThat(error.get("clientMessageId").asString()).isEqualTo("sync-3");
+    driver.session().disconnect();
   }
 }
