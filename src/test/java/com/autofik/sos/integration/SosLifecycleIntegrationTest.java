@@ -91,6 +91,19 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
             "ARRIVED>IN_PROGRESS",
             "IN_PROGRESS>COMPLETED");
     assertThat(history).allMatch(h -> h.getApprovedStatus() == ApprovedStatus.ACCEPTED);
+
+    // The same timeline over REST, for the customer and for the mechanic whose bid was accepted.
+    HttpResponse<String> asOwner = historyAs("user-context", userContextHeader(d), sosId);
+    HttpResponse<String> asMechanic =
+        historyAs("mechanic-context", mechanicContextHeader(m), sosId);
+    assertThat(asOwner.statusCode()).as(asOwner.body()).isEqualTo(200);
+    assertThat(asMechanic.statusCode()).as(asMechanic.body()).isEqualTo(200);
+    assertThat(transitionsOf(asOwner)).isEqualTo(transitions);
+    assertThat(transitionsOf(asMechanic)).isEqualTo(transitions);
+    JsonNode first = parse(asOwner.body()).get(0);
+    assertThat(first.has("proposedBy")).as("no contact details in an entry").isFalse();
+    assertThat(first.get("decision").asString()).isEqualTo("ACCEPTED");
+    assertThat(first.get("at").asString()).isNotBlank();
   }
 
   /**
@@ -728,6 +741,78 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     HttpResponse<String> r = submitFeedback(other, m, sosId, "1");
 
     assertThat(r.statusCode()).as(r.body()).isEqualTo(403);
+  }
+
+  // ── job timeline: GET /sos/{id}/history ─────────────────────────────────────
+
+  private HttpResponse<String> historyAs(String header, String value, UUID sosId) throws Exception {
+    return send(req("/api/v1/sos/" + sosId + "/history").header(header, value).GET());
+  }
+
+  private List<String> transitionsOf(HttpResponse<String> response) {
+    List<String> out = new ArrayList<>();
+    for (JsonNode e : parse(response.body())) {
+      out.add(e.get("fromStatus").asString() + ">" + e.get("toStatus").asString());
+    }
+    return out;
+  }
+
+  @Test
+  void history_isNotFoundForAnotherDriver_andForAMechanicWhoBidButWasNotChosen() throws Exception {
+    Driver d = newDriver();
+    Mechanic chosen = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic passedOver = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    UUID chosenBid = placeBidOk(chosen, sosId);
+    placeBidOk(passedOver, sosId);
+    acceptBidOk(d, chosenBid);
+
+    assertThat(historyAs("user-context", userContextHeader(newDriver()), sosId).statusCode())
+        .isEqualTo(404);
+    assertThat(historyAs("mechanic-context", mechanicContextHeader(passedOver), sosId).statusCode())
+        .isEqualTo(404);
+    assertThat(historyAs("mechanic-context", mechanicContextHeader(chosen), sosId).statusCode())
+        .isEqualTo(200);
+  }
+
+  @Test
+  void history_ofAMechanicWhoReleasedTheJob_isNotFoundAnyMore() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    assignMechanic(d, m, sosId);
+    assertThat(historyAs("mechanic-context", mechanicContextHeader(m), sosId).statusCode())
+        .isEqualTo(200);
+
+    assertThat(release(m, sosId).statusCode()).isEqualTo(200);
+
+    assertThat(historyAs("mechanic-context", mechanicContextHeader(m), sosId).statusCode())
+        .as("it is no longer their job")
+        .isEqualTo(404);
+  }
+
+  // The known limit: a customer cancel writes no row (proposed_by is NOT NULL), so the timeline
+  // shows the steps up to the cancel and not the cancel itself.
+  @Test
+  void history_hasNoEntryForACustomerCancel() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    assignMechanic(d, m, sosId);
+    HttpResponse<String> cancel =
+        send(
+            req("/api/v1/sos/" + sosId + "/cancel")
+                .header("user-context", userContextHeader(d))
+                .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancel.statusCode()).as(cancel.body()).isEqualTo(200);
+
+    HttpResponse<String> asOwner = historyAs("user-context", userContextHeader(d), sosId);
+
+    assertThat(asOwner.statusCode()).isEqualTo(200);
+    assertThat(transitionsOf(asOwner)).containsExactly("PENDING>ACCEPTED");
+    assertThat(historyAs("mechanic-context", mechanicContextHeader(m), sosId).statusCode())
+        .as("the accepted mechanic can still read a cancelled job's timeline")
+        .isEqualTo(200);
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────

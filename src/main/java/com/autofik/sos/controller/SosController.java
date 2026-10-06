@@ -6,6 +6,7 @@ import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
+import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import com.autofik.sos.security.AuthMechanic;
 import com.autofik.sos.security.AuthUser;
@@ -71,6 +72,15 @@ public class SosController {
   @GetMapping("/{sosId}")
   public SosRequestResponse getById(@PathVariable UUID sosId, @AuthUser CurrentUser caller) {
     return sosService.getById(sosId, caller.id());
+  }
+
+  // GET /api/v1/sos/{sosId}/history — The job timeline: status changes, oldest first. For the
+  // driver who owns the ticket and for the mechanic whose bid is accepted on it; everyone else
+  // gets 404. No @PreAuthorize on purpose: both roles may call it, the service decides.
+  @GetMapping("/{sosId}/history")
+  public List<SosStatusHistoryEntry> getHistory(
+      @PathVariable UUID sosId, @AuthUser CurrentUser caller) {
+    return sosService.getHistory(sosId, caller.id());
   }
 
   // GET /api/v1/sos/{sosId}/nearby-mechanics — Live list of mechanics eligible for this ticket

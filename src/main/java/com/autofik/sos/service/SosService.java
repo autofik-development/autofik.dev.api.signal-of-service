@@ -6,6 +6,7 @@ import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
+import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import java.util.List;
 import java.util.UUID;
@@ -148,6 +149,18 @@ public interface SosService {
    * @return the cancelled ticket
    */
   SosRequestResponse reportCustomerNoShow(UUID sosId, UUID mechanicId);
+
+  /**
+   * Use case: the job timeline. The status changes recorded for a ticket, oldest first, for the
+   * ticket's owner and for the mechanic whose bid is accepted on it. Anyone else gets "not found".
+   * The record holds the steps a mechanic drives or proposes and the bid accept; a customer cancel,
+   * an expiry and a rebroadcast are not in it.
+   *
+   * @param sosId the ticket
+   * @param callerId the owner or the assigned mechanic
+   * @return the entries, without any contact details
+   */
+  List<SosStatusHistoryEntry> getHistory(UUID sosId, UUID callerId);
 
   /**
    * True when the mechanic would have been offered this SOS: near enough, right skill, available,
