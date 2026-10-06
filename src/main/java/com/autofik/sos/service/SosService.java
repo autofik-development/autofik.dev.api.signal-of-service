@@ -129,6 +129,27 @@ public interface SosService {
   SosRequestResponse releaseByMechanic(UUID sosId, UUID mechanicId);
 
   /**
+   * Use case: the assigned mechanic says they have arrived. The customer is asked to confirm; the
+   * ticket stays ON_THE_WAY until they do, or until sos.arrival.approval-window-seconds pass and
+   * the system confirms for them.
+   *
+   * @param sosId the SOS the mechanic was assigned to
+   * @param mechanicId security check, must be the mechanic holding the ACCEPTED bid
+   * @return the waiting request, with the historyId the customer answers
+   */
+  com.autofik.sos.dto.response.SosStatusHistoryResponse proposeArrival(UUID sosId, UUID mechanicId);
+
+  /**
+   * Use case: the mechanic has waited sos.customer-wait.minutes at the breakdown and the customer
+   * never came. Ends the job (CANCELLED) and tells the customer.
+   *
+   * @param sosId the SOS at ARRIVED
+   * @param mechanicId security check, must be the mechanic holding the ACCEPTED bid
+   * @return the cancelled ticket
+   */
+  SosRequestResponse reportCustomerNoShow(UUID sosId, UUID mechanicId);
+
+  /**
    * True when the mechanic would have been offered this SOS: near enough, right skill, available,
    * not on another live job and recently seen. Used to refuse a bid from a mechanic who was never
    * offered the job.

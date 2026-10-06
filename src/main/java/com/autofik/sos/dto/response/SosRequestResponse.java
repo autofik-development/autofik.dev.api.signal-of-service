@@ -24,9 +24,10 @@ public record SosRequestResponse(
     UserResponse user,
     VehicleResponse vehicle,
     MechanicResponse mechanic,
-    // Only set on GET /sos/{id} for the owner, while the mechanic's completion request waits for
-    // approval. It is the historyId PATCH /sos/completion needs, so a customer who missed the
-    // COMPLETION_REQUESTED frame can still approve. Null otherwise.
+    // Only set on GET /sos/{id} for the owner, while the mechanic's request waits for an answer: a
+    // completion request while the status is IN_PROGRESS, an arrival request while it is still
+    // ON_THE_WAY. It is the historyId PATCH /sos/completion needs, so a customer who missed the
+    // COMPLETION_REQUESTED or ARRIVAL_REQUESTED frame can still answer. Null otherwise.
     UUID pendingCompletionHistoryId,
     // When that request is approved automatically if the customer has not answered: the countdown
     // the app shows. Null whenever pendingCompletionHistoryId is null.

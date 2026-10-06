@@ -128,6 +128,8 @@ class SosServiceImplTest {
     ReflectionTestUtils.setField(sosService, "maxRoadEtaMinutes", 30);
     ReflectionTestUtils.setField(sosService, "createCooldownSeconds", 60);
     ReflectionTestUtils.setField(sosService, "completionApprovalWindowSeconds", 120L);
+    ReflectionTestUtils.setField(sosService, "arrivalApprovalWindowSeconds", 60L);
+    ReflectionTestUtils.setField(sosService, "customerWaitMinutes", 10);
     ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 25);
     ReflectionTestUtils.setField(sosService, "offerEstimateMaxAgeSeconds", 300);
     // create() runs its writes through the template; run the callback inline.
@@ -255,18 +257,22 @@ class SosServiceImplTest {
                     .build()));
   }
 
-  // The cached route outlives its 30s refresh window, so without an eager clear the customer
-  // keeps receiving an interpolated countdown after the mechanic has already pulled up.
-  @Test
-  void updateStatus_arrived_clearsCachedEta() {
-    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
-    stubUpdateStatus(sos);
-    when(googleMapsService.getDistanceInfo(any(), any()))
-        .thenReturn(new DistanceInfo(30, 20, "30 m", "1 min"));
+  // The same gates as updateStatus, without the response mapping a proposal never reaches.
+  private void stubProposeBase(SosRequest sos) {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    stubAssignedMechanic(sos);
+  }
 
-    sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED);
-
-    verify(routeEtaService).clear(sosId);
+  private void stubProposeArrival(SosRequest sos) {
+    stubProposeBase(sos);
+    when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
+        .thenAnswer(
+            inv -> {
+              SosStatusHistory h = inv.getArgument(0);
+              h.setId(historyId);
+              return h;
+            });
   }
 
   // ON_THE_WAY is still en route — clearing here would throw away a paid-for route mid-drive,
@@ -282,23 +288,41 @@ class SosServiceImplTest {
     verify(googleMapsService, never()).getDistanceInfo(any(), any());
   }
 
-  // ── updateStatus: arrival proximity gate ──────────────────────────────────
+  // ── proposeArrival: the mechanic says they are there, the customer confirms ─────
 
   @Test
-  void updateStatus_arrived_withinLimit_allowed() {
+  void proposeArrival_withinLimit_asksTheCustomer_andLeavesTheTicketOnTheWay() {
     SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
-    stubUpdateStatus(sos);
+    stubProposeArrival(sos);
     when(googleMapsService.getDistanceInfo(any(), any()))
         .thenReturn(new DistanceInfo(48, 30, "48 m", "1 min"));
 
-    sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED);
+    sosService.proposeArrival(sosId, mechanicId);
 
-    assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+    assertThat(sos.getStatus())
+        .as("not ARRIVED until the customer answers")
+        .isEqualTo(SosStatus.ON_THE_WAY);
+    ArgumentCaptor<SosStatusHistory> saved = ArgumentCaptor.forClass(SosStatusHistory.class);
+    verify(sosStatusHistoryRepository).save(saved.capture());
+    assertThat(saved.getValue().getFromStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+    assertThat(saved.getValue().getToStatus()).isEqualTo(SosStatus.ARRIVED);
+    assertThat(saved.getValue().getApprovedStatus()).isEqualTo(ApprovedStatus.PENDING_APPROVAL);
+    verify(sosRequestRepository).lockStatus(sosId);
+    ArgumentCaptor<Object> frame = ArgumentCaptor.forClass(Object.class);
+    verify(messagingTemplate)
+        .convertAndSendToUser(eq(userId.toString()), eq("/queue/sos-updates"), frame.capture());
+    Map<?, ?> sent = (Map<?, ?>) frame.getValue();
+    assertThat(sent.get("type")).isEqualTo("ARRIVAL_REQUESTED");
+    assertThat(sent.get("historyId")).isEqualTo(historyId);
+    assertThat(sent.get("approveBy")).isNotNull();
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(n -> n.type().equals("ARRIVAL_REQUESTED") && n.recipientId().equals(userId)));
   }
 
   // The whole point of the gate: a mechanic who is not there cannot claim to be.
   @Test
-  void updateStatus_arrived_beyondLimit_rejectedAndStatusUnchanged() {
+  void proposeArrival_beyondLimit_rejected_andNothingIsAsked() {
     SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
@@ -306,25 +330,24 @@ class SosServiceImplTest {
     when(googleMapsService.getDistanceInfo(any(), any()))
         .thenReturn(new DistanceInfo(4200, 600, "4.2 km", "10 min"));
 
-    assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED))
+    assertThatThrownBy(() -> sosService.proposeArrival(sosId, mechanicId))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("4200m");
 
-    assertThat(sos.getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
-    verify(sosRequestRepository, never()).save(any());
-    verify(routeEtaService, never()).clear(any());
+    verify(sosStatusHistoryRepository, never()).save(any());
+    verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
   }
 
   // A mechanic who never shares location must not be able to bypass the gate by staying silent.
   @Test
-  void updateStatus_arrived_noMechanicLocation_rejected() {
+  void proposeArrival_noMechanicLocation_rejected() {
     mechanic.setCurrentLocation(null);
     SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     stubAssignedMechanic(sos);
 
-    assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED))
+    assertThatThrownBy(() -> sosService.proposeArrival(sosId, mechanicId))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("no location on record");
 
@@ -334,18 +357,18 @@ class SosServiceImplTest {
   // A Maps outage must not halt every arrival in the country — fall back to straight-line,
   // which never exceeds road distance and so errs toward letting a present mechanic proceed.
   @Test
-  void updateStatus_arrived_mapsUnavailable_fallsBackToStraightLine() {
+  void proposeArrival_mapsUnavailable_fallsBackToStraightLine() {
     SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
-    stubUpdateStatus(sos);
+    stubProposeArrival(sos);
     when(googleMapsService.getDistanceInfo(any(), any())).thenReturn(null);
 
-    sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED);
+    sosService.proposeArrival(sosId, mechanicId);
 
-    assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+    verify(sosStatusHistoryRepository).save(any(SosStatusHistory.class));
   }
 
   @Test
-  void updateStatus_arrived_mapsUnavailable_stillRejectsWhenFarAway() {
+  void proposeArrival_mapsUnavailable_stillRejectsWhenFarAway() {
     mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(103.8600, 13.3600))); // Siem Reap
     SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
@@ -353,9 +376,75 @@ class SosServiceImplTest {
     stubAssignedMechanic(sos);
     when(googleMapsService.getDistanceInfo(any(), any())).thenReturn(null);
 
-    assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED))
+    assertThatThrownBy(() -> sosService.proposeArrival(sosId, mechanicId))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("exceeds the 50m limit");
+  }
+
+  // A double tap or a timeout retry must not ask the customer twice.
+  @Test
+  void proposeArrival_whenOneIsAlreadyWaiting_returnsIt_withoutAnotherRowPushOrMapsCall() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    stubProposeBase(sos);
+    SosStatusHistory waiting = waitingArrival(sos, 5);
+    when(sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(Optional.of(waiting));
+    when(sosStatusHistoryMapper.toResponse(waiting)).thenReturn(historyResponse);
+
+    assertThat(sosService.proposeArrival(sosId, mechanicId)).isEqualTo(historyResponse);
+
+    verify(sosStatusHistoryRepository, never()).save(any(SosStatusHistory.class));
+    verify(sosEventProducer, never()).publishNotification(any());
+    verify(googleMapsService, never()).getDistanceInfo(any(), any());
+  }
+
+  @Test
+  void proposeArrival_byAMechanicWhoIsNotAssigned_isDenied() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.proposeArrival(sosId, mechanicId))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+
+    verify(sosStatusHistoryRepository, never()).save(any(SosStatusHistory.class));
+  }
+
+  @Test
+  void proposeArrival_beforeTheMechanicIsOnTheWay_isAnInvalidTransition() {
+    SosRequest sos = sosAt(SosStatus.ACCEPTED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+
+    assertThatThrownBy(() -> sosService.proposeArrival(sosId, mechanicId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Invalid status transition");
+  }
+
+  // ARRIVED has one way in now, so the customer's answer cannot be skipped.
+  @Test
+  void updateStatus_arrived_isRefused_pointingToTheArrivalCall() {
+    assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ARRIVED))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("/arrival");
+
+    verify(sosRequestRepository, never()).save(any());
+  }
+
+  private SosStatusHistory waitingArrival(SosRequest sos, long askedSecondsAgo) {
+    SosStatusHistory h =
+        SosStatusHistory.builder()
+            .sosRequest(sos)
+            .fromStatus(SosStatus.ON_THE_WAY)
+            .toStatus(SosStatus.ARRIVED)
+            .proposedBy(mechanic)
+            .proposedAt(LocalDateTime.now().minusSeconds(askedSecondsAgo))
+            .approvedStatus(ApprovedStatus.PENDING_APPROVAL)
+            .build();
+    h.setId(historyId);
+    return h;
   }
 
   // ── create ────────────────────────────────────────────────────────────────
@@ -2197,6 +2286,21 @@ class SosServiceImplTest {
     verifyNoInteractions(messagingTemplate, sosEventProducer);
   }
 
+  // A mechanic who asked the customer to confirm their arrival stands at the breakdown on purpose.
+  @Test
+  void noShow_aMechanicWaitingForTheCustomersArrivalAnswer_isNeitherAskedNorReleased() {
+    BidSos bid = noShowJob(SosStatus.ON_THE_WAY, minutesAgo(10), minutesAgo(3));
+    when(sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(Optional.of(waitingArrival(bid.getSosRequest(), 5)));
+
+    sosService.checkNoShowJobs();
+
+    assertThat(bid.getStatus()).isEqualTo(BidStatus.ACCEPTED);
+    assertThat(bid.getSosRequest().getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
   @Test
   void noShow_aMechanicWithNoRecordedMovement_isTreatedAsMoving() {
     noShowJob(SosStatus.ACCEPTED, null, null);
@@ -2586,6 +2690,302 @@ class SosServiceImplTest {
   /**
    * Ids for the geo-filter stubs; remembers the entities so findAllWithRateById can return them.
    */
+  // ── arrival confirmation: the customer answers, or the window runs out ────────────
+
+  private void stubCustomerAnswer(SosStatusHistory history, SosRequest sos) {
+    when(sosStatusHistoryRepository.findById(historyId)).thenReturn(Optional.of(history));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+    lenient().when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+  }
+
+  @Test
+  void approveStatusChange_arrivalConfirmed_marksArrived_withoutAPushToTheCustomerWhoTappedIt() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    SosStatusHistory h = waitingArrival(sos, 10);
+    stubCustomerAnswer(h, sos);
+    stubAssignedMechanic(sos);
+
+    sosService.approveStatusChange(
+        new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.ACCEPTED));
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.ACCEPTED);
+    assertThat(h.getApprovedBy()).isEqualTo(user);
+    assertThat(h.getApproveAt()).as("the wait starts here").isNotNull();
+    verify(routeEtaService).clear(sosId);
+    verify(sosEventProducer).publishStatusUpdated(any(SosStatusUpdatedEvent.class));
+    verify(sosEventProducer, never()).publishNotification(any());
+  }
+
+  @Test
+  void approveStatusChange_arrivalRejected_keepsTheTicketOnTheWay_andTellsTheMechanic() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    SosStatusHistory h = waitingArrival(sos, 10);
+    stubCustomerAnswer(h, sos);
+
+    sosService.approveStatusChange(
+        new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.REJECTED));
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.REJECTED);
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "ARRIVAL_REJECTED", "sosId", sosId, "historyId", historyId)));
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(
+                n -> n.type().equals("ARRIVAL_REJECTED") && n.recipientId().equals(mechanicId)));
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+  }
+
+  // The job was released and taken by someone else after the pop-up went out: the old request must
+  // not move the new mechanic's ticket.
+  @Test
+  void approveStatusChange_arrivalOfAMechanicWhoIsNoLongerAssigned_isRefused() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    SosStatusHistory h = waitingArrival(sos, 10);
+    stubCustomerAnswer(h, sos);
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(bidBy(UUID.randomUUID(), BidStatus.ACCEPTED, sos)));
+
+    assertThatThrownBy(
+            () ->
+                sosService.approveStatusChange(
+                    new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.ACCEPTED)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("no longer valid");
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+  }
+
+  @Test
+  void approveOverdueCompletions_unansweredArrival_isConfirmedAfterTheArrivalWindow() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    SosStatusHistory h = waitingArrival(sos, 61);
+    stubOverdue(h);
+    stubAssignedMechanic(sos);
+    when(sosStatusHistoryRepository.findApprovedStatusById(h.getId()))
+        .thenReturn(Optional.of(ApprovedStatus.PENDING_APPROVAL));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.ACCEPTED);
+    assertThat(h.getApprovedBy()).as("confirmed by the system").isNull();
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(userId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "ARRIVAL_AUTO_CONFIRMED", "sosId", sosId)));
+    // A customer who did not answer is the one who needs to hear the mechanic is there.
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(n -> n.type().equals("STATUS_ARRIVED") && n.recipientId().equals(userId)));
+  }
+
+  @Test
+  void approveOverdueCompletions_arrivalStillInsideItsWindow_isLeftAlone() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    SosStatusHistory h = waitingArrival(sos, 30);
+    when(sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(any(), any()))
+        .thenReturn(List.of(h));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.PENDING_APPROVAL);
+    verify(sosRequestRepository, never()).save(any(SosRequest.class));
+  }
+
+  // The arrival window is shorter than the completion one; a completion asked 100 s ago still
+  // waits.
+  @Test
+  void approveOverdueCompletions_completionKeepsItsOwnLongerWindow() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    SosStatusHistory h = waitingCompletion(sos);
+    h.setProposedBy(mechanic);
+    h.setProposedAt(LocalDateTime.now().minusSeconds(100));
+    when(sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(any(), any()))
+        .thenReturn(List.of(h));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.IN_PROGRESS);
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.PENDING_APPROVAL);
+  }
+
+  // The job moved on while the pop-up waited: close the request so the sweep stops reading it.
+  @Test
+  void approveOverdueCompletions_arrivalOnATicketThatMovedOn_isClosed_andChangesNothing() {
+    SosRequest sos = sosAt(SosStatus.CANCELLED);
+    SosStatusHistory h = waitingArrival(sos, 90);
+    stubOverdue(h);
+    when(sosStatusHistoryRepository.findApprovedStatusById(h.getId()))
+        .thenReturn(Optional.of(ApprovedStatus.PENDING_APPROVAL));
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.CANCELLED);
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.REJECTED);
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+    verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
+  }
+
+  @Test
+  void release_closesAnArrivalTheCustomerHasNotAnsweredYet() {
+    SosRequest sos = releasableSos(SosStatus.ON_THE_WAY);
+    acceptedBidOfAssignedMechanic(sos);
+    SosStatusHistory waiting = waitingArrival(sos, 10);
+    when(sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(Optional.of(waiting));
+
+    sosService.releaseByMechanic(sosId, mechanicId);
+
+    assertThat(waiting.getApprovedStatus()).isEqualTo(ApprovedStatus.REJECTED);
+    verify(sosStatusHistoryRepository).save(waiting);
+  }
+
+  @Test
+  void getById_owner_seesTheHistoryIdOfAWaitingArrival() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+    when(sosStatusHistoryRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(Optional.of(waitingArrival(sos, 10)));
+
+    assertThat(sosService.getById(sosId, userId).pendingCompletionHistoryId()).isEqualTo(historyId);
+  }
+
+  // ── the customer never came: the mechanic ends the job after the wait ─────────────
+
+  // Lenient throughout: the refusal tests stop before they reach every one of these.
+  private SosRequest arrivedForNoShow(long arrivedMinutesAgo) {
+    SosRequest sos = sosAt(SosStatus.ARRIVED);
+    lenient().when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    lenient().when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    lenient().when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+    lenient()
+        .when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(bidBy(mechanicId, BidStatus.ACCEPTED, sos)));
+    SosStatusHistory arrived =
+        SosStatusHistory.builder()
+            .sosRequest(sos)
+            .fromStatus(SosStatus.ON_THE_WAY)
+            .toStatus(SosStatus.ARRIVED)
+            .proposedBy(mechanic)
+            .approvedStatus(ApprovedStatus.ACCEPTED)
+            .approveAt(LocalDateTime.now().minusMinutes(arrivedMinutesAgo))
+            .build();
+    lenient()
+        .when(
+            sosStatusHistoryRepository
+                .findFirstBySosRequestSosIdAndToStatusAndApprovedStatusOrderByChangeAtDesc(
+                    sosId, SosStatus.ARRIVED, ApprovedStatus.ACCEPTED))
+        .thenReturn(Optional.of(arrived));
+    return sos;
+  }
+
+  @Test
+  void reportCustomerNoShow_afterTheWait_cancelsTheJob_andTellsTheCustomer() {
+    SosRequest sos = arrivedForNoShow(11);
+
+    sosService.reportCustomerNoShow(sosId, mechanicId);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.CANCELLED);
+    verify(sosRequestRepository).lockStatus(sosId);
+    verify(routeEtaService).clear(sosId);
+    ArgumentCaptor<SosStatusHistory> history = ArgumentCaptor.forClass(SosStatusHistory.class);
+    verify(sosStatusHistoryRepository).save(history.capture());
+    assertThat(history.getValue().getFromStatus()).isEqualTo(SosStatus.ARRIVED);
+    assertThat(history.getValue().getToStatus()).isEqualTo(SosStatus.CANCELLED);
+    assertThat(history.getValue().getProposedBy()).isEqualTo(mechanic);
+    assertThat(history.getValue().getApprovedStatus()).isEqualTo(ApprovedStatus.ACCEPTED);
+    ArgumentCaptor<SosStatusUpdatedEvent> event =
+        ArgumentCaptor.forClass(SosStatusUpdatedEvent.class);
+    verify(sosEventProducer).publishStatusUpdated(event.capture());
+    assertThat(event.getValue().fromStatus()).isEqualTo(SosStatus.ARRIVED);
+    assertThat(event.getValue().toStatus()).isEqualTo(SosStatus.CANCELLED);
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(userId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "CUSTOMER_NO_SHOW", "sosId", sosId, "fromStatus", "ARRIVED")));
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(n -> n.type().equals("CUSTOMER_NO_SHOW") && n.recipientId().equals(userId)));
+  }
+
+  @Test
+  void reportCustomerNoShow_beforeTheWaitIsOver_saysHowLongIsLeft() {
+    SosRequest sos = arrivedForNoShow(4);
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, mechanicId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("6 more minute");
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+    verify(sosRequestRepository, never()).save(any(SosRequest.class));
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+  }
+
+  @Test
+  void reportCustomerNoShow_beforeARRIVED_isRefused() {
+    SosRequest sos = arrivedForNoShow(30);
+    sos.setStatus(SosStatus.ON_THE_WAY);
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, mechanicId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("after ARRIVED");
+  }
+
+  @Test
+  void reportCustomerNoShow_byAMechanicWhoIsNotAssigned_isDenied() {
+    arrivedForNoShow(30);
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, UUID.randomUUID()))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+
+    verify(sosRequestRepository, never()).save(any(SosRequest.class));
+  }
+
+  // "Mark arrived, drive off, report a no-show" must not work.
+  @Test
+  void reportCustomerNoShow_whenTheMechanicHasLeft_isRefused() {
+    SosRequest sos = arrivedForNoShow(30);
+    mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(103.8600, 13.3600))); // Siem Reap
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, mechanicId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("stay within 50m");
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ARRIVED);
+  }
+
+  @Test
+  void reportCustomerNoShow_withNoMechanicLocation_isRefused() {
+    arrivedForNoShow(30);
+    mechanic.setCurrentLocation(null);
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, mechanicId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("No location");
+  }
+
+  @Test
+  void reportCustomerNoShow_whenTheWaitIsSetToZero_isOff() {
+    ReflectionTestUtils.setField(sosService, "customerWaitMinutes", 0);
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, mechanicId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("is off");
+
+    verify(sosRequestRepository, never()).lockStatus(any());
+  }
+
   private List<UUID> ids(Mechanic... mechanics) {
     for (Mechanic m : mechanics) knownMechanics.put(m.getMechanicId(), m);
     return java.util.Arrays.stream(mechanics).map(Mechanic::getMechanicId).toList();

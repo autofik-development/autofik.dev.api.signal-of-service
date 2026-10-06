@@ -46,4 +46,9 @@ public interface SosStatusHistoryRepository extends JpaRepository<SosStatusHisto
    */
   Optional<SosStatusHistory> findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
       UUID sosId, ApprovedStatus approvedStatus);
+
+  /** The newest row that moved the SOS to {@code toStatus} and was decided as {@code approved}. */
+  Optional<SosStatusHistory>
+      findFirstBySosRequestSosIdAndToStatusAndApprovedStatusOrderByChangeAtDesc(
+          UUID sosId, SosStatus toStatus, ApprovedStatus approved);
 }

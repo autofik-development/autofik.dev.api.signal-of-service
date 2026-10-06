@@ -81,14 +81,32 @@ public class SosController {
     return sosService.getNearbyMechanics(sosId, caller.id());
   }
 
-  // PATCH /api/v1/sos/{sosId}/status — Mechanic sets ON_THE_WAY or ARRIVED (no approval needed)
-  // COMPLETED must go through POST /completion → PATCH /completion instead
+  // PATCH /api/v1/sos/{sosId}/status — Mechanic sets ON_THE_WAY or IN_PROGRESS (no approval needed)
+  // ARRIVED goes through POST /arrival and COMPLETED through POST /completion, each answered by
+  // the customer with PATCH /completion
   @PatchMapping("/{sosId}/status")
   public SosRequestResponse updateStatus(
       @PathVariable UUID sosId,
       @AuthMechanic CurrentUser mechanic,
       @RequestParam SosStatus toStatus) {
     return sosService.updateStatus(sosId, mechanic.id(), toStatus);
+  }
+
+  // POST /api/v1/sos/{sosId}/arrival — Mechanic says they have arrived; the customer is asked to
+  // confirm with PATCH /completion, and is confirmed automatically if they do not answer in time
+  @PostMapping("/{sosId}/arrival")
+  @ResponseStatus(HttpStatus.CREATED)
+  public SosStatusHistoryResponse proposeArrival(
+      @PathVariable UUID sosId, @AuthMechanic CurrentUser mechanic) {
+    return sosService.proposeArrival(sosId, mechanic.id());
+  }
+
+  // PATCH /api/v1/sos/{sosId}/customer-no-show — Mechanic who has waited at the breakdown for
+  // sos.customer-wait.minutes ends the job because the customer never came
+  @PatchMapping("/{sosId}/customer-no-show")
+  public SosRequestResponse reportCustomerNoShow(
+      @PathVariable UUID sosId, @AuthMechanic CurrentUser mechanic) {
+    return sosService.reportCustomerNoShow(sosId, mechanic.id());
   }
 
   // PATCH /api/v1/sos/{sosId}/mechanic-release — Assigned mechanic backs out before ARRIVED; the
