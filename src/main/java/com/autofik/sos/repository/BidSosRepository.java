@@ -37,6 +37,16 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
   List<BidSos> findBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
 
   /**
+   * The bid's status as stored right now. A scalar query always reads the row, never the entity
+   * already loaded in this transaction, so it is how a caller that just took the ticket lock sees
+   * what another transaction committed while it waited.
+   */
+  @org.springframework.data.jpa.repository.Query(
+      "SELECT b.status FROM BidSos b WHERE b.bidId = :bidId")
+  Optional<BidStatus> currentStatus(
+      @org.springframework.data.repository.query.Param("bidId") UUID bidId);
+
+  /**
    * At most one ACCEPTED bid per SOS request — used to resolve the assigned mechanic. * Grabs only
    * the first matching bid record instead of a list. Uses 'Optional' because an ACCEPTED bid might
    * not exist yet if the customer is still picking a mechanic.

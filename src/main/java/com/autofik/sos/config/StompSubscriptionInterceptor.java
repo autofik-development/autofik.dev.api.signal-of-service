@@ -41,8 +41,21 @@ public class StompSubscriptionInterceptor implements ChannelInterceptor {
     StompHeaderAccessor accessor = StompHeaderAccessor.wrap(message);
     if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
       requireVisible(accessor.getUser(), accessor.getDestination());
+    } else if (StompCommand.SEND.equals(accessor.getCommand())) {
+      requireAppDestination(accessor.getDestination());
     }
     return message;
+  }
+
+  /**
+   * A client may SEND only to the application handlers. Anything else ({@code /topic/**}, another
+   * user's {@code /user/**} queue) would be relayed by the broker to its subscribers as if the
+   * server had said it, letting one client forge a frame to another.
+   */
+  private void requireAppDestination(String destination) {
+    if (destination == null || !destination.startsWith("/app/")) {
+      throw new AccessDeniedException("Clients may only send to /app/**");
+    }
   }
 
   private void requireVisible(Principal caller, String destination) {

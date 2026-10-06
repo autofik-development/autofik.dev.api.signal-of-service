@@ -124,4 +124,36 @@ class StompSubscriptionInterceptorTest {
         .isInstanceOf(AccessDeniedException.class);
     verify(sosService, never()).canView(any(), any());
   }
+
+  private Message<byte[]> sendTo(String destination) {
+    StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SEND);
+    accessor.setDestination(destination);
+    accessor.setLeaveMutable(true);
+    return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+  }
+
+  @Test
+  void clientMaySendToAppDestinations() {
+    Message<byte[]> message = sendTo("/app/bids");
+
+    assertThat(interceptor.preSend(message, null)).isSameAs(message);
+  }
+
+  /** The broker would relay these to subscribers as if the server had said it. */
+  @Test
+  void clientCannotSendOutsideApp() {
+    for (String destination :
+        new String[] {
+          "/topic/sos/" + UUID.randomUUID() + "/location",
+          "/user/" + UUID.randomUUID() + "/queue/sos-updates",
+          "/queue/errors",
+          "/application/x",
+          "app/bids",
+          null
+        }) {
+      assertThatThrownBy(() -> interceptor.preSend(sendTo(destination), null))
+          .as("SEND to %s", destination)
+          .isInstanceOf(AccessDeniedException.class);
+    }
+  }
 }

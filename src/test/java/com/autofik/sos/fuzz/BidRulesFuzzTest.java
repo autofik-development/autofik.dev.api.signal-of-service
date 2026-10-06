@@ -51,6 +51,8 @@ class BidRulesFuzzTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock SimpMessagingTemplate messagingTemplate;
 
+  @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+
   @InjectMocks BidServiceImpl bidService;
 
   private AutoCloseable mocks;
@@ -61,6 +63,13 @@ class BidRulesFuzzTest {
   void freshService() {
     bidService = null;
     mocks = MockitoAnnotations.openMocks(this);
+    // create() runs its database phases through the template; run the callback inline.
+    when(transactionTemplate.execute(org.mockito.ArgumentMatchers.any()))
+        .thenAnswer(
+            inv ->
+                ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null));
   }
 
   @AfterTry

@@ -150,6 +150,8 @@ Standard per-entity finders (`findByUserId`, `findByEmail`, etc.) plus:
 |---|---|---|
 | `SosController` | `/api/sos` | `POST /`, `GET /{sosId}`, `GET /user/{userId}`, `GET /status/{status}`, `POST /propose-status`, `POST /approve-status`, `PATCH /{sosId}/cancel?userId=` |
 | `BidController` | `/api/bids` | `POST /`, `GET /sos/{sosId}`, `GET /mechanic/{mechanicId}`, `PATCH /{bidId}/status` |
+| `BidSocketController` | STOMP `/app/bids*` | `/app/bids`, `/app/bids/decision`, `/app/bids/cancel`, `/app/bids/sync` — same `BidService` calls as `BidController`, replies on `/user/queue/bid-results`, errors on `/user/queue/errors` |
+| `MechanicLocationSocketController` | STOMP `/app/mechanic/location` | GPS ping, socket alternative to the REST location PATCH |
 | `UserController` | `/api/users` | `POST /`, `GET /{userId}`, `GET /email?email=` |
 | `MechanicController` | `/api/mechanics` | `POST /`, `GET /{mechanicId}`, `GET /available?lat=&lng=&problemType=`, `PATCH /{mechanicId}/location?lat=&lng=` |
 | `FeedbackController` | `/api/feedback` | `POST /`, `GET /sos/{sosId}`, `GET /mechanic/{mechanicId}` |

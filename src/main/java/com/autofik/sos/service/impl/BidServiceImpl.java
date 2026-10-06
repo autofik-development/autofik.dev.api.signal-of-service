@@ -33,12 +33,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.locationtech.jts.geom.Point;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service // tells spring this class core business logic execution
 @RequiredArgsConstructor // automatic creates a constructor with all dependencies
@@ -52,73 +54,91 @@ public class BidServiceImpl implements BidService {
   private final BidSosMapper bidSosMapper; // Converts between Database Entities and DTO Responses
   private final GoogleMapsService googleMapsService; // Calculates real road mileage and times
   private final SosEventProducer sosEventProducer; // Publishes asynchronous system events to Kafka
+  private final TransactionTemplate transactionTemplate;
   private final SimpMessagingTemplate
       messagingTemplate; // Handles instant WebSocket communication directly to mobile apps
 
-  /** WORKFLOW: A mechanic submits a price bid to help a stranded driver. */
+  /** Start and end of the route a bid's estimate is computed for; {@code from} may be unknown. */
+  private record Route(Point from, Point to) {}
+
+  /**
+   * WORKFLOW: A mechanic submits a price bid to help a stranded driver.
+   *
+   * <p>Deliberately NOT @Transactional. The Google Distance Matrix call can take seconds, and
+   * inside one transaction it held a Postgres connection and a shared STOMP inbound thread for that
+   * whole time, so a burst of bids could starve live location pings. Only the two database phases
+   * run in a transaction, as in SosServiceImpl.create.
+   */
   @Override
-  @Transactional // Ensures data safety: if any step crashes, the entire database entry rolls back
-  // completely
   public BidSosResponse create(CreateBidRequest request) {
+    Route route = transactionTemplate.execute(status -> checkBidAllowed(request));
 
-    // 1. SAFETY CHECK: Verify the targeted SOS request ticket actually exists
-    SosRequest sosRequest =
-        sosRequestRepository
-            .findById(request.sosId())
-            .orElseThrow(
-                () -> new EntityNotFoundException("SOS request not found: " + request.sosId()));
+    // External call, outside any transaction.
+    DistanceInfo info =
+        route.from() == null ? null : googleMapsService.getDistanceInfo(route.from(), route.to());
 
-    // 2. SAFETY CHECK: Bids can only be submitted if the ticket is still open and waiting (PENDING)
-    if (sosRequest.getStatus() != SosStatus.PENDING) {
-      throw new IllegalStateException("Bids can only be placed on PENDING requests");
-    }
+    return transactionTemplate.execute(status -> persistBid(request, info));
+  }
 
-    // 3. SAFETY CHECK: Check if the timeline window to place bids has already expired
-    if (sosRequest.getBiddingExpiresAt() != null
-        && java.time.LocalDateTime.now().isAfter(sosRequest.getBiddingExpiresAt())) {
-      throw new IllegalStateException("Bidding window has closed for this SOS request");
-    }
-
-    // 4. SAFETY CHECK: Verify the mechanic profile exists and is currently online/on-duty
-    Mechanic mechanic =
-        mechanicRepository
-            .findById(request.mechanicId())
-            .orElseThrow(
-                () -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
-    if (!Boolean.TRUE.equals(mechanic.getAvailableStatus())) {
-      throw new IllegalStateException("Mechanic is not available: " + request.mechanicId());
-    }
-
-    // 5. SAFETY CHECK: Prevent the same mechanic from sending spam or double bidding on a single
-    // ticket
+  // Runs inside the transaction opened by create(); keep external calls out of it.
+  private Route checkBidAllowed(CreateBidRequest request) {
+    SosRequest sosRequest = loadOpenSos(request.sosId());
+    Mechanic mechanic = loadAvailableMechanic(request.mechanicId());
     if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(
         request.sosId(), request.mechanicId())) {
       throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
     }
+    return new Route(mechanic.getCurrentLocation(), sosRequest.getLocation());
+  }
 
-    // Start structuring the database entity record using Lombok's Builder pattern
+  private SosRequest loadOpenSos(UUID sosId) {
+    SosRequest sosRequest =
+        sosRequestRepository
+            .findById(sosId)
+            .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
+    // Bids can only be submitted if the ticket is still open and waiting (PENDING)
+    if (sosRequest.getStatus() != SosStatus.PENDING) {
+      throw new IllegalStateException("Bids can only be placed on PENDING requests");
+    }
+    // ...and the timeline window to place bids has not expired
+    if (sosRequest.getBiddingExpiresAt() != null
+        && LocalDateTime.now().isAfter(sosRequest.getBiddingExpiresAt())) {
+      throw new IllegalStateException("Bidding window has closed for this SOS request");
+    }
+    return sosRequest;
+  }
+
+  private Mechanic loadAvailableMechanic(UUID mechanicId) {
+    Mechanic mechanic =
+        mechanicRepository
+            .findById(mechanicId)
+            .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+    if (!Boolean.TRUE.equals(mechanic.getAvailableStatus())) {
+      throw new IllegalStateException("Mechanic is not available: " + mechanicId);
+    }
+    return mechanic;
+  }
+
+  // Runs inside the transaction opened by create(). The first phase's checks are repeated because
+  // the Maps call between the two phases can take a while and the ticket may have moved on.
+  private BidSosResponse persistBid(CreateBidRequest request, DistanceInfo info) {
+    SosRequest sosRequest = loadOpenSos(request.sosId());
+    Mechanic mechanic = loadAvailableMechanic(request.mechanicId());
+
     BidSos.BidSosBuilder bidBuilder =
         BidSos.builder().price(request.price()).sosRequest(sosRequest).mechanic(mechanic);
-
-    // MAPS COMPUTATION: Fetch real road routing metrics if the mechanic's current GPS is captured
-    if (mechanic.getCurrentLocation() != null) {
-      DistanceInfo info =
-          googleMapsService.getDistanceInfo(
-              mechanic.getCurrentLocation(), sosRequest.getLocation());
-      if (info != null) {
-        bidBuilder
-            .estimatedDistanceM(info.distanceMeters())
-            .estimatedDurationS(info.durationSeconds())
-            .estimatedDistanceText(info.distanceText())
-            .estimatedDurationText(info.durationText());
-      }
+    if (info != null) {
+      bidBuilder
+          .estimatedDistanceM(info.distanceMeters())
+          .estimatedDurationS(info.durationSeconds())
+          .estimatedDistanceText(info.distanceText())
+          .estimatedDurationText(info.durationText());
     }
 
-    // RACE GUARD: the checks above read the ticket without a lock, and the Maps call can take a
-    // while.
-    // Lock the ticket and re-check against the database: a driver accepting another bid meanwhile
-    // either committed first (we see it and refuse) or waits until this bid is in, so their
-    // auto-reject sees it. Re-checking the duplicate here also closes a mechanic's double-tap.
+    // RACE GUARD: lock the ticket and re-check against the database: a driver accepting another
+    // bid meanwhile either committed first (we see it and refuse) or waits until this bid is in,
+    // so their auto-reject sees it. Re-checking the duplicate here also closes a mechanic's
+    // double-tap.
     if (!SosStatus.PENDING
         .name()
         .equals(sosRequestRepository.lockStatus(request.sosId()).orElse(null))) {
@@ -258,20 +278,19 @@ public class BidServiceImpl implements BidService {
     // RACE GUARD: lock the ticket before touching any bid. Concurrent bid placements and a second
     // accept on the same ticket now queue behind this one; the status is read fresh under the lock,
     // so whoever comes second sees ACCEPTED and is refused instead of leaving a PENDING bid behind.
-    if (request.status() == BidStatus.ACCEPTED
-        && !SosStatus.PENDING
-            .name()
-            .equals(sosRequestRepository.lockStatus(bid.getSosRequest().getSosId()).orElse(null))) {
+    // Rejecting takes the lock too, so it cannot interleave with the mechanic withdrawing the same
+    // bid (cancel takes it as well).
+    String ticketStatus =
+        sosRequestRepository.lockStatus(bid.getSosRequest().getSosId()).orElse(null);
+    if (request.status() == BidStatus.ACCEPTED && !SosStatus.PENDING.name().equals(ticketStatus)) {
       throw new IllegalStateException("This SOS request is no longer open for accepting bids");
     }
 
     // A bid already responded to cannot be responded to again — without this, re-accepting an
     // ACCEPTED bid re-runs the entire domino effect below (duplicate Kafka events, duplicate
     // push notifications, duplicate WebSocket messages) on every retry or double-tap.
-    if (bid.getStatus() != BidStatus.PENDING) {
-      throw new IllegalStateException(
-          "Only PENDING bids can be responded to, current status: " + bid.getStatus());
-    }
+    // Read under the lock: the bid loaded above may have been withdrawn while this waited.
+    requirePending(bid, "responded to");
 
     // Commit the status change (e.g., ACCEPTED) to the database
     bid.setStatus(request.status());
@@ -323,8 +342,19 @@ public class BidServiceImpl implements BidService {
 
       // 4. LIVE WEBSOCKET ALERT: Fires a message directly to the winning mechanic's app screen to
       // update their map routing
+      // The frame had no "type" while every other sos-updates frame does, so the app could not
+      // route it; same fields as the Kafka event plus the type.
+      Map<String, Object> winnerFrame = new java.util.LinkedHashMap<>();
+      winnerFrame.put("type", "BID_ACCEPTED");
+      winnerFrame.put("bidId", acceptedEvent.bidId());
+      winnerFrame.put("sosId", acceptedEvent.sosId());
+      winnerFrame.put("mechanicId", acceptedEvent.mechanicId());
+      winnerFrame.put("userId", acceptedEvent.userId());
+      winnerFrame.put("latitude", acceptedEvent.latitude());
+      winnerFrame.put("longitude", acceptedEvent.longitude());
+      winnerFrame.put("acceptedAt", acceptedEvent.acceptedAt());
       messagingTemplate.convertAndSendToUser(
-          mechanic.getMechanicId().toString(), "/queue/sos-updates", acceptedEvent);
+          mechanic.getMechanicId().toString(), "/queue/sos-updates", winnerFrame);
 
       // 5. PUSH NOTIFICATION (WINNER): Pop-up alert telling the chosen mechanic to hit the road
       sosEventProducer.publishNotification(
@@ -390,12 +420,11 @@ public class BidServiceImpl implements BidService {
     if (!bid.getMechanic().getMechanicId().equals(mechanicId)) {
       throw new AccessDeniedException("You can only cancel your own bid");
     }
+    // RACE GUARD: same ticket lock the driver's accept/reject takes, so the two cannot both win.
+    sosRequestRepository.lockStatus(bid.getSosRequest().getSosId());
     // SAFETY CHECK: A mechanic can only withdraw a bid if it's still pending (not yet accepted or
-    // rejected)
-    if (bid.getStatus() != BidStatus.PENDING) {
-      throw new IllegalStateException(
-          "Only PENDING bids can be cancelled, current status: " + bid.getStatus());
-    }
+    // rejected), read under the lock.
+    requirePending(bid, "cancelled");
 
     // Set status to CANCELLED in the database
     bid.setStatus(BidStatus.CANCELLED);
@@ -425,6 +454,19 @@ public class BidServiceImpl implements BidService {
         Map.of("type", "BID_CANCELLED", "sosId", sos.getSosId(), "bidId", bid.getBidId()));
 
     return bidSosMapper.toResponse(bid);
+  }
+
+  /** Call after taking the ticket lock: refuses unless the stored status is PENDING. */
+  private void requirePending(BidSos bid, String action) {
+    BidStatus stored =
+        bidSosRepository
+            .currentStatus(bid.getBidId())
+            .orElseThrow(() -> new EntityNotFoundException("Bid not found: " + bid.getBidId()));
+    if (stored != BidStatus.PENDING) {
+      throw new IllegalStateException(
+          "Only PENDING bids can be " + action + ", current status: " + stored);
+    }
+    bid.setStatus(stored);
   }
 
   // When the user accepts one bid, all other PENDING bids on the same SOS must be
