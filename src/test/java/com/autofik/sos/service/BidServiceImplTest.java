@@ -65,6 +65,8 @@ class BidServiceImplTest {
 
   @Mock com.autofik.sos.repository.SosStatusHistoryRepository sosStatusHistoryRepository;
 
+  @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+
   @InjectMocks BidServiceImpl bidService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -83,9 +85,21 @@ class BidServiceImplTest {
 
   @BeforeEach
   void setUp() {
+    // create() runs its two database phases through the template; run the callback inline.
+    lenient()
+        .when(transactionTemplate.execute(any()))
+        .thenAnswer(
+            inv ->
+                ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null));
     // The ticket row lock re-reads the status from the database; by default the ticket is still
     // open.
     lenient().when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of("PENDING"));
+    // The stored status is re-read under the lock; by default it is whatever the test set on bid.
+    lenient()
+        .when(bidSosRepository.currentStatus(bidId))
+        .thenAnswer(inv -> Optional.ofNullable(bid).map(BidSos::getStatus));
     user = User.builder().userId(userId).name("Alice").build();
     vehicle = Vehicle.builder().id(UUID.randomUUID()).carBrand("Honda").carModel("Civic").build();
     mechanic =
@@ -608,8 +622,22 @@ class BidServiceImplTest {
     assertThat(acceptedEvent.userId()).isEqualTo(userId);
     assertThat(acceptedEvent.latitude()).isEqualTo(13.7563);
     assertThat(acceptedEvent.longitude()).isEqualTo(100.5018);
-    verify(messagingTemplate)
-        .convertAndSendToUser(mechanicId.toString(), "/queue/sos-updates", acceptedEvent);
+    ArgumentCaptor<Object> frames = ArgumentCaptor.forClass(Object.class);
+    verify(messagingTemplate, atLeastOnce())
+        .convertAndSendToUser(
+            eq(mechanicId.toString()), eq("/queue/sos-updates"), frames.capture());
+    @SuppressWarnings("unchecked")
+    java.util.Map<String, Object> winnerFrame =
+        (java.util.Map<String, Object>)
+            frames.getAllValues().stream()
+                .filter(
+                    f -> f instanceof java.util.Map<?, ?> m && "BID_ACCEPTED".equals(m.get("type")))
+                .findFirst()
+                .orElseThrow();
+    assertThat(winnerFrame)
+        .containsEntry("bidId", bidId)
+        .containsEntry("sosId", sosId)
+        .containsEntry("mechanicId", mechanicId);
 
     ArgumentCaptor<BidRejectedEvent> rejectedCaptor =
         ArgumentCaptor.forClass(BidRejectedEvent.class);
