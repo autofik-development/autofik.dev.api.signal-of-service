@@ -26,6 +26,7 @@ import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.service.BidService;
 import com.autofik.sos.service.GoogleMapsService;
 import com.autofik.sos.service.SosService;
+import com.autofik.sos.util.AfterCommit;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -221,10 +222,12 @@ public class BidServiceImpl implements BidService {
     // pulled to refresh, so the push notification was telling them about a bid the screen in
     // front of them could not show. Sent on the driver's private queue, not a topic — a
     // per-SOS broadcast would hand every bidder their competitors' prices.
-    messagingTemplate.convertAndSendToUser(
-        sosRequest.getUser().getUserId().toString(),
-        "/queue/sos-updates",
-        Map.of("type", "BID_RECEIVED", "sosId", sosRequest.getSosId(), "bid", response));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                sosRequest.getUser().getUserId().toString(),
+                "/queue/sos-updates",
+                Map.of("type", "BID_RECEIVED", "sosId", sosRequest.getSosId(), "bid", response)));
 
     return response;
   }
@@ -393,8 +396,10 @@ public class BidServiceImpl implements BidService {
       winnerFrame.put("latitude", acceptedEvent.latitude());
       winnerFrame.put("longitude", acceptedEvent.longitude());
       winnerFrame.put("acceptedAt", acceptedEvent.acceptedAt());
-      messagingTemplate.convertAndSendToUser(
-          mechanic.getMechanicId().toString(), "/queue/sos-updates", winnerFrame);
+      AfterCommit.run(
+          () ->
+              messagingTemplate.convertAndSendToUser(
+                  mechanic.getMechanicId().toString(), "/queue/sos-updates", winnerFrame));
 
       // 5. PUSH NOTIFICATION (WINNER): Pop-up alert telling the chosen mechanic to hit the road
       sosEventProducer.publishNotification(
@@ -429,16 +434,18 @@ public class BidServiceImpl implements BidService {
               // The winner already gets a socket message; the losers only got a push, so their
               // open bid screen kept showing a live auction that had already been decided.
               // Their own bid id and nothing else — the winning price is not theirs to see.
-              messagingTemplate.convertAndSendToUser(
-                  rejected.getMechanic().getMechanicId().toString(),
-                  "/queue/sos-updates",
-                  Map.of(
-                      "type",
-                      "BID_REJECTED",
-                      "sosId",
-                      sos.getSosId(),
-                      "bidId",
-                      rejected.getBidId()));
+              AfterCommit.run(
+                  () ->
+                      messagingTemplate.convertAndSendToUser(
+                          rejected.getMechanic().getMechanicId().toString(),
+                          "/queue/sos-updates",
+                          Map.of(
+                              "type",
+                              "BID_REJECTED",
+                              "sosId",
+                              sos.getSosId(),
+                              "bidId",
+                              rejected.getBidId())));
             });
       }
     }
@@ -464,10 +471,12 @@ public class BidServiceImpl implements BidService {
             sosId,
             "Your bid was declined",
             "The customer declined your bid"));
-    messagingTemplate.convertAndSendToUser(
-        mechanicId.toString(),
-        "/queue/sos-updates",
-        Map.of("type", "BID_REJECTED", "sosId", sosId, "bidId", bid.getBidId()));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                mechanicId.toString(),
+                "/queue/sos-updates",
+                Map.of("type", "BID_REJECTED", "sosId", sosId, "bidId", bid.getBidId())));
   }
 
   /** WORKFLOW: A mechanic withdraws their bid before a driver accepts it. */
@@ -512,10 +521,12 @@ public class BidServiceImpl implements BidService {
 
     // Take the withdrawn bid off the driver's screen. Accepting a bid that no longer exists
     // wastes the one resource nobody has during a breakdown, which is time.
-    messagingTemplate.convertAndSendToUser(
-        sos.getUser().getUserId().toString(),
-        "/queue/sos-updates",
-        Map.of("type", "BID_CANCELLED", "sosId", sos.getSosId(), "bidId", bid.getBidId()));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                sos.getUser().getUserId().toString(),
+                "/queue/sos-updates",
+                Map.of("type", "BID_CANCELLED", "sosId", sos.getSosId(), "bidId", bid.getBidId())));
 
     return bidSosMapper.toResponse(bid);
   }

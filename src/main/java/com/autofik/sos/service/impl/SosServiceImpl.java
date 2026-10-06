@@ -37,6 +37,7 @@ import com.autofik.sos.service.MedusaService;
 import com.autofik.sos.service.RouteEtaService;
 import com.autofik.sos.service.SosMediaService;
 import com.autofik.sos.service.SosService;
+import com.autofik.sos.util.AfterCommit;
 import com.autofik.sos.util.GeoDistance;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
@@ -290,18 +291,20 @@ public class SosServiceImpl implements SosService {
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
             "BIDDING_EXPIRED", userId, "USER", sosId, "Bidding window closed", body));
-    messagingTemplate.convertAndSendToUser(
-        userId.toString(),
-        "/queue/sos-updates",
-        Map.of(
-            "type",
-            "BIDDING_EXPIRED",
-            "sosId",
-            sosId,
-            "retriesLeft",
-            retriesLeft,
-            "attemptsLeft",
-            maxRebroadcast - s.getRebroadcastCount()));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                userId.toString(),
+                "/queue/sos-updates",
+                Map.of(
+                    "type",
+                    "BIDDING_EXPIRED",
+                    "sosId",
+                    sosId,
+                    "retriesLeft",
+                    retriesLeft,
+                    "attemptsLeft",
+                    maxRebroadcast - s.getRebroadcastCount())));
     try {
       notifyBiddersOfExpiry(sosId, closedBids == null ? List.of() : closedBids);
     } catch (RuntimeException e) {
@@ -326,20 +329,22 @@ public class SosServiceImpl implements SosService {
     routeEtaService.clear(sosId);
 
     int attemptsLeft = maxRebroadcast - s.getRebroadcastCount();
-    messagingTemplate.convertAndSendToUser(
-        userId.toString(),
-        "/queue/sos-updates",
-        Map.of(
-            "type",
-            "SOS_AUTO_REBROADCAST",
-            "sosId",
-            sosId,
-            "newRadiusKm",
-            newRadiusKm,
-            "rebroadcastCount",
-            s.getRebroadcastCount(),
-            "attemptsLeft",
-            attemptsLeft));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                userId.toString(),
+                "/queue/sos-updates",
+                Map.of(
+                    "type",
+                    "SOS_AUTO_REBROADCAST",
+                    "sosId",
+                    sosId,
+                    "newRadiusKm",
+                    newRadiusKm,
+                    "rebroadcastCount",
+                    s.getRebroadcastCount(),
+                    "attemptsLeft",
+                    attemptsLeft)));
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
             "SOS_AUTO_REBROADCAST",
@@ -367,10 +372,13 @@ public class SosServiceImpl implements SosService {
             sosId,
             "Widening search area",
             "Few mechanics registered nearby — searching within " + newRadiusKm + " km."));
-    messagingTemplate.convertAndSendToUser(
-        userId.toString(),
-        "/queue/sos-updates",
-        Map.of("type", "SOS_AUTO_REBROADCAST", "sosId", sosId, "newRadiusKm", newRadiusKm));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                userId.toString(),
+                "/queue/sos-updates",
+                Map.of(
+                    "type", "SOS_AUTO_REBROADCAST", "sosId", sosId, "newRadiusKm", newRadiusKm)));
   }
 
   /**
@@ -722,8 +730,10 @@ public class SosServiceImpl implements SosService {
         new SosStatusUpdatedEvent(
             sos.getSosId(), mechanicId, sos.getUser().getUserId(), fromStatus, toStatus, now);
     sosEventProducer.publishStatusUpdated(statusEvent);
-    messagingTemplate.convertAndSendToUser(
-        sos.getUser().getUserId().toString(), "/queue/sos-updates", statusEvent);
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                sos.getUser().getUserId().toString(), "/queue/sos-updates", statusEvent));
     publishStatusNotifications(toStatus, sos, mechanicId);
 
     return toResponseWithMechanic(sos);
@@ -768,18 +778,20 @@ public class SosServiceImpl implements SosService {
             .build();
     sosStatusHistoryRepository.save(history);
 
-    messagingTemplate.convertAndSendToUser(
-        sos.getUser().getUserId().toString(),
-        "/queue/sos-updates",
-        Map.of(
-            "type",
-            "COMPLETION_REQUESTED",
-            "sosId",
-            sos.getSosId(),
-            "historyId",
-            history.getId(),
-            "approveBy",
-            completionApprovalDeadline(history).toString()));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                sos.getUser().getUserId().toString(),
+                "/queue/sos-updates",
+                Map.of(
+                    "type",
+                    "COMPLETION_REQUESTED",
+                    "sosId",
+                    sos.getSosId(),
+                    "historyId",
+                    history.getId(),
+                    "approveBy",
+                    completionApprovalDeadline(history).toString())));
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
             "COMPLETION_REQUESTED",
@@ -822,22 +834,26 @@ public class SosServiceImpl implements SosService {
               history.getToStatus(),
               LocalDateTime.now());
       sosEventProducer.publishStatusUpdated(statusEvent);
-      messagingTemplate.convertAndSendToUser(
-          mechanicId.toString(), "/queue/sos-updates", statusEvent);
+      AfterCommit.run(
+          () ->
+              messagingTemplate.convertAndSendToUser(
+                  mechanicId.toString(), "/queue/sos-updates", statusEvent));
 
       publishStatusNotifications(history.getToStatus(), sos, mechanicId);
     } else if (decision == ApprovedStatus.REJECTED) {
       UUID mechanicId = history.getProposedBy().getMechanicId();
-      messagingTemplate.convertAndSendToUser(
-          mechanicId.toString(),
-          "/queue/sos-updates",
-          Map.of(
-              "type",
-              "COMPLETION_REJECTED",
-              "sosId",
-              sos.getSosId(),
-              "historyId",
-              history.getId()));
+      AfterCommit.run(
+          () ->
+              messagingTemplate.convertAndSendToUser(
+                  mechanicId.toString(),
+                  "/queue/sos-updates",
+                  Map.of(
+                      "type",
+                      "COMPLETION_REJECTED",
+                      "sosId",
+                      sos.getSosId(),
+                      "historyId",
+                      history.getId())));
       sosEventProducer.publishNotification(
           new SosNotificationEvent(
               "COMPLETION_REJECTED",
@@ -889,10 +905,12 @@ public class SosServiceImpl implements SosService {
         sos.getSosId(),
         completionApprovalWindowSeconds);
     decideCompletion(history, ApprovedStatus.ACCEPTED, null);
-    messagingTemplate.convertAndSendToUser(
-        sos.getUser().getUserId().toString(),
-        "/queue/sos-updates",
-        Map.of("type", "COMPLETION_AUTO_APPROVED", "sosId", sos.getSosId()));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                sos.getUser().getUserId().toString(),
+                "/queue/sos-updates",
+                Map.of("type", "COMPLETION_AUTO_APPROVED", "sosId", sos.getSosId())));
   }
 
   /** When an unanswered completion request is approved automatically. */
@@ -1077,8 +1095,12 @@ public class SosServiceImpl implements SosService {
     if (closed.isEmpty()) return;
     List<UUID> bidders = closed.stream().map(RejectedBid::mechanicId).toList();
     for (UUID bidder : bidders) {
-      messagingTemplate.convertAndSendToUser(
-          bidder.toString(), "/queue/sos-updates", Map.of("type", "SOS_EXPIRED", "sosId", sosId));
+      AfterCommit.run(
+          () ->
+              messagingTemplate.convertAndSendToUser(
+                  bidder.toString(),
+                  "/queue/sos-updates",
+                  Map.of("type", "SOS_EXPIRED", "sosId", sosId)));
     }
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
@@ -1101,11 +1123,18 @@ public class SosServiceImpl implements SosService {
   private void notifyMechanicsOfCancellation(
       SosRequest sos, SosStatus fromStatus, UUID assignedMechanicId, List<UUID> pendingBidders) {
     if (assignedMechanicId != null) {
-      messagingTemplate.convertAndSendToUser(
-          assignedMechanicId.toString(),
-          "/queue/sos-updates",
-          Map.of(
-              "type", "SOS_CANCELLED", "sosId", sos.getSosId(), "fromStatus", fromStatus.name()));
+      AfterCommit.run(
+          () ->
+              messagingTemplate.convertAndSendToUser(
+                  assignedMechanicId.toString(),
+                  "/queue/sos-updates",
+                  Map.of(
+                      "type",
+                      "SOS_CANCELLED",
+                      "sosId",
+                      sos.getSosId(),
+                      "fromStatus",
+                      fromStatus.name())));
       sosEventProducer.publishNotification(
           new SosNotificationEvent(
               "SOS_CANCELLED",
@@ -1117,11 +1146,18 @@ public class SosServiceImpl implements SosService {
     }
     if (!pendingBidders.isEmpty()) {
       for (UUID bidder : pendingBidders) {
-        messagingTemplate.convertAndSendToUser(
-            bidder.toString(),
-            "/queue/sos-updates",
-            Map.of(
-                "type", "SOS_CANCELLED", "sosId", sos.getSosId(), "fromStatus", fromStatus.name()));
+        AfterCommit.run(
+            () ->
+                messagingTemplate.convertAndSendToUser(
+                    bidder.toString(),
+                    "/queue/sos-updates",
+                    Map.of(
+                        "type",
+                        "SOS_CANCELLED",
+                        "sosId",
+                        sos.getSosId(),
+                        "fromStatus",
+                        fromStatus.name())));
       }
       sosEventProducer.publishNotification(
           new SosNotificationEvent(
@@ -1515,18 +1551,20 @@ public class SosServiceImpl implements SosService {
     // that succeeded — the customer would retry into "only EXPIRED requests can be rebroadcast".
     try {
       int attemptsLeft = maxRebroadcast - sos.getRebroadcastCount();
-      messagingTemplate.convertAndSendToUser(
-          userId.toString(),
-          "/queue/sos-updates",
-          Map.of(
-              "type",
-              "SOS_REBROADCAST",
-              "sosId",
-              sosId,
-              "rebroadcastCount",
-              sos.getRebroadcastCount(),
-              "attemptsLeft",
-              attemptsLeft));
+      AfterCommit.run(
+          () ->
+              messagingTemplate.convertAndSendToUser(
+                  userId.toString(),
+                  "/queue/sos-updates",
+                  Map.of(
+                      "type",
+                      "SOS_REBROADCAST",
+                      "sosId",
+                      sosId,
+                      "rebroadcastCount",
+                      sos.getRebroadcastCount(),
+                      "attemptsLeft",
+                      attemptsLeft)));
 
       fanOutToNearbyMechanics(
           sosId,
@@ -1582,10 +1620,13 @@ public class SosServiceImpl implements SosService {
               SosStatus.PENDING,
               LocalDateTime.now()));
       String type = noShow ? "MECHANIC_NO_SHOW" : "MECHANIC_RELEASED";
-      messagingTemplate.convertAndSendToUser(
-          userId.toString(),
-          "/queue/sos-updates",
-          Map.of("type", type, "sosId", sosId, "fromStatus", released.fromStatus().name()));
+      AfterCommit.run(
+          () ->
+              messagingTemplate.convertAndSendToUser(
+                  userId.toString(),
+                  "/queue/sos-updates",
+                  Map.of(
+                      "type", type, "sosId", sosId, "fromStatus", released.fromStatus().name())));
       sosEventProducer.publishNotification(
           new SosNotificationEvent(
               type,
@@ -1597,10 +1638,12 @@ public class SosServiceImpl implements SosService {
                   ? "Your mechanic stopped moving and did not answer. We are finding you another one."
                   : "Your mechanic can no longer take this job. We are finding you another one."));
       if (noShow) {
-        messagingTemplate.convertAndSendToUser(
-            mechanicId.toString(),
-            "/queue/sos-updates",
-            Map.of("type", "JOB_RELEASED", "sosId", sosId, "reason", "NO_SHOW"));
+        AfterCommit.run(
+            () ->
+                messagingTemplate.convertAndSendToUser(
+                    mechanicId.toString(),
+                    "/queue/sos-updates",
+                    Map.of("type", "JOB_RELEASED", "sosId", sosId, "reason", "NO_SHOW")));
         sosEventProducer.publishNotification(
             new SosNotificationEvent(
                 "JOB_RELEASED",

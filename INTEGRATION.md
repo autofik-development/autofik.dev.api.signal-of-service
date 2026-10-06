@@ -173,7 +173,7 @@ Partitions default to 3, replication factor 1 unless configured. Key is the `sos
 
 **Date format on Kafka:** dates are ISO-8601 strings, the same style as REST and WebSocket: `LocalDateTime` fields as `"2026-10-04T10:00:05"` (no zone, server local time) and the location event's `timestamp` as `"2026-10-03T14:05:06.789+07:00"`. (Before 4 October 2026 they were written as arrays `[2026,10,4,10,0,5]` and epoch decimals; SOS still reads that older format, but nothing writes it any more.)
 
-Events are published inside the database transaction, before commit, with no outbox: a consumer may see an event for work that later rolls back, and an event lost during a broker outage is not replayed.
+Events, and the WebSocket frames sent from the same code, are published after the database transaction commits, so a rollback publishes nothing and a consumer never sees an event for work that did not happen. There is no outbox: an event lost to a broker outage, or to a crash between the commit and the send, is not replayed. Several events from one request keep their order.
 
 ## 8. Known gaps
 
