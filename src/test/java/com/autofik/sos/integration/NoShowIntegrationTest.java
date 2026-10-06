@@ -13,13 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.stomp.StompSession;
@@ -172,57 +166,31 @@ class NoShowIntegrationTest extends FlowTestSupport {
   }
 
   /**
-   * The sweep releases at the same instant as the mechanic marks ARRIVED. Both take the ticket
-   * lock, so exactly one wins and the ticket never ends ARRIVED with its accepted bid cancelled.
+   * A mechanic standing at the breakdown while the customer is asked to confirm the arrival does
+   * not move, and must not be asked "are you still coming?" or released for it.
    */
   @Test
-  void sweepAgainstArrived_leavesAConsistentTicket() throws Exception {
-    ExecutorService pool = Executors.newFixedThreadPool(2);
-    try {
-      for (int round = 0; round < 3; round++) {
-        Driver d = newDriver();
-        Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
-        UUID sosId = createSosOk(d);
-        assignMechanic(d, m, sosId);
-        standStill(m);
-        sosService.checkNoShowJobs(); // asks
-        expireTheQuestion(sosId);
+  void aMechanicWaitingForTheArrivalAnswer_isNotReleasedBySweep() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    assignMechanic(d, m, sosId);
+    assertThat(
+            send(req("/api/v1/sos/" + sosId + "/status?toStatus=" + SosStatus.ON_THE_WAY)
+                    .header("mechanic-context", mechanicContext(m.getMechanicId()))
+                    .method("PATCH", HttpRequest.BodyPublishers.noBody()))
+                .statusCode())
+        .isEqualTo(200);
+    standStill(m);
+    sosService.checkNoShowJobs(); // asks
+    expireTheQuestion(sosId);
+    UUID arrivalId = proposeArrivalOk(m, sosId);
 
-        CountDownLatch go = new CountDownLatch(1);
-        Future<HttpResponse<String>> arrive =
-            pool.submit(
-                () -> {
-                  go.await();
-                  return send(
-                      req("/api/v1/sos/" + sosId + "/status?toStatus=" + SosStatus.ARRIVED)
-                          .header("mechanic-context", mechanicContext(m.getMechanicId()))
-                          .method("PATCH", HttpRequest.BodyPublishers.noBody()));
-                });
-        Future<?> sweep =
-            pool.submit(
-                () -> {
-                  go.await();
-                  sosService.checkNoShowJobs();
-                  return null;
-                });
-        go.countDown();
-        int arrived = arrive.get(30, TimeUnit.SECONDS).statusCode();
-        sweep.get(30, TimeUnit.SECONDS);
+    sosService.checkNoShowJobs();
 
-        String status = sosStatus(d, sosId);
-        assertThat(List.of("ARRIVED", "PENDING"))
-            .as("round %d: arrived=%d", round, arrived)
-            .contains(status);
-        assertThat(arrived == 200).as("round %d", round).isEqualTo(status.equals("ARRIVED"));
-        assertThat(
-                bidSosRepository
-                    .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
-                    .isPresent())
-            .as("an ARRIVED ticket keeps its accepted bid, a released one has none")
-            .isEqualTo(status.equals("ARRIVED"));
-      }
-    } finally {
-      pool.shutdownNow();
-    }
+    assertThat(sosStatus(d, sosId)).isEqualTo("ON_THE_WAY");
+    assertThat(acceptedBid(sosId).getMechanic().getMechanicId()).isEqualTo(m.getMechanicId());
+    assertThat(answerRequest(d, arrivalId, "ACCEPTED").statusCode()).isEqualTo(200);
+    assertThat(sosStatus(d, sosId)).isEqualTo("ARRIVED");
   }
 }

@@ -65,11 +65,11 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 | PENDING | PENDING | automatic: if the bidding window (default 60 s) ends with **no bids at all**, the radius widens by 5 km (max 35) and the SOS is broadcast again, up to 3 times |
 | PENDING | EXPIRED | window ends with bids but none accepted, or the automatic retries are used up |
 | EXPIRED | PENDING | customer `POST /sos/{id}/rebroadcast` (max 3) |
-| ACCEPTED | ON_THE_WAY, then ARRIVED, then IN_PROGRESS | assigned mechanic `PATCH /sos/{id}/status?toStatus=`. ARRIVED requires the mechanic within 50 m by road |
+| ACCEPTED | ON_THE_WAY, then ARRIVED, then IN_PROGRESS | assigned mechanic `PATCH /sos/{id}/status?toStatus=ON_THE_WAY` and later `IN_PROGRESS`. **ARRIVED is a two-step:** the mechanic `POST /sos/{id}/arrival` (within 50 m by road), the customer confirms or says "not here" with `PATCH /sos/completion`. **If the customer does not answer within 1 minute (configurable) ARRIVED is confirmed automatically.** The ticket stays ON_THE_WAY until then |
 | IN_PROGRESS | COMPLETED | two steps: mechanic `POST /sos/{id}/completion`, then the customer approves with `PATCH /sos/completion`. **If the customer does not answer within 2 minutes (configurable) the request is approved automatically** and the job completes |
 | any non-terminal | CANCELLED | customer `PATCH /sos/{id}/cancel` |
 
-`COMPLETED` and `CANCELLED` are terminal. There is no mechanic-side cancel. A customer may have only one active SOS (`PENDING`, `ACCEPTED`, `ON_THE_WAY`, `ARRIVED`, `IN_PROGRESS`): a second create returns 409.
+`COMPLETED` and `CANCELLED` are terminal. A mechanic can end a job only in one case: they are at ARRIVED, have waited 10 minutes (configurable) since ARRIVED took effect, and the customer never came: `PATCH /sos/{id}/customer-no-show` cancels the ticket and frees the mechanic. A customer may have only one active SOS (`PENDING`, `ACCEPTED`, `ON_THE_WAY`, `ARRIVED`, `IN_PROGRESS`): a second create returns 409.
 
 ## 4. REST endpoints
 
@@ -80,11 +80,13 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 |---|---|---|---|---|
 | `POST /sos` | customer | `CreateSosRequest` | 201 `SosRequestResponse` | 400, 404 (user, vehicle or service group), 409 active SOS, 429 cooldown, 503 Medusa |
 | `GET /sos?status=&page=&size=&sort=` | any | none | `Page<SosRequestResponse>` of the caller's own SOS | 400 |
-| `GET /sos/{sosId}` | owner, a bidder, or an eligible mechanic while bidding is open | none | `SosRequestResponse`. For the owner, while the SOS is `IN_PROGRESS` and a completion request is waiting, `pendingCompletionHistoryId` holds the `historyId` to approve and `pendingCompletionApproveBy` is the time it will be approved automatically (use it for the countdown); both are null otherwise and never shown to mechanics | 404 |
+| `GET /sos/{sosId}` | owner, a bidder, or an eligible mechanic while bidding is open | none | `SosRequestResponse`. For the owner, while a request is waiting (a completion request while the SOS is `IN_PROGRESS`, an arrival request while it is still `ON_THE_WAY`), `pendingCompletionHistoryId` holds the `historyId` to answer and `pendingCompletionApproveBy` is the time it will be approved automatically (use it for the countdown); both are null otherwise and never shown to mechanics | 404 |
 | `GET /sos/{sosId}/nearby-mechanics` | same visibility | none | `MechanicResponse[]` | 404 |
-| `PATCH /sos/{sosId}/status?toStatus=ON_THE_WAY\|ARRIVED\|IN_PROGRESS` | assigned mechanic | none | `SosRequestResponse` | 400, 404, 409 (bad transition, or over 50 m on ARRIVED) |
+| `PATCH /sos/{sosId}/status?toStatus=ON_THE_WAY\|IN_PROGRESS` | assigned mechanic | none | `SosRequestResponse` | 400 (ARRIVED and COMPLETED are refused here and point to their own call), 404, 409 (bad transition) |
+| `POST /sos/{sosId}/arrival` | assigned mechanic | none | 201 `SosStatusHistoryResponse` (`id` is the `historyId` the customer answers). **Idempotent while a request is waiting.** The ticket stays `ON_THE_WAY` | 403, 404, 409 (not ON_THE_WAY, or over 50 m) |
+| `PATCH /sos/{sosId}/customer-no-show` | assigned mechanic | none | `SosRequestResponse` (now `CANCELLED`) | 403, 404, 409 (not ARRIVED, wait not over (the message says how many minutes are left), mechanic no longer within 50 m, or turned off) |
 | `POST /sos/{sosId}/completion` | assigned mechanic | `ProposeStatusChangeRequest` (`toStatus` must be `COMPLETED`) | 201 `SosStatusHistoryResponse` (`id` is the `historyId`). **Idempotent while a request is waiting:** a repeat returns the same row and sends no second push | 400, 404, 409 |
-| `PATCH /sos/completion` | customer | `ApproveStatusChangeRequest` | `SosRequestResponse` | 404, 409 |
+| `PATCH /sos/completion` | customer | `ApproveStatusChangeRequest`; answers a waiting completion **or arrival** request by `historyId` (`ACCEPTED` or `REJECTED`) | `SosRequestResponse` | 404, 409 |
 | `PATCH /sos/{sosId}/cancel` | owner | none | `SosRequestResponse` | 404, 409 |
 | `POST /sos/{sosId}/rebroadcast` | owner | none | `SosRequestResponse` | 404, 409, 429 |
 
@@ -141,8 +143,8 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 | Destination | Receiver | Payload |
 |---|---|---|
 | `/user/queue/sos-new-request` | eligible mechanics | `SOS_CREATED`: `type, sosId, title, body, photoUrls[≤3], estimate{remainingDistanceM, remainingDurationS, remainingDistanceText, remainingDurationText}` (recipient fields are null) |
-| `/user/queue/sos-updates` (customer) | the owner | `BID_RECEIVED {type, sosId, bid}`, `BID_CANCELLED {type, sosId, bidId}`, `COMPLETION_REQUESTED {type, sosId, historyId, approveBy}` (`approveBy` is when it will be approved automatically), `COMPLETION_AUTO_APPROVED {type, sosId}`, `BIDDING_EXPIRED {type, sosId, retriesLeft, attemptsLeft}`, `SOS_AUTO_REBROADCAST {type, sosId, newRadiusKm, …}`, `SOS_REBROADCAST {type, sosId, rebroadcastCount, attemptsLeft}`; and **status frames without a `type`**: `{sosId, mechanicId, userId, fromStatus, toStatus, changedAt}` for ON_THE_WAY, ARRIVED and IN_PROGRESS |
-| `/user/queue/sos-updates` (mechanic) | the winner / the losers / cancelled | winner: `{bidId, sosId, mechanicId, userId, latitude, longitude, acceptedAt}` (no `type`); losers: `BID_REJECTED {type, sosId, bidId}`; `COMPLETION_REJECTED {type, sosId, historyId}`; a status frame after the customer approves completion; **`SOS_CANCELLED {type, sosId, fromStatus}` when the customer cancels**, sent to the assigned mechanic (`fromStatus` is `ACCEPTED`, `ON_THE_WAY`, `ARRIVED` or `IN_PROGRESS`: stop driving) and to every mechanic with a pending bid (`fromStatus` is `PENDING`) |
+| `/user/queue/sos-updates` (customer) | the owner | `BID_RECEIVED {type, sosId, bid}`, `BID_CANCELLED {type, sosId, bidId}`, `COMPLETION_REQUESTED {type, sosId, historyId, approveBy}` (`approveBy` is when it will be approved automatically), `COMPLETION_AUTO_APPROVED {type, sosId}`, `ARRIVAL_REQUESTED {type, sosId, historyId, approveBy}` (show a pop-up: confirm, or "not here"), `ARRIVAL_AUTO_CONFIRMED {type, sosId}`, `CUSTOMER_NO_SHOW {type, sosId, fromStatus}` (the mechanic waited and ended the job; the ticket is now CANCELLED), `BIDDING_EXPIRED {type, sosId, retriesLeft, attemptsLeft}`, `SOS_AUTO_REBROADCAST {type, sosId, newRadiusKm, …}`, `SOS_REBROADCAST {type, sosId, rebroadcastCount, attemptsLeft}`; and **status frames without a `type`**: `{sosId, mechanicId, userId, fromStatus, toStatus, changedAt}` for ON_THE_WAY, ARRIVED and IN_PROGRESS |
+| `/user/queue/sos-updates` (mechanic) | the winner / the losers / cancelled | winner: `{bidId, sosId, mechanicId, userId, latitude, longitude, acceptedAt}` (no `type`); losers: `BID_REJECTED {type, sosId, bidId}`; `COMPLETION_REJECTED {type, sosId, historyId}`; `ARRIVAL_REJECTED {type, sosId, historyId}` (the customer says the mechanic is not there; the ticket stays ON_THE_WAY and the mechanic may ask again); a status frame after the customer approves completion or confirms arrival; **`SOS_CANCELLED {type, sosId, fromStatus}` when the customer cancels**, sent to the assigned mechanic (`fromStatus` is `ACCEPTED`, `ON_THE_WAY`, `ARRIVED` or `IN_PROGRESS`: stop driving) and to every mechanic with a pending bid (`fromStatus` is `PENDING`) |
 | `/topic/sos/{sosId}/location` | subscribers of that SOS | `{sosId, mechanicId, latitude, longitude, timestamp (+07:00), remainingDistanceM, remainingDurationS, remainingDistanceText, remainingDurationText}`; the `remaining*` fields are null when there is no ETA |
 | `/topic/sos/{sosId}/media` | subscribers of that SOS | `{sosId, mediaId, uploadedByRole, uploadedById, uploadedAt}` |
 
@@ -200,5 +202,6 @@ Required environment variables (no defaults): `SPRING_PROFILES_ACTIVE`, `DB_HOST
 
 - **Never use the `dev` profile outside a laptop.** It enables `websocket.dev-insecure-handshake`, which lets any client connect as any user. The service refuses to start with that flag under any other profile.
 - The schema is created by Hibernate; there are no migrations yet. `prod` uses `ddl-auto: validate`, so the schema and the PostGIS extension must exist before the first start.
+- `SOS_ARRIVAL_APPROVAL_WINDOW_SECONDS` (default 60) is how long a customer has to answer an arrival request before ARRIVED is confirmed for them; `SOS_CUSTOMER_WAIT_MINUTES` (default 10, 0 turns the action off) is how long after ARRIVED a mechanic must wait before `customer-no-show`.
 - `SOS_COMPLETION_APPROVAL_WINDOW_SECONDS` (default 120) is how long a customer has to answer a completion request; `SOS_COMPLETION_SWEEP_INTERVAL_MS` (default 15000) is how often overdue requests are looked for.
 - Medusa is called on every SOS create (timeouts 2 s connect, 3 s read; `medusa.connect-timeout-ms`, `medusa.read-timeout-ms`).

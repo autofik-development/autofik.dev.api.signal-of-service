@@ -161,6 +161,18 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.completion.approval-window-seconds:120}")
   private long completionApprovalWindowSeconds;
 
+  // Same idea for the "your mechanic has arrived" confirmation, but shorter: the mechanic is
+  // already checked to be at the breakdown, so silence means the customer is not there, not that
+  // the arrival is false. When it passes, ARRIVED is confirmed automatically and the wait below
+  // starts.
+  @Value("${sos.arrival.approval-window-seconds:60}")
+  private long arrivalApprovalWindowSeconds;
+
+  // How long after ARRIVED took effect a mechanic must wait before they may end the job because
+  // the customer never came to the car. 0 turns the action off.
+  @Value("${sos.customer-wait.minutes:10}")
+  private int customerWaitMinutes;
+
   @Value("${sos.bidding.max-rebroadcast:3}")
   private int maxRebroadcast;
 
@@ -542,16 +554,17 @@ public class SosServiceImpl implements SosService {
       throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
     SosRequestResponse response = toResponseWithMechanic(sos);
-    // The owner needs the historyId of a waiting completion request to approve it. The push and the
-    // COMPLETION_REQUESTED frame carry it too, but a missed frame must not leave the job stuck.
-    if (sos.getStatus() == SosStatus.IN_PROGRESS && sos.getUser().getUserId().equals(callerId)) {
+    // The owner needs the historyId of a waiting request to answer it: completion while the job is
+    // IN_PROGRESS, arrival while the mechanic is still ON_THE_WAY (the field keeps its old name).
+    // The push and the COMPLETION_REQUESTED / ARRIVAL_REQUESTED frame carry it too, but a missed
+    // frame must not leave the job stuck.
+    if ((sos.getStatus() == SosStatus.IN_PROGRESS || sos.getStatus() == SosStatus.ON_THE_WAY)
+        && sos.getUser().getUserId().equals(callerId)) {
       return sosStatusHistoryRepository
           .findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
               sosId, ApprovedStatus.PENDING_APPROVAL)
           .map(
-              history ->
-                  response.withPendingCompletion(
-                      history.getId(), completionApprovalDeadline(history)))
+              history -> response.withPendingCompletion(history.getId(), approvalDeadline(history)))
           .orElse(response);
     }
     return response;
@@ -668,18 +681,16 @@ public class SosServiceImpl implements SosService {
   }
 
   // Direct status update (mechanic-initiated, no user approval needed).
-  // Only ON_THE_WAY, ARRIVED, and IN_PROGRESS flow through here; COMPLETED requires user approval
-  // via proposeStatusChange.
+  // Only ON_THE_WAY and IN_PROGRESS flow through here; ARRIVED and COMPLETED need the customer's
+  // answer, via proposeArrival and proposeStatusChange.
   @Override
   @Transactional
   public SosRequestResponse updateStatus(UUID sosId, UUID mechanicId, SosStatus toStatus) {
-    if (toStatus != SosStatus.ON_THE_WAY
-        && toStatus != SosStatus.ARRIVED
-        && toStatus != SosStatus.IN_PROGRESS) {
+    if (toStatus != SosStatus.ON_THE_WAY && toStatus != SosStatus.IN_PROGRESS) {
       // The requested target status is not one this endpoint accepts: a bad request (400), not a
       // conflict with the ticket's current state.
       throw new IllegalArgumentException(
-          "Only ON_THE_WAY, ARRIVED, and IN_PROGRESS can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
+          "Only ON_THE_WAY and IN_PROGRESS can be set directly. Use POST /api/v1/sos/{sosId}/arrival for ARRIVED and POST /api/v1/sos/{sosId}/completion for COMPLETED.");
     }
     // Same ticket lock a mechanic's release takes, so ARRIVED and a release cannot both win.
     sosRequestRepository.lockStatus(sosId);
@@ -691,22 +702,9 @@ public class SosServiceImpl implements SosService {
             .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
     requireAssignedMechanic(sos, mechanicId);
 
-    if (toStatus == SosStatus.ARRIVED) {
-      requireMechanicAtSos(mechanic, sos);
-    }
-
     SosStatus fromStatus = sos.getStatus();
     sos.setStatus(toStatus);
     sosRequestRepository.save(sos);
-
-    // The cached route is keyed only by sosId and outlives its 30s refresh window, so leaving
-    // en route has to invalidate it eagerly. Without this, pings arriving inside the current
-    // window keep interpolating against the stale snapshot and the customer watches a live
-    // countdown for up to 30 seconds after the mechanic has already pulled up.
-    // ON_THE_WAY is still en route; only ARRIVED ends the drive here.
-    if (toStatus == SosStatus.ARRIVED) {
-      routeEtaService.clear(sosId);
-    }
 
     if (toStatus == SosStatus.IN_PROGRESS) {
       sos.setJobStartedAt(LocalDateTime.now());
@@ -749,16 +747,31 @@ public class SosServiceImpl implements SosService {
       UUID sosId, ProposeStatusChangeRequest request) {
     if (request.toStatus() != SosStatus.COMPLETED) {
       throw new IllegalArgumentException(
-          "Only COMPLETED requires customer approval. Use PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and ARRIVED.");
+          "Only COMPLETED requires customer approval here. Use POST /api/v1/sos/{sosId}/arrival for ARRIVED and PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and IN_PROGRESS.");
     }
-    SosRequest sos = findSosOrThrow(sosId);
-    validateTransition(sos.getStatus(), request.toStatus());
+    return propose(findSosOrThrow(sosId), request.mechanicId(), request.toStatus());
+  }
+
+  // ARRIVED works like COMPLETED: the mechanic says they are there, the customer gets a pop-up and
+  // confirms, and a customer who does not answer is confirmed automatically after
+  // sos.arrival.approval-window-seconds. The ticket stays ON_THE_WAY until then.
+  @Override
+  @Transactional
+  public SosStatusHistoryResponse proposeArrival(UUID sosId, UUID mechanicId) {
+    // Same ticket lock a cancel, a release and the customer's answer take.
+    sosRequestRepository.lockStatus(sosId);
+    return propose(findSosOrThrow(sosId), mechanicId, SosStatus.ARRIVED);
+  }
+
+  /** A mechanic's request to move the ticket to ARRIVED or COMPLETED, waiting for the customer. */
+  private SosStatusHistoryResponse propose(SosRequest sos, UUID mechanicId, SosStatus toStatus) {
+    UUID sosId = sos.getSosId();
+    validateTransition(sos.getStatus(), toStatus);
     Mechanic mechanic =
         mechanicRepository
-            .findById(request.mechanicId())
-            .orElseThrow(
-                () -> new EntityNotFoundException("Mechanic not found: " + request.mechanicId()));
-    requireAssignedMechanic(sos, request.mechanicId());
+            .findById(mechanicId)
+            .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+    requireAssignedMechanic(sos, mechanicId);
     // A retry (double tap, timeout) must not leave two approvable rows or push the customer twice:
     // the request that is already waiting is the answer.
     var alreadyWaiting =
@@ -767,17 +780,22 @@ public class SosServiceImpl implements SosService {
     if (alreadyWaiting.isPresent()) {
       return sosStatusHistoryMapper.toResponse(alreadyWaiting.get());
     }
+    if (toStatus == SosStatus.ARRIVED) {
+      requireMechanicAtSos(mechanic, sos);
+    }
     SosStatusHistory history =
         SosStatusHistory.builder()
             .sosRequest(sos)
             .fromStatus(sos.getStatus())
-            .toStatus(request.toStatus())
+            .toStatus(toStatus)
             .proposedBy(mechanic)
             .proposedAt(LocalDateTime.now())
             .approvedStatus(ApprovedStatus.PENDING_APPROVAL)
             .build();
     sosStatusHistoryRepository.save(history);
 
+    boolean arrival = toStatus == SosStatus.ARRIVED;
+    String type = arrival ? "ARRIVAL_REQUESTED" : "COMPLETION_REQUESTED";
     AfterCommit.run(
         () ->
             messagingTemplate.convertAndSendToUser(
@@ -785,21 +803,23 @@ public class SosServiceImpl implements SosService {
                 "/queue/sos-updates",
                 Map.of(
                     "type",
-                    "COMPLETION_REQUESTED",
+                    type,
                     "sosId",
                     sos.getSosId(),
                     "historyId",
                     history.getId(),
                     "approveBy",
-                    completionApprovalDeadline(history).toString())));
+                    approvalDeadline(history).toString())));
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
-            "COMPLETION_REQUESTED",
+            type,
             sos.getUser().getUserId(),
             "USER",
             sos.getSosId(),
-            "Completion requested",
-            "Your mechanic has marked the service complete. Please approve."));
+            arrival ? "Your mechanic has arrived" : "Completion requested",
+            arrival
+                ? "Your mechanic says they are at your location. Please confirm."
+                : "Your mechanic has marked the service complete. Please approve."));
     return sosStatusHistoryMapper.toResponse(history);
   }
 
@@ -817,6 +837,9 @@ public class SosServiceImpl implements SosService {
     if (decision == ApprovedStatus.ACCEPTED) {
       SosStatus fromStatus = sos.getStatus();
       validateTransition(fromStatus, history.getToStatus());
+      if (history.getToStatus() == SosStatus.ARRIVED) {
+        requireStillAssigned(sos, history);
+      }
       sos.setStatus(history.getToStatus());
       if (history.getToStatus() == SosStatus.COMPLETED) {
         sos.setJobCompletedAt(LocalDateTime.now());
@@ -839,29 +862,38 @@ public class SosServiceImpl implements SosService {
               messagingTemplate.convertAndSendToUser(
                   mechanicId.toString(), "/queue/sos-updates", statusEvent));
 
-      publishStatusNotifications(history.getToStatus(), sos, mechanicId);
+      // A customer who just tapped "confirm" does not need a push saying the mechanic arrived.
+      if (!(history.getToStatus() == SosStatus.ARRIVED && approver != null)) {
+        publishStatusNotifications(history.getToStatus(), sos, mechanicId);
+      }
     } else if (decision == ApprovedStatus.REJECTED) {
       UUID mechanicId = history.getProposedBy().getMechanicId();
+      boolean arrival = history.getToStatus() == SosStatus.ARRIVED;
+      String type = arrival ? "ARRIVAL_REJECTED" : "COMPLETION_REJECTED";
       AfterCommit.run(
           () ->
               messagingTemplate.convertAndSendToUser(
                   mechanicId.toString(),
                   "/queue/sos-updates",
-                  Map.of(
-                      "type",
-                      "COMPLETION_REJECTED",
-                      "sosId",
-                      sos.getSosId(),
-                      "historyId",
-                      history.getId())));
+                  Map.of("type", type, "sosId", sos.getSosId(), "historyId", history.getId())));
       sosEventProducer.publishNotification(
           new SosNotificationEvent(
-              "COMPLETION_REJECTED",
+              type,
               mechanicId,
               "MECHANIC",
               sos.getSosId(),
-              "Completion rejected",
-              "The customer has rejected the service completion request."));
+              arrival ? "Arrival not confirmed" : "Completion rejected",
+              arrival
+                  ? "The customer says you are not at their location."
+                  : "The customer has rejected the service completion request."));
+    }
+  }
+
+  // An arrival request belongs to the mechanic who made it. If the job was released and taken by
+  // someone else since, the old request must not move the new mechanic's ticket.
+  private void requireStillAssigned(SosRequest sos, SosStatusHistory history) {
+    if (!stillAssigned(sos, history)) {
+      throw new IllegalStateException("This arrival request is no longer valid");
     }
   }
 
@@ -874,15 +906,20 @@ public class SosServiceImpl implements SosService {
    */
   @Scheduled(fixedDelayString = "${sos.completion.sweep-interval-ms:15000}")
   public void approveOverdueCompletions() {
-    LocalDateTime cutoff = LocalDateTime.now().minusSeconds(completionApprovalWindowSeconds);
+    LocalDateTime now = LocalDateTime.now();
+    // Arrival and completion requests have their own windows; fetch from the shorter one and let
+    // each row wait for its own.
+    LocalDateTime cutoff =
+        now.minusSeconds(Math.min(completionApprovalWindowSeconds, arrivalApprovalWindowSeconds));
     for (SosStatusHistory overdue :
         sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(
             ApprovedStatus.PENDING_APPROVAL, cutoff)) {
+      if (approvalDeadline(overdue).isAfter(now)) continue;
       try {
         transactionTemplate.executeWithoutResult(status -> autoApproveCompletion(overdue.getId()));
       } catch (RuntimeException e) {
         // One bad row must not stop the others; it is retried on the next sweep.
-        log.error("Auto-approving completion {} failed: {}", overdue.getId(), e.getMessage());
+        log.error("Auto-approving request {} failed: {}", overdue.getId(), e.getMessage());
       }
     }
   }
@@ -896,28 +933,53 @@ public class SosServiceImpl implements SosService {
       return; // the customer answered while we waited for the lock
     }
     SosRequest sos = history.getSosRequest();
-    if (sos.getStatus() != SosStatus.IN_PROGRESS) {
-      return; // cancelled or otherwise moved on: nothing to complete
+    boolean arrival = history.getToStatus() == SosStatus.ARRIVED;
+    SosStatus expected = arrival ? SosStatus.ON_THE_WAY : SosStatus.IN_PROGRESS;
+    if (sos.getStatus() != expected || (arrival && !stillAssigned(sos, history))) {
+      // Cancelled, released or otherwise moved on: nothing to apply. Close it so the sweep stops
+      // reading it every cycle.
+      history.setApprovedStatus(ApprovedStatus.REJECTED);
+      history.setApproveAt(LocalDateTime.now());
+      sosStatusHistoryRepository.save(history);
+      return;
     }
     log.warn(
-        "Completion request {} for SOS {} unanswered after {} s, approving automatically",
+        "{} request {} for SOS {} unanswered after {} s, approving automatically",
+        arrival ? "Arrival" : "Completion",
         historyId,
         sos.getSosId(),
-        completionApprovalWindowSeconds);
+        approvalWindowSeconds(history));
     decideCompletion(history, ApprovedStatus.ACCEPTED, null);
+    String type = arrival ? "ARRIVAL_AUTO_CONFIRMED" : "COMPLETION_AUTO_APPROVED";
     AfterCommit.run(
         () ->
             messagingTemplate.convertAndSendToUser(
                 sos.getUser().getUserId().toString(),
                 "/queue/sos-updates",
-                Map.of("type", "COMPLETION_AUTO_APPROVED", "sosId", sos.getSosId())));
+                Map.of("type", type, "sosId", sos.getSosId())));
   }
 
-  /** When an unanswered completion request is approved automatically. */
-  private LocalDateTime completionApprovalDeadline(SosStatusHistory history) {
+  private boolean stillAssigned(SosRequest sos, SosStatusHistory history) {
+    return bidSosRepository
+        .findFirstBySosRequestSosIdAndStatus(sos.getSosId(), BidStatus.ACCEPTED)
+        .map(
+            bid ->
+                bid.getMechanic().getMechanicId().equals(history.getProposedBy().getMechanicId()))
+        .orElse(false);
+  }
+
+  /** How long the customer has to answer this kind of request before the system answers. */
+  private long approvalWindowSeconds(SosStatusHistory history) {
+    return history.getToStatus() == SosStatus.ARRIVED
+        ? arrivalApprovalWindowSeconds
+        : completionApprovalWindowSeconds;
+  }
+
+  /** When an unanswered request is approved automatically. */
+  private LocalDateTime approvalDeadline(SosStatusHistory history) {
     return history.getProposedAt() == null
         ? null
-        : history.getProposedAt().plusSeconds(completionApprovalWindowSeconds);
+        : history.getProposedAt().plusSeconds(approvalWindowSeconds(history));
   }
 
   /** Finalizes or discards a pending milestone update based on the client's explicit response. */
@@ -954,7 +1016,7 @@ public class SosServiceImpl implements SosService {
     // REJECTED (or the reverse) is not — without this, the outcome could be flipped after the
     // fact, silently re-notifying the mechanic.
     if (current != ApprovedStatus.PENDING_APPROVAL) {
-      throw new IllegalStateException("This completion request was already " + current);
+      throw new IllegalStateException("This request was already " + current);
     }
 
     SosRequest sos = history.getSosRequest();
@@ -1063,6 +1125,102 @@ public class SosServiceImpl implements SosService {
     notifyMechanicsOfCancellation(sos, fromStatus, assignedMechanicId, pendingBidders);
 
     return toResponseWithMechanic(sos);
+  }
+
+  /**
+   * The mechanic has been at the breakdown for sos.customer-wait.minutes since ARRIVED took effect
+   * and the customer never came to the car: they may end the job. The ticket becomes CANCELLED, so
+   * the mechanic is free again, and the customer is told. Ending it is the mechanic's call, never
+   * the system's, so a customer who is only slow to answer is not cancelled on.
+   */
+  @Override
+  @Transactional
+  public SosRequestResponse reportCustomerNoShow(UUID sosId, UUID mechanicId) {
+    if (customerWaitMinutes <= 0) {
+      throw new IllegalStateException("Ending a job because the customer is not there is off");
+    }
+    // Same ticket lock a cancel, the customer's answer and a release take.
+    sosRequestRepository.lockStatus(sosId);
+    SosRequest sos = findSosOrThrow(sosId);
+    requireAssignedMechanic(sos, mechanicId);
+    if (sos.getStatus() != SosStatus.ARRIVED) {
+      throw new IllegalStateException(
+          "A job can only be ended for a missing customer after ARRIVED, current status: "
+              + sos.getStatus());
+    }
+    LocalDateTime arrivedAt =
+        sosStatusHistoryRepository
+            .findFirstBySosRequestSosIdAndToStatusAndApprovedStatusOrderByChangeAtDesc(
+                sosId, SosStatus.ARRIVED, ApprovedStatus.ACCEPTED)
+            .map(h -> h.getApproveAt() != null ? h.getApproveAt() : h.getChangeAt())
+            .orElseThrow(() -> new IllegalStateException("No arrival on record for this job"));
+    LocalDateTime now = LocalDateTime.now();
+    LocalDateTime readyAt = arrivedAt.plusMinutes(customerWaitMinutes);
+    if (readyAt.isAfter(now)) {
+      long minutesLeft = (Duration.between(now, readyAt).toSeconds() + 59) / 60;
+      throw new IllegalStateException(
+          "The customer has " + minutesLeft + " more minute(s) to reach you");
+    }
+    Mechanic mechanic =
+        mechanicRepository
+            .findById(mechanicId)
+            .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+    requireMechanicStillAtSos(mechanic, sos);
+
+    sos.setStatus(SosStatus.CANCELLED);
+    sosRequestRepository.save(sos);
+    routeEtaService.clear(sosId);
+    sosStatusHistoryRepository.save(
+        SosStatusHistory.builder()
+            .sosRequest(sos)
+            .fromStatus(SosStatus.ARRIVED)
+            .toStatus(SosStatus.CANCELLED)
+            .proposedBy(mechanic)
+            .proposedAt(now)
+            .approvedStatus(ApprovedStatus.ACCEPTED)
+            .approveAt(now)
+            .build());
+
+    UUID userId = sos.getUser().getUserId();
+    sosEventProducer.publishStatusUpdated(
+        new SosStatusUpdatedEvent(
+            sosId, mechanicId, userId, SosStatus.ARRIVED, SosStatus.CANCELLED, now));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                userId.toString(),
+                "/queue/sos-updates",
+                Map.of("type", "CUSTOMER_NO_SHOW", "sosId", sosId, "fromStatus", "ARRIVED")));
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "CUSTOMER_NO_SHOW",
+            userId,
+            "USER",
+            sosId,
+            "Your mechanic left",
+            "Your mechanic waited and could not meet you, so the request was closed."));
+    return toResponseWithMechanic(sos);
+  }
+
+  /**
+   * The mechanic is still where the ticket is. Straight-line, no Google call: this runs inside a
+   * transaction, and straight-line never exceeds road distance so it is the more lenient of the two
+   * checks. Stops "mark arrived, drive off, report a no-show".
+   */
+  private void requireMechanicStillAtSos(Mechanic mechanic, SosRequest sos) {
+    Point at = mechanic.getCurrentLocation();
+    if (at == null) {
+      throw new IllegalStateException("No location on record for this mechanic");
+    }
+    double meters =
+        GeoDistance.haversineMeters(
+            at.getY(), at.getX(), sos.getLocation().getY(), sos.getLocation().getX(), earthRadiusM);
+    if (meters > arrivalMaxDistanceMeters) {
+      throw new IllegalStateException(
+          String.format(
+              "You are %dm from the customer; stay within %dm to report a missing customer.",
+              Math.round(meters), arrivalMaxDistanceMeters));
+    }
   }
 
   private record RejectedBid(UUID bidId, UUID mechanicId) {}
@@ -1702,6 +1860,16 @@ public class SosServiceImpl implements SosService {
     // The other bidders were auto-rejected when this bid was accepted. Dropping those rows lets
     // them bid again: bid create refuses anyone who already has a bid row on the ticket.
     bidSosRepository.deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
+    // An arrival the customer has not answered yet belongs to the mechanic who just left.
+    sosStatusHistoryRepository
+        .findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL)
+        .ifPresent(
+            waiting -> {
+              waiting.setApprovedStatus(ApprovedStatus.REJECTED);
+              waiting.setApproveAt(now);
+              sosStatusHistoryRepository.save(waiting);
+            });
 
     sos.setStatus(SosStatus.PENDING);
     sos.setBiddingExpiresAt(now.plusSeconds(biddingWindowSeconds));
@@ -1778,6 +1946,14 @@ public class SosServiceImpl implements SosService {
     sosRequestRepository.lockStatus(sosId);
     SosRequest sos = findSosOrThrow(sosId);
     if (sos.getStatus() != SosStatus.ACCEPTED && sos.getStatus() != SosStatus.ON_THE_WAY) {
+      return null;
+    }
+    // A mechanic who has asked the customer to confirm their arrival is standing at the breakdown
+    // on purpose; not moving is expected until the customer answers.
+    if (sosStatusHistoryRepository
+        .findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL)
+        .isPresent()) {
       return null;
     }
     BidSos bid =

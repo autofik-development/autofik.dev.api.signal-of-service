@@ -57,11 +57,18 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     acceptBidOk(d, bidId);
     assertThat(sosStatus(d, sosId)).isEqualTo("ACCEPTED");
 
-    for (SosStatus next : List.of(SosStatus.ON_THE_WAY, SosStatus.ARRIVED, SosStatus.IN_PROGRESS)) {
-      HttpResponse<String> r = updateStatus(m, sosId, next);
-      assertThat(r.statusCode()).as("%s: %s", next, r.body()).isEqualTo(200);
-      assertThat(parse(r.body()).get("status").asString()).isEqualTo(next.name());
-    }
+    HttpResponse<String> onTheWay = updateStatus(m, sosId, SosStatus.ON_THE_WAY);
+    assertThat(onTheWay.statusCode()).as(onTheWay.body()).isEqualTo(200);
+    UUID arrivalId = proposeArrivalOk(m, sosId);
+    assertThat(sosStatus(d, sosId))
+        .as("a proposal alone must not mark the mechanic arrived")
+        .isEqualTo("ON_THE_WAY");
+    HttpResponse<String> confirmed = answerRequest(d, arrivalId, "ACCEPTED");
+    assertThat(confirmed.statusCode()).as(confirmed.body()).isEqualTo(200);
+    assertThat(sosStatus(d, sosId)).isEqualTo("ARRIVED");
+    HttpResponse<String> started = updateStatus(m, sosId, SosStatus.IN_PROGRESS);
+    assertThat(started.statusCode()).as(started.body()).isEqualTo(200);
+    assertThat(parse(started.body()).get("status").asString()).isEqualTo("IN_PROGRESS");
 
     UUID historyId = proposeCompletionOk(m, sosId);
     assertThat(sosStatus(d, sosId))
@@ -376,7 +383,7 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     UUID sosId = createSosOk(d);
     acceptBidOk(d, placeBidOk(m, sosId));
 
-    HttpResponse<String> r = updateStatus(m, sosId, SosStatus.ARRIVED); // ACCEPTED -> ARRIVED
+    HttpResponse<String> r = proposeArrival(m, sosId); // ACCEPTED -> ARRIVED
 
     assertThat(r.statusCode()).as(r.body()).isEqualTo(409);
     assertThat(sosStatus(d, sosId)).isEqualTo("ACCEPTED");
@@ -390,7 +397,7 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     acceptBidOk(d, placeBidOk(m, sosId));
     assertThat(updateStatus(m, sosId, SosStatus.ON_THE_WAY).statusCode()).isEqualTo(200);
 
-    HttpResponse<String> r = updateStatus(m, sosId, SosStatus.ARRIVED);
+    HttpResponse<String> r = proposeArrival(m, sosId);
 
     assertThat(r.statusCode()).as(r.body()).isEqualTo(409);
     assertThat(sosStatus(d, sosId)).isEqualTo("ON_THE_WAY");
@@ -728,10 +735,11 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
   private UUID inProgressSos(Driver d, Mechanic m) throws Exception {
     UUID sosId = createSosOk(d);
     acceptBidOk(d, placeBidOk(m, sosId));
-    for (SosStatus s : List.of(SosStatus.ON_THE_WAY, SosStatus.ARRIVED, SosStatus.IN_PROGRESS)) {
-      HttpResponse<String> r = updateStatus(m, sosId, s);
-      assertThat(r.statusCode()).as("%s: %s", s, r.body()).isEqualTo(200);
-    }
+    HttpResponse<String> onTheWay = updateStatus(m, sosId, SosStatus.ON_THE_WAY);
+    assertThat(onTheWay.statusCode()).as(onTheWay.body()).isEqualTo(200);
+    arrive(d, m, sosId);
+    HttpResponse<String> started = updateStatus(m, sosId, SosStatus.IN_PROGRESS);
+    assertThat(started.statusCode()).as(started.body()).isEqualTo(200);
     return sosId;
   }
 
@@ -843,20 +851,20 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     assertThat(release(outsider, sosId).statusCode()).isEqualTo(403);
     assertThat(sosStatus(d, sosId)).isEqualTo("ACCEPTED");
 
-    for (SosStatus next : List.of(SosStatus.ON_THE_WAY, SosStatus.ARRIVED)) {
-      assertThat(updateStatus(assigned, sosId, next).statusCode()).isEqualTo(200);
-    }
+    assertThat(updateStatus(assigned, sosId, SosStatus.ON_THE_WAY).statusCode()).isEqualTo(200);
+    arrive(d, assigned, sosId);
     HttpResponse<String> late = release(assigned, sosId);
     assertThat(late.statusCode()).as(late.body()).isEqualTo(409);
     assertThat(sosStatus(d, sosId)).isEqualTo("ARRIVED");
   }
 
   /**
-   * The mechanic releases at the same instant as they mark ARRIVED. Both take the ticket lock, so
-   * exactly one wins and the ticket never ends ARRIVED with its accepted bid cancelled.
+   * The mechanic releases at the same instant as the customer confirms their arrival. Both take the
+   * ticket lock, so exactly one wins and the ticket never ends ARRIVED with its accepted bid
+   * cancelled.
    */
   @Test
-  void releaseAgainstArrived_exactlyOneWins() throws Exception {
+  void releaseAgainstTheCustomersConfirmation_exactlyOneWins() throws Exception {
     ExecutorService pool = Executors.newFixedThreadPool(2);
     try {
       for (int round = 0; round < 5; round++) {
@@ -865,13 +873,14 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
         UUID sosId = createSosOk(d);
         assignMechanic(d, m, sosId);
         assertThat(updateStatus(m, sosId, SosStatus.ON_THE_WAY).statusCode()).isEqualTo(200);
+        UUID arrivalId = proposeArrivalOk(m, sosId);
 
         CountDownLatch go = new CountDownLatch(1);
-        Future<HttpResponse<String>> arrive =
+        Future<HttpResponse<String>> confirm =
             pool.submit(
                 () -> {
                   go.await();
-                  return updateStatus(m, sosId, SosStatus.ARRIVED);
+                  return answerRequest(d, arrivalId, "ACCEPTED");
                 });
         Future<HttpResponse<String>> leave =
             pool.submit(
@@ -880,11 +889,11 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
                   return release(m, sosId);
                 });
         go.countDown();
-        int arrived = arrive.get(30, TimeUnit.SECONDS).statusCode();
+        int arrived = confirm.get(30, TimeUnit.SECONDS).statusCode();
         int left = leave.get(30, TimeUnit.SECONDS).statusCode();
 
         assertThat(List.of(arrived, left).stream().filter(c -> c == 200).count())
-            .as("round %d: arrived=%d released=%d", round, arrived, left)
+            .as("round %d: confirmed=%d released=%d", round, arrived, left)
             .isEqualTo(1);
         assertThat(sosStatus(d, sosId)).isEqualTo(arrived == 200 ? "ARRIVED" : "PENDING");
       }

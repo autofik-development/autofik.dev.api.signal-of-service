@@ -286,4 +286,46 @@ abstract class FlowTestSupport extends IntegrationTestBase {
   protected void assignMechanic(Driver d, Mechanic m, UUID sosId) throws Exception {
     acceptBidOk(d, placeBidOk(m, sosId));
   }
+
+  /** The mechanic says they have arrived; the customer is asked to confirm. */
+  protected HttpResponse<String> proposeArrival(Mechanic m, UUID sosId) throws Exception {
+    return send(
+        req("/api/v1/sos/" + sosId + "/arrival")
+            .header("mechanic-context", mechanicContext(m.getMechanicId()))
+            .POST(HttpRequest.BodyPublishers.noBody()));
+  }
+
+  /** The id of the waiting request the customer answers. */
+  protected UUID proposeArrivalOk(Mechanic m, UUID sosId) throws Exception {
+    HttpResponse<String> r = proposeArrival(m, sosId);
+    assertThat(r.statusCode()).as("propose arrival: %s", r.body()).isEqualTo(201);
+    return UUID.fromString(parse(r.body()).get("id").asString());
+  }
+
+  /**
+   * The customer's answer ("ACCEPTED" or "REJECTED") to a waiting arrival or completion request.
+   */
+  protected HttpResponse<String> answerRequest(Driver d, UUID historyId, String decision)
+      throws Exception {
+    return send(
+        req("/api/v1/sos/completion")
+            .header("user-context", userContext(d.user().getUserId()))
+            .header("Content-Type", "application/json")
+            .method(
+                "PATCH",
+                HttpRequest.BodyPublishers.ofString(
+                    "{\"userId\":\""
+                        + d.user().getUserId()
+                        + "\",\"historyId\":\""
+                        + historyId
+                        + "\",\"approvedStatus\":\""
+                        + decision
+                        + "\"}")));
+  }
+
+  /** The mechanic says they are there and the customer confirms: the ticket is now ARRIVED. */
+  protected void arrive(Driver d, Mechanic m, UUID sosId) throws Exception {
+    HttpResponse<String> r = answerRequest(d, proposeArrivalOk(m, sosId), "ACCEPTED");
+    assertThat(r.statusCode()).as("confirm arrival: %s", r.body()).isEqualTo(200);
+  }
 }

@@ -78,9 +78,12 @@ class SosStateMachineFuzzTest {
           SosStatus.ARRIVED, EnumSet.of(SosStatus.IN_PROGRESS, SosStatus.CANCELLED),
           SosStatus.IN_PROGRESS, EnumSet.of(SosStatus.COMPLETED, SosStatus.CANCELLED));
 
-  /** The statuses a mechanic may set on PATCH /status; COMPLETED goes through approval. */
+  /**
+   * The statuses a mechanic may set on PATCH /status; ARRIVED and COMPLETED go through the
+   * customer's answer.
+   */
   private static final Set<SosStatus> DIRECT =
-      EnumSet.of(SosStatus.ON_THE_WAY, SosStatus.ARRIVED, SosStatus.IN_PROGRESS);
+      EnumSet.of(SosStatus.ON_THE_WAY, SosStatus.IN_PROGRESS);
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
   private static final H3Core H3 = h3();
@@ -186,6 +189,27 @@ class SosStateMachineFuzzTest {
 
     boolean allowed = to == SosStatus.COMPLETED && from == SosStatus.IN_PROGRESS;
     assertThat(thrown == null).as("%s -> %s, thrown %s", from, to, thrown).isEqualTo(allowed);
+    assertThat(sos.getStatus()).as("a proposal must not change the status").isEqualTo(from);
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+  }
+
+  /** POST /arrival: only from ON_THE_WAY, and a proposal never moves the ticket itself. */
+  @Property(seed = Fuzz.SEED)
+  void proposeArrival_onlyFromOnTheWay_andNeverMovesTheTicket(@ForAll SosStatus from) {
+    SosRequest sos = ticketAt(from);
+    when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
+        .thenAnswer(
+            inv -> {
+              Object history = inv.getArgument(0);
+              ReflectionTestUtils.setField(history, "id", UUID.randomUUID());
+              return history;
+            });
+
+    Throwable thrown = catchAny(() -> sosService.proposeArrival(sosId, mechanicId));
+
+    assertThat(thrown == null)
+        .as("%s -> ARRIVED, thrown %s", from, thrown)
+        .isEqualTo(from == SosStatus.ON_THE_WAY);
     assertThat(sos.getStatus()).as("a proposal must not change the status").isEqualTo(from);
     verify(sosEventProducer, never()).publishStatusUpdated(any());
   }
