@@ -11,6 +11,7 @@ import com.autofik.sos.dto.event.SosCreatedEvent;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
+import com.autofik.sos.util.AfterCommit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
@@ -19,6 +20,9 @@ import org.springframework.stereotype.Component;
  * Thin wrapper around KafkaTemplate that centralises topic routing for all SOS domain events. The
  * sosId is always used as the Kafka message key so that all events for one SOS request are
  * guaranteed to land on the same partition (and therefore arrive in order).
+ *
+ * <p>Every send waits for the surrounding transaction to commit (see {@link AfterCommit}), so no
+ * event is published for a change that rolled back.
  */
 @Component
 @RequiredArgsConstructor
@@ -32,7 +36,8 @@ public class SosEventProducer {
    * @param event the event payload containing details of the created SOS
    */
   public void publishSosCreated(SosCreatedEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_CREATED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () -> kafkaTemplate.send(KafkaConfig.TOPIC_SOS_CREATED, event.sosId().toString(), event));
   }
 
   /**
@@ -41,7 +46,9 @@ public class SosEventProducer {
    * @param event the event payload containing bid creation details
    */
   public void publishBidCreated(BidCreatedEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_CREATED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () ->
+            kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_CREATED, event.sosId().toString(), event));
   }
 
   /**
@@ -50,7 +57,10 @@ public class SosEventProducer {
    * @param event the event payload containing the accepted bid details
    */
   public void publishBidAccepted(BidAcceptedEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_ACCEPTED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () ->
+            kafkaTemplate.send(
+                KafkaConfig.TOPIC_SOS_BID_ACCEPTED, event.sosId().toString(), event));
   }
 
   /**
@@ -59,7 +69,10 @@ public class SosEventProducer {
    * @param event the event payload containing the rejected bid details
    */
   public void publishBidRejected(BidRejectedEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_REJECTED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () ->
+            kafkaTemplate.send(
+                KafkaConfig.TOPIC_SOS_BID_REJECTED, event.sosId().toString(), event));
   }
 
   /**
@@ -68,7 +81,10 @@ public class SosEventProducer {
    * @param event the event payload containing the cancelled bid details
    */
   public void publishBidCancelled(BidCancelledEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_CANCELLED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () ->
+            kafkaTemplate.send(
+                KafkaConfig.TOPIC_SOS_BID_CANCELLED, event.sosId().toString(), event));
   }
 
   /**
@@ -77,7 +93,10 @@ public class SosEventProducer {
    * @param event the event payload containing the updated status details
    */
   public void publishStatusUpdated(SosStatusUpdatedEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_STATUS_UPDATED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () ->
+            kafkaTemplate.send(
+                KafkaConfig.TOPIC_SOS_STATUS_UPDATED, event.sosId().toString(), event));
   }
 
   /**
@@ -86,8 +105,10 @@ public class SosEventProducer {
    * @param event the event payload containing the mechanic's current coordinates
    */
   public void publishMechanicLocation(MechanicLocationEvent event) {
-    kafkaTemplate.send(
-        KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () ->
+            kafkaTemplate.send(
+                KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED, event.sosId().toString(), event));
   }
 
   /**
@@ -96,17 +117,21 @@ public class SosEventProducer {
    * @param event the event payload containing notification message details
    */
   public void publishMediaUploaded(SosMediaUploadedEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_MEDIA_UPLOADED, event.sosId().toString(), event);
+    AfterCommit.run(
+        () ->
+            kafkaTemplate.send(
+                KafkaConfig.TOPIC_SOS_MEDIA_UPLOADED, event.sosId().toString(), event));
   }
 
   public void publishNotification(SosNotificationEvent event) {
     // recipientId is null for fan-out notifications (e.g. SOS_CREATED, resolved externally
     // by the notification-service) — null key just means round-robin partitioning for those.
     String key = event.recipientId() != null ? event.recipientId().toString() : null;
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_NOTIFICATION, key, event);
+    AfterCommit.run(() -> kafkaTemplate.send(KafkaConfig.TOPIC_SOS_NOTIFICATION, key, event));
   }
 
   public void publishOneSignalPushFailed(OneSignalPushFailedEvent event) {
-    kafkaTemplate.send(KafkaConfig.TOPIC_SOS_DLQ, event.recipientId().toString(), event);
+    AfterCommit.run(
+        () -> kafkaTemplate.send(KafkaConfig.TOPIC_SOS_DLQ, event.recipientId().toString(), event));
   }
 }
