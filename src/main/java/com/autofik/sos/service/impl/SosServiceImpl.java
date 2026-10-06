@@ -1,5 +1,6 @@
 package com.autofik.sos.service.impl;
 
+import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.SosStatusHistory;
@@ -631,6 +632,8 @@ public class SosServiceImpl implements SosService {
       throw new IllegalArgumentException(
           "Only ON_THE_WAY, ARRIVED, and IN_PROGRESS can be set directly. Use POST /api/v1/sos/{sosId}/completion for COMPLETED.");
     }
+    // Same ticket lock a mechanic's release takes, so ARRIVED and a release cannot both win.
+    sosRequestRepository.lockStatus(sosId);
     SosRequest sos = findSosOrThrow(sosId);
     validateTransition(sos.getStatus(), toStatus);
     Mechanic mechanic =
@@ -956,6 +959,8 @@ public class SosServiceImpl implements SosService {
   @Override
   @Transactional
   public SosRequestResponse cancel(UUID sosId, UUID userId) {
+    // Same ticket lock a mechanic's release takes, so the two cannot both win.
+    sosRequestRepository.lockStatus(sosId);
     SosRequest sos = findSosOrThrow(sosId);
     if (!sos.getUser().getUserId().equals(userId)) {
       throw new AccessDeniedException("You can only cancel your own SOS request");
@@ -1189,6 +1194,16 @@ public class SosServiceImpl implements SosService {
 
   private void fanOutToNearbyMechanics(
       UUID sosId, double lat, double lng, String problemType, Integer broadcastRadiusKm) {
+    fanOutToNearbyMechanics(sosId, lat, lng, problemType, broadcastRadiusKm, Set.of());
+  }
+
+  private void fanOutToNearbyMechanics(
+      UUID sosId,
+      double lat,
+      double lng,
+      String problemType,
+      Integer broadcastRadiusKm,
+      Set<UUID> excludeMechanicIds) {
     int effectiveRadiusKm = broadcastRadiusKm != null ? broadcastRadiusKm : defaultBroadcastKm;
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
     List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
@@ -1196,11 +1211,13 @@ public class SosServiceImpl implements SosService {
     List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType);
     if (coarse.isEmpty()) return;
 
-    List<UUID> matchedIds =
+    List<UUID> inRange =
         broadcastRadiusKm != null
             ? mechanicRepository.filterByRadiusAndBroadcast(
                 coarse, lat, lng, broadcastRadiusKm * 1000.0)
             : mechanicRepository.filterByRadius(coarse, lat, lng);
+    List<UUID> matchedIds =
+        inRange.stream().filter(id -> !excludeMechanicIds.contains(id)).toList();
     if (matchedIds.isEmpty()) return;
     // Entities only for the offer estimates (they need each mechanic's location); one query.
     List<Mechanic> matched = mechanicRepository.findAllWithRateById(matchedIds);
@@ -1382,6 +1399,115 @@ public class SosServiceImpl implements SosService {
   }
 
   private record Rebroadcast(SosRequest sos, SosRequestResponse response) {}
+
+  private record Released(SosRequest sos, SosStatus fromStatus, SosRequestResponse response) {}
+
+  /**
+   * The assigned mechanic backs out before ARRIVED: the ticket goes back to PENDING with a fresh
+   * bidding window and is offered again to everyone but the mechanic who released it. Shaped like
+   * {@link #rebroadcast}: commit first, then timer, frames and fan-out, none of which may turn a
+   * committed release into a 500.
+   */
+  @Override
+  public SosRequestResponse releaseByMechanic(UUID sosId, UUID mechanicId) {
+    Released released = transactionTemplate.execute(status -> releaseJob(sosId, mechanicId));
+    SosRequest sos = released.sos();
+
+    // First, and before anything that can fail: the ticket is PENDING and committed, so its
+    // bidding window must always close.
+    scheduleBiddingExpiry(sos);
+    // Back to bidding: the released mechanic's route is meaningless now.
+    routeEtaService.clear(sosId);
+
+    try {
+      UUID userId = sos.getUser().getUserId();
+      sosEventProducer.publishStatusUpdated(
+          new SosStatusUpdatedEvent(
+              sosId,
+              mechanicId,
+              userId,
+              released.fromStatus(),
+              SosStatus.PENDING,
+              LocalDateTime.now()));
+      messagingTemplate.convertAndSendToUser(
+          userId.toString(),
+          "/queue/sos-updates",
+          Map.of(
+              "type",
+              "MECHANIC_RELEASED",
+              "sosId",
+              sosId,
+              "fromStatus",
+              released.fromStatus().name()));
+      sosEventProducer.publishNotification(
+          new SosNotificationEvent(
+              "MECHANIC_RELEASED",
+              userId,
+              "USER",
+              sosId,
+              "Mechanic released the job",
+              "Your mechanic can no longer take this job. We are finding you another one."));
+      fanOutToNearbyMechanics(
+          sosId,
+          sos.getLocation().getY(),
+          sos.getLocation().getX(),
+          sos.getProblemType(),
+          sos.getBroadcastRadiusKm(),
+          Set.of(mechanicId));
+    } catch (RuntimeException e) {
+      log.error("SOS {} was released but notifying/broadcasting failed", sosId, e);
+    }
+
+    return released.response();
+  }
+
+  // Runs inside the transaction opened by releaseByMechanic(); keep external calls out of it.
+  private Released releaseJob(UUID sosId, UUID mechanicId) {
+    // RACE GUARD: the ticket lock a cancel, an ARRIVED update and a bid decision also take, so
+    // whoever comes second sees the status the first one committed.
+    sosRequestRepository.lockStatus(sosId);
+    SosRequest sos = findSosOrThrow(sosId);
+
+    BidSos bid =
+        bidSosRepository
+            .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+            .filter(b -> b.getMechanic().getMechanicId().equals(mechanicId))
+            .orElseThrow(
+                () ->
+                    new AccessDeniedException(
+                        "You are not the mechanic assigned to this SOS request"));
+
+    SosStatus fromStatus = sos.getStatus();
+    if (fromStatus != SosStatus.ACCEPTED && fromStatus != SosStatus.ON_THE_WAY) {
+      throw new IllegalStateException(
+          "A job can only be released before ARRIVED, current status: " + fromStatus);
+    }
+
+    LocalDateTime now = LocalDateTime.now();
+    bid.setStatus(BidStatus.CANCELLED);
+    bid.setRespondedAt(now);
+    bidSosRepository.save(bid);
+    // The other bidders were auto-rejected when this bid was accepted. Dropping those rows lets
+    // them bid again: bid create refuses anyone who already has a bid row on the ticket.
+    bidSosRepository.deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
+
+    sos.setStatus(SosStatus.PENDING);
+    sos.setBiddingExpiresAt(now.plusSeconds(biddingWindowSeconds));
+    sosRequestRepository.save(sos);
+
+    sosStatusHistoryRepository.save(
+        SosStatusHistory.builder()
+            .sosRequest(sos)
+            .fromStatus(fromStatus)
+            .toStatus(SosStatus.PENDING)
+            .proposedBy(bid.getMechanic())
+            .proposedAt(now)
+            .approvedStatus(ApprovedStatus.ACCEPTED)
+            .approveAt(now)
+            .build());
+
+    return new Released(sos, fromStatus, toResponseWithMechanic(sos));
+  }
 
   // Runs inside the transaction opened by rebroadcast(); keep external calls out of it.
   private Rebroadcast reopenSos(UUID sosId, UUID userId) {

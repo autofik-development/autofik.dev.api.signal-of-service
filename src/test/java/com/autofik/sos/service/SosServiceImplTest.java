@@ -1874,6 +1874,181 @@ class SosServiceImplTest {
         .publishNotification(argThat(n -> n.type().equals("SOS_AUTO_REBROADCAST")));
   }
 
+  // ── mechanic release: the assigned mechanic backs out before ARRIVED ──────────
+
+  private SosRequest releasableSos(SosStatus status) {
+    SosRequest sos = sosAt(status);
+    sos.setBroadcastRadiusKm(15);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    // Lenient: the refusal tests throw before a response is built.
+    lenient().when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+    return sos;
+  }
+
+  private BidSos acceptedBidOfAssignedMechanic(SosRequest sos) {
+    BidSos bid = bidBy(mechanicId, BidStatus.ACCEPTED, sos);
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(bid));
+    return bid;
+  }
+
+  @Test
+  void release_fromAcceptedOrOnTheWay_reopensBiddingAndRecordsIt() {
+    for (SosStatus from : List.of(SosStatus.ACCEPTED, SosStatus.ON_THE_WAY)) {
+      reset(sosRequestRepository, bidSosRepository, sosStatusHistoryRepository, taskScheduler);
+      SosRequest sos = releasableSos(from);
+      BidSos bid = acceptedBidOfAssignedMechanic(sos);
+      sos.setRebroadcastCount(2);
+
+      sosService.releaseByMechanic(sosId, mechanicId);
+
+      assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+      assertThat(sos.getBiddingExpiresAt()).isAfter(LocalDateTime.now());
+      assertThat(sos.getRebroadcastCount())
+          .as("a release is not the customer's retry")
+          .isEqualTo(2);
+      assertThat(bid.getStatus()).isEqualTo(BidStatus.CANCELLED);
+      verify(bidSosRepository).deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
+      ArgumentCaptor<SosStatusHistory> history = ArgumentCaptor.forClass(SosStatusHistory.class);
+      verify(sosStatusHistoryRepository).save(history.capture());
+      assertThat(history.getValue().getFromStatus()).isEqualTo(from);
+      assertThat(history.getValue().getToStatus()).isEqualTo(SosStatus.PENDING);
+      verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+    }
+    verify(routeEtaService, times(2)).clear(sosId);
+  }
+
+  @Test
+  void release_takesTheTicketLockBeforeReadingTheTicket() {
+    SosRequest sos = releasableSos(SosStatus.ACCEPTED);
+    acceptedBidOfAssignedMechanic(sos);
+
+    sosService.releaseByMechanic(sosId, mechanicId);
+
+    org.mockito.InOrder order = inOrder(sosRequestRepository);
+    order.verify(sosRequestRepository).lockStatus(sosId);
+    order.verify(sosRequestRepository).findById(sosId);
+  }
+
+  @Test
+  void release_tellsTheCustomer_withAFrameAKafkaEventAndAPush() {
+    SosRequest sos = releasableSos(SosStatus.ON_THE_WAY);
+    acceptedBidOfAssignedMechanic(sos);
+
+    sosService.releaseByMechanic(sosId, mechanicId);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(userId.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "MECHANIC_RELEASED", "sosId", sosId, "fromStatus", "ON_THE_WAY")));
+    ArgumentCaptor<SosStatusUpdatedEvent> event =
+        ArgumentCaptor.forClass(SosStatusUpdatedEvent.class);
+    verify(sosEventProducer).publishStatusUpdated(event.capture());
+    assertThat(event.getValue().toStatus()).isEqualTo(SosStatus.PENDING);
+    assertThat(event.getValue().mechanicId()).isEqualTo(mechanicId);
+    verify(sosEventProducer)
+        .publishNotification(
+            argThat(n -> n.type().equals("MECHANIC_RELEASED") && n.recipientId().equals(userId)));
+  }
+
+  @Test
+  void release_offersTheJobAgain_butNotToTheMechanicWhoReleasedIt() {
+    SosRequest sos = releasableSos(SosStatus.ACCEPTED);
+    acceptedBidOfAssignedMechanic(sos);
+    Mechanic other =
+        Mechanic.builder()
+            .mechanicId(UUID.randomUUID())
+            .fullName("Other")
+            .phoneNumber("2")
+            .email("o@x.com")
+            .build();
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any()))
+        .thenReturn(ids(mechanic, other));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic, other));
+
+    sosService.releaseByMechanic(sosId, mechanicId);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(other.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+    verify(messagingTemplate, never())
+        .convertAndSendToUser(eq(mechanicId.toString()), eq("/queue/sos-new-request"), any());
+  }
+
+  @Test
+  void release_fromArrivedOrLater_isConflictAndNothingChanges() {
+    for (SosStatus from :
+        List.of(
+            SosStatus.ARRIVED,
+            SosStatus.IN_PROGRESS,
+            SosStatus.COMPLETED,
+            SosStatus.CANCELLED,
+            SosStatus.PENDING)) {
+      reset(sosRequestRepository, bidSosRepository);
+      SosRequest sos = releasableSos(from);
+      acceptedBidOfAssignedMechanic(sos);
+
+      assertThatThrownBy(() -> sosService.releaseByMechanic(sosId, mechanicId))
+          .as("release from %s", from)
+          .isInstanceOf(IllegalStateException.class);
+      assertThat(sos.getStatus()).isEqualTo(from);
+    }
+    verify(sosRequestRepository, never()).save(any());
+    verify(bidSosRepository, never()).deleteBySosRequestSosIdAndStatus(any(), any());
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
+  @Test
+  void release_byAnotherMechanic_isDeniedAndNothingChanges() {
+    SosRequest sos = releasableSos(SosStatus.ACCEPTED);
+    acceptedBidOfAssignedMechanic(sos);
+
+    assertThatThrownBy(() -> sosService.releaseByMechanic(sosId, UUID.randomUUID()))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ACCEPTED);
+    verify(bidSosRepository, never()).deleteBySosRequestSosIdAndStatus(any(), any());
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
+  @Test
+  void release_broadcastFailsAfterCommit_stillReturnsAndSchedulesExpiry() {
+    SosRequest sos = releasableSos(SosStatus.ACCEPTED);
+    acceptedBidOfAssignedMechanic(sos);
+    doThrow(new RuntimeException("kafka down")).when(sosEventProducer).publishStatusUpdated(any());
+
+    SosRequestResponse response = sosService.releaseByMechanic(sosId, mechanicId);
+
+    assertThat(response.status()).isEqualTo(SosStatus.PENDING);
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  @Test
+  void cancel_and_updateStatus_takeTheTicketLockBeforeReadingTheTicket() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosRequestRepository.save(sos)).thenReturn(sos);
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+
+    sosService.cancel(sosId, userId);
+
+    org.mockito.InOrder order = inOrder(sosRequestRepository);
+    order.verify(sosRequestRepository).lockStatus(sosId);
+    order.verify(sosRequestRepository).findById(sosId);
+
+    reset(sosRequestRepository);
+    SosRequest accepted = sosAt(SosStatus.ACCEPTED);
+    stubUpdateStatus(accepted);
+    sosService.updateStatus(sosId, mechanicId, SosStatus.ON_THE_WAY);
+
+    org.mockito.InOrder order2 = inOrder(sosRequestRepository);
+    order2.verify(sosRequestRepository).lockStatus(sosId);
+    order2.verify(sosRequestRepository).findById(sosId);
+  }
+
   private final java.util.Map<UUID, Mechanic> knownMechanics = new java.util.HashMap<>();
 
   /**
