@@ -49,6 +49,8 @@ class MechanicLocationWriterTest {
     lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
     org.springframework.test.util.ReflectionTestUtils.setField(writer, "pgSyncSeconds", 10);
     org.springframework.test.util.ReflectionTestUtils.setField(writer, "h3Resolution", 7);
+    org.springframework.test.util.ReflectionTestUtils.setField(writer, "movedThresholdMeters", 20);
+    org.springframework.test.util.ReflectionTestUtils.setField(writer, "earthRadiusM", 6_371_000d);
     // Default: throttle allows Postgres write on every ping
     lenient()
         .when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))
@@ -125,6 +127,47 @@ class MechanicLocationWriterTest {
     writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
 
     assertThat(mechanic.getLocationUpdatedAt()).isNull();
+  }
+
+  // The no-show sweep needs to tell a parked mechanic from a moving one, and locationUpdatedAt
+  // cannot: it is stamped on every ping. locationMovedAt moves only on a real change of position.
+  private void pingFrom(double lat, double lng) {
+    mechanic.setCurrentLocation(
+        new org.locationtech.jts.geom.GeometryFactory(
+                new org.locationtech.jts.geom.PrecisionModel(), 4326)
+            .createPoint(new org.locationtech.jts.geom.Coordinate(lng, lat)));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
+  }
+
+  @Test
+  void ping_farEnoughFromThePreviousOne_recordsThatTheMechanicMoved() {
+    pingFrom(LAT, LNG);
+    // About 28 m north.
+    writer.persistAndResolveSos(mechanicId, LAT + 0.00025, LNG, null);
+
+    assertThat(mechanic.getLocationMovedAt()).isNotNull();
+  }
+
+  @Test
+  void ping_nearThePreviousOne_doesNotRecordMovement() {
+    pingFrom(LAT, LNG);
+    // About 5 m north: GPS wobble, not movement.
+    writer.persistAndResolveSos(mechanicId, LAT + 0.000045, LNG, null);
+
+    assertThat(mechanic.getLocationMovedAt()).isNull();
+  }
+
+  @Test
+  void firstEverLocation_countsAsMoved() {
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
+
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+
+    assertThat(mechanic.getLocationMovedAt()).isNotNull();
   }
 
   @Test

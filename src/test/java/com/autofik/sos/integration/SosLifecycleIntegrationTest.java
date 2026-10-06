@@ -743,16 +743,6 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     return sosId;
   }
 
-  private String sosStatus(Driver d, UUID sosId) throws Exception {
-    HttpResponse<String> r =
-        send(
-            req("/api/v1/sos/" + sosId)
-                .header("user-context", userContext(d.user().getUserId()))
-                .GET());
-    assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
-    return parse(r.body()).get("status").asString();
-  }
-
   private HttpResponse<String> cancelBid(Mechanic m, UUID bidId) throws Exception {
     return send(
         req("/api/v1/bids/" + bidId + "/cancel")

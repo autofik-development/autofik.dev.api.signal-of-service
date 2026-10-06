@@ -89,6 +89,18 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
       @Param("bidStatus") BidStatus bidStatus,
       @Param("sosStatuses") Collection<SosStatus> sosStatuses);
 
+  /** The accepted bid of every job that is not finished: who is on which ticket right now. */
+  @Query(
+      "select b from BidSos b join fetch b.mechanic join fetch b.sosRequest s"
+          + " where b.status = com.autofik.sos.domain.enums.BidStatus.ACCEPTED"
+          + " and s.status in :sosStatuses")
+  List<BidSos> findAcceptedOnJobs(@Param("sosStatuses") Collection<SosStatus> sosStatuses);
+
+  /** Jobs a mechanic can still walk away from: accepted but not yet ARRIVED. */
+  default List<BidSos> findAcceptedBeforeArrival() {
+    return findAcceptedOnJobs(List.of(SosStatus.ACCEPTED, SosStatus.ON_THE_WAY));
+  }
+
   /** True when the mechanic holds the accepted bid on this SOS and the ticket is still live. */
   default boolean isAssignedToActiveJob(UUID mechanicId, UUID sosId) {
     return existsAssignment(mechanicId, sosId, BidStatus.ACCEPTED, ACTIVE_JOB_STATUSES);
