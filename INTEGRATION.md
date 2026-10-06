@@ -188,7 +188,7 @@ What the other teams must know before integrating. Tracked in the vault audit an
 4. **Expiry and a single bid reject send no WebSocket frame** to bidders.
 5. **A mechanic cannot re-bid after withdrawing**, and rebroadcast re-offers the SOS to mechanics who already bid.
 6. **A mechanic who misses the WebSocket frame never sees a new SOS:** there is no REST list of open nearby SOS.
-7. **`POST /mechanics` is not idempotent.** Calling it again for an existing mechanic overwrites the row (likely resetting availability and location) and duplicates skills. Call it once.
+7. **`POST /mechanics` is not idempotent.** Calling it again for an existing mechanic overwrites the row (likely resetting availability and location) and duplicates skills. Call it once. It is also no longer needed to create a mechanic: when the `mechanic-context` header carries the SSO profile (`profile`, `phoneNumber`, `mechanicType`, `skillService`, `avgRate`), the first request creates the mechanic and later requests keep name, phone, email, role, service radius, skill tags and rating in step with SSO, and a call to this endpoint or the skill endpoints is overwritten by the next request. Availability, location and the rating count stay this service's own.
 8. **SOS does not store or check KYC.** A mechanic must be KYC-verified to bid; SSO or the gateway has to refuse unverified mechanics before the request reaches this service.
 9. **Mechanic profile fields are limited:** `fullName` and `email` 30 characters, `phoneNumber` 20, with no validation message; longer values fail with 409.
 10. **Plan, subscription and tag-verification endpoints do not exist,** and there is no service-to-service authentication.

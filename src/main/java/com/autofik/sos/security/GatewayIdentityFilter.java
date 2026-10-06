@@ -1,5 +1,6 @@
 package com.autofik.sos.security;
 
+import com.autofik.sos.service.impl.MechanicProfileSync;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,6 +10,7 @@ import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -47,6 +49,11 @@ public class GatewayIdentityFilter extends OncePerRequestFilter {
   private final ObjectMapper objectMapper;
   private final AuthErrorResponder errorResponder;
 
+  // Optional on purpose: the web-layer test slices and standalone MockMvc setups build this filter
+  // without a database behind it, and then there is simply nothing to sync into.
+  @Autowired(required = false)
+  MechanicProfileSync profileSync;
+
   @Override
   protected void doFilterInternal(
       HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -62,10 +69,27 @@ public class GatewayIdentityFilter extends OncePerRequestFilter {
 
     if (caller.isPresent()) {
       authenticate(caller.get(), request);
+      syncMechanicProfile(caller.get(), request);
     } else {
       logUnusableContext(request);
     }
     chain.doFilter(request, response);
+  }
+
+  /**
+   * Only for a context already accepted above (verified, not logged out), so an unverified mechanic
+   * never gets a row. Never throws: a profile glitch must not stop the request.
+   */
+  private void syncMechanicProfile(CurrentUser caller, HttpServletRequest request) {
+    if (profileSync == null || caller.role() != CallerRole.MECHANIC) {
+      return;
+    }
+    try {
+      profileSync.sync(
+          caller.id(), AppHeaderContext.from(request::getHeader, objectMapper).mechanic());
+    } catch (RuntimeException e) {
+      log.warn("Mechanic profile sync failed for {}: {}", caller.id(), e.toString());
+    }
   }
 
   /**

@@ -182,7 +182,7 @@ public class MechanicServiceImpl implements MechanicService {
    * write to match the SOS problem type (itself upper-cased from the Medusa service group key).
    * Locale.ROOT keeps the casing stable regardless of the server's default locale.
    */
-  private static String[] normalizeTags(List<String> tags) {
+  static String[] normalizeTags(List<String> tags) {
     return tags.stream()
         .filter(Objects::nonNull)
         .map(String::trim)
