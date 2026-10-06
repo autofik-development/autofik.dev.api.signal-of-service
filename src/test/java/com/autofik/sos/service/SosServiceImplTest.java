@@ -122,6 +122,8 @@ class SosServiceImplTest {
     ReflectionTestUtils.setField(sosService, "defaultBroadcastKm", 15);
     ReflectionTestUtils.setField(sosService, "biddingWindowSeconds", 60);
     ReflectionTestUtils.setField(sosService, "maxRebroadcast", 3);
+    ReflectionTestUtils.setField(sosService, "locationMaxAgeMinutes", 5);
+    ReflectionTestUtils.setField(sosService, "maxRoadEtaMinutes", 30);
     ReflectionTestUtils.setField(sosService, "createCooldownSeconds", 60);
     ReflectionTestUtils.setField(sosService, "completionApprovalWindowSeconds", 120L);
     ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 25);
@@ -501,7 +503,8 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -620,7 +623,8 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -638,7 +642,8 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
@@ -690,7 +695,8 @@ class SosServiceImplTest {
             });
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     stubSaveAssignsSosId();
     when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
 
@@ -704,7 +710,8 @@ class SosServiceImplTest {
     stubCreateGuards();
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
     doThrow(new RuntimeException("kafka down")).when(sosEventProducer).publishSosCreated(any());
@@ -735,7 +742,8 @@ class SosServiceImplTest {
             .currentLocation(GEO.createPoint(new Coordinate(100.5020, 13.7560)))
             .build();
     // `mechanic` is parked in Phnom Penh, far from the request — it should get no estimate.
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic, near));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic, near));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             any(), anyDouble(), anyDouble(), anyDouble()))
         .thenReturn(ids(mechanic, near));
@@ -766,7 +774,8 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             any(), anyDouble(), anyDouble(), anyDouble()))
         .thenReturn(ids(mechanic));
@@ -791,7 +800,8 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             any(), anyDouble(), anyDouble(), anyDouble()))
         .thenReturn(ids(mechanic));
@@ -826,7 +836,8 @@ class SosServiceImplTest {
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, 15);
     when(ssoProjection.user(userId)).thenReturn(user);
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any())).thenReturn(ids(mechanic));
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             any(), anyDouble(), anyDouble(), anyDouble()))
         .thenReturn(ids(mechanic));
@@ -861,7 +872,7 @@ class SosServiceImplTest {
     when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
     // 1st call (resolving @15km): none. 2nd call (resolving @20km): found, stop escalating.
     // 3rd+ calls: fanOutToNearbyMechanics's own independent lookup.
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any()))
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
         .thenReturn(ids(), ids(mechanic), ids(mechanic));
     stubSaveAssignsSosId();
     when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
@@ -1195,7 +1206,7 @@ class SosServiceImplTest {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
         .thenReturn(false);
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble()))
         .thenReturn(ids(mechanic));
@@ -1212,7 +1223,7 @@ class SosServiceImplTest {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
         .thenReturn(false);
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble())).thenReturn(ids());
 
@@ -1258,7 +1269,7 @@ class SosServiceImplTest {
             null,
             null);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(25_000.0)))
@@ -1275,7 +1286,7 @@ class SosServiceImplTest {
     pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
     // broadcastRadiusKm left null — a legacy ticket predating the auto-expand feature.
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey)))
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(15_000.0))) // sos.broadcast.default-km
@@ -1760,7 +1771,7 @@ class SosServiceImplTest {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
     // Lenient: the broadcast stubs are not reached when the failure under test hits first.
     lenient()
-        .when(mechanicRepository.findByH3CellsAndSkillTag(any(), any()))
+        .when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
         .thenReturn(ids(mechanic));
     lenient()
         .when(
@@ -1963,7 +1974,7 @@ class SosServiceImplTest {
             .phoneNumber("2")
             .email("o@x.com")
             .build();
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any()))
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
         .thenReturn(ids(mechanic, other));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             any(), anyDouble(), anyDouble(), anyDouble()))
@@ -2047,6 +2058,93 @@ class SosServiceImplTest {
     org.mockito.InOrder order2 = inOrder(sosRequestRepository);
     order2.verify(sosRequestRepository).lockStatus(sosId);
     order2.verify(sosRequestRepository).findById(sosId);
+  }
+
+  // ── dispatch: stale location, and road ETA cap on the offer ───────────────────
+
+  @Test
+  void fanOut_asksOnlyForMechanicsSeenRecently() {
+    SosRequest sos = expiredSosWithRadius();
+    java.time.LocalDateTime before = java.time.LocalDateTime.now().minusMinutes(5);
+
+    sosService.rebroadcast(sosId, userId);
+
+    ArgumentCaptor<java.time.LocalDateTime> since =
+        ArgumentCaptor.forClass(java.time.LocalDateTime.class);
+    verify(mechanicRepository).findByH3CellsAndSkillTag(any(), eq(resolvedKey), since.capture());
+    assertThat(since.getValue())
+        .isBetween(before.minusSeconds(5), java.time.LocalDateTime.now().minusMinutes(5));
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+  }
+
+  private Mechanic otherMechanic(double lng) {
+    return Mechanic.builder()
+        .mechanicId(UUID.randomUUID())
+        .fullName("Other")
+        .phoneNumber("2")
+        .email("o@x.com")
+        .currentLocation(GEO.createPoint(new Coordinate(lng, 11.5573)))
+        .build();
+  }
+
+  @Test
+  void fanOut_dropsMechanicsWhoseRoadEtaIsOverTheCap_butKeepsThoseWithNoEstimate() {
+    SosRequest sos = expiredSosWithRadius();
+    Mechanic near = otherMechanic(104.9283);
+    Mechanic far = otherMechanic(104.9284);
+    Mechanic unknown = otherMechanic(104.9285);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(near, far, unknown));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(near, far, unknown));
+    // The estimates come back in the order of the origins Google was asked about (nearest first).
+    when(googleMapsService.getDistanceInfos(any(), any()))
+        .thenAnswer(
+            inv -> {
+              List<org.locationtech.jts.geom.Point> origins = inv.getArgument(0);
+              return origins.stream()
+                  .map(
+                      p ->
+                          p.getX() < 104.92835
+                              ? new DistanceInfo(1_000, 300, "1 km", "5 mins")
+                              : new DistanceInfo(40_000, 31 * 60, "40 km", "31 mins"))
+                  .toList();
+            });
+    // Only two of the three get an estimate: the third is beyond the Google cap.
+    ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 2);
+
+    sosService.rebroadcast(sosId, userId);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(near.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+    verify(messagingTemplate, never())
+        .convertAndSendToUser(
+            eq(far.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(unknown.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+  }
+
+  @Test
+  void fanOut_roadEtaCapDisabled_offersEveryone() {
+    expiredSosWithRadius();
+    Mechanic far = otherMechanic(104.9284);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any())).thenReturn(ids(far));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(far));
+    when(googleMapsService.getDistanceInfos(any(), any()))
+        .thenReturn(List.of(new DistanceInfo(90_000, 3 * 3600, "90 km", "3 hours")));
+    ReflectionTestUtils.setField(sosService, "maxRoadEtaMinutes", 0);
+
+    sosService.rebroadcast(sosId, userId);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(far.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
   }
 
   private final java.util.Map<UUID, Mechanic> knownMechanics = new java.util.HashMap<>();

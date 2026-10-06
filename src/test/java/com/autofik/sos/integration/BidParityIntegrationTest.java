@@ -126,8 +126,8 @@ class BidParityIntegrationTest extends FlowTestSupport {
     Fixture f = new Fixture();
     Driver d = newDriver();
     Driver d2 = newDriver();
-    f.mechanic1 = newMechanic(11.55, 104.92);
-    f.mechanic2 = newMechanic(11.56, 104.93);
+    f.mechanic1 = skilledMechanic(11.55, 104.92, "TOW");
+    f.mechanic2 = skilledMechanic(11.56, 104.93, "TOW");
     f.sosId = createSosOk(d);
     f.driver =
         actor("driver", d.user().getUserId(), "user-context", userContext(d.user().getUserId()));
@@ -163,7 +163,7 @@ class BidParityIntegrationTest extends FlowTestSupport {
   private List<Actor> addMechanics(Fixture f, int n) throws Exception {
     List<Actor> out = new ArrayList<>();
     for (int i = 0; i < n; i++) {
-      Mechanic m = newMechanic(11.5 + i * 0.001, 104.9 + i * 0.001);
+      Mechanic m = skilledMechanic(11.5 + i * 0.001, 104.9 + i * 0.001, "TOW");
       Actor a =
           actor(
               "mechExtra" + i,

@@ -67,6 +67,8 @@ class BidServiceImplTest {
 
   @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
+  @Mock com.autofik.sos.service.SosService sosService;
+
   @InjectMocks BidServiceImpl bidService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -85,6 +87,10 @@ class BidServiceImplTest {
 
   @BeforeEach
   void setUp() {
+    // @Value is not applied by @InjectMocks.
+    org.springframework.test.util.ReflectionTestUtils.setField(bidService, "maxRoadEtaMinutes", 30);
+    // By default the mechanic would have been offered the job.
+    lenient().when(sosService.isEligibleMechanic(any(), any())).thenReturn(true);
     // create() runs its two database phases through the template; run the callback inline.
     lenient()
         .when(transactionTemplate.execute(any()))
@@ -226,6 +232,60 @@ class BidServiceImplTest {
     assertThatThrownBy(() -> bidService.create(request))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("already submitted");
+  }
+
+  @Test
+  void create_mechanicNotEligibleForTheJob_isNotFoundAndNothingSaved() {
+    CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosService.isEligibleMechanic(pendingSos, mechanicId)).thenReturn(false);
+
+    assertThatThrownBy(() -> bidService.create(request))
+        .isInstanceOf(EntityNotFoundException.class);
+
+    verify(bidSosRepository, never()).save(any());
+    verify(sosEventProducer, never()).publishBidCreated(any());
+    verifyNoInteractions(googleMapsService);
+  }
+
+  private void stubBidWithRoadEta(long durationSeconds) {
+    Point mechanicLocation = GEO.createPoint(new Coordinate(100.50, 13.75));
+    Point sosLocation = pendingSos.getLocation();
+    mechanic.setCurrentLocation(mechanicLocation);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(googleMapsService.getDistanceInfo(mechanicLocation, sosLocation))
+        .thenReturn(new DistanceInfo(9_000, durationSeconds, "9 km", "x"));
+    lenient().when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+    lenient().when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+  }
+
+  @Test
+  void create_roadEtaOverTheCap_isRefusedAndNothingSaved() {
+    stubBidWithRoadEta(30 * 60 + 1);
+
+    assertThatThrownBy(
+            () -> bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("too far");
+
+    verify(bidSosRepository, never()).save(any());
+  }
+
+  @Test
+  void create_roadEtaAtTheCap_orCapDisabled_isStored() {
+    stubBidWithRoadEta(30 * 60);
+    bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN));
+    verify(bidSosRepository).save(any(BidSos.class));
+
+    reset(bidSosRepository);
+    lenient().when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+    lenient().when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of("PENDING"));
+    org.springframework.test.util.ReflectionTestUtils.setField(bidService, "maxRoadEtaMinutes", 0);
+    stubBidWithRoadEta(10 * 3600);
+    bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN));
+    verify(bidSosRepository).save(any(BidSos.class));
   }
 
   @Test

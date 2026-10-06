@@ -75,6 +75,12 @@ public class Mechanic {
   @ToString.Exclude
   private Point currentLocation;
 
+  // When current_location was last written. Dispatch skips a mechanic whose last ping is older
+  // than sos.dispatch.location-max-age-minutes; null (never pinged since this column existed) is
+  // treated as fresh so a deploy does not silently drop everyone who is offline at that moment.
+  @Column(name = "location_updated_at")
+  private java.time.LocalDateTime locationUpdatedAt;
+
   // H3 hex-cell address (resolution 7, ~5 km² per cell) derived from currentLocation.
   // Stored as a plain string so the B-tree index above can serve Stage 1 lookups.
   @Column(name = "current_h3_index", length = 16)

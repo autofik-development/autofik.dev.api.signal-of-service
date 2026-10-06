@@ -25,6 +25,7 @@ import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.service.BidService;
 import com.autofik.sos.service.GoogleMapsService;
+import com.autofik.sos.service.SosService;
 import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -34,6 +35,7 @@ import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.locationtech.jts.geom.Point;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -55,6 +57,7 @@ public class BidServiceImpl implements BidService {
   private final GoogleMapsService googleMapsService; // Calculates real road mileage and times
   private final SosEventProducer sosEventProducer; // Publishes asynchronous system events to Kafka
   private final TransactionTemplate transactionTemplate;
+  private final SosService sosService;
   private final SimpMessagingTemplate
       messagingTemplate; // Handles instant WebSocket communication directly to mobile apps
 
@@ -69,6 +72,11 @@ public class BidServiceImpl implements BidService {
    * whole time, so a burst of bids could starve live location pings. Only the two database phases
    * run in a transaction, as in SosServiceImpl.create.
    */
+  // Longest road ETA a bid may carry; 0 disables. The straight-line eligibility check cannot see
+  // rivers or one-way roads, so the Google estimate this call already fetches is the second gate.
+  @Value("${sos.dispatch.max-road-eta-minutes:30}")
+  private int maxRoadEtaMinutes;
+
   @Override
   public BidSosResponse create(CreateBidRequest request) {
     Route route = transactionTemplate.execute(status -> checkBidAllowed(request));
@@ -76,6 +84,10 @@ public class BidServiceImpl implements BidService {
     // External call, outside any transaction.
     DistanceInfo info =
         route.from() == null ? null : googleMapsService.getDistanceInfo(route.from(), route.to());
+    if (info != null && maxRoadEtaMinutes > 0 && info.durationSeconds() > maxRoadEtaMinutes * 60L) {
+      throw new IllegalStateException(
+          "Mechanic is too far from this SOS by road: " + info.durationText());
+    }
 
     return transactionTemplate.execute(status -> persistBid(request, info));
   }
@@ -84,6 +96,11 @@ public class BidServiceImpl implements BidService {
   private Route checkBidAllowed(CreateBidRequest request) {
     SosRequest sosRequest = loadOpenSos(request.sosId());
     Mechanic mechanic = loadAvailableMechanic(request.mechanicId());
+    // Same rule as the offer: a mechanic who was never offered the job (wrong skill, too far, on
+    // another live job, not seen lately) cannot bid on it. 404, like a ticket they cannot see.
+    if (!sosService.isEligibleMechanic(sosRequest, request.mechanicId())) {
+      throw new EntityNotFoundException("SOS request not found: " + request.sosId());
+    }
     if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(
         request.sosId(), request.mechanicId())) {
       throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");

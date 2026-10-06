@@ -53,6 +53,8 @@ class BidRulesFuzzTest {
 
   @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
+  @Mock com.autofik.sos.service.SosService sosService;
+
   @InjectMocks BidServiceImpl bidService;
 
   private AutoCloseable mocks;
@@ -87,7 +89,8 @@ class BidRulesFuzzTest {
       @ForAll SosStatus status,
       @ForAll("windowOffsets") Long windowOffsetSeconds,
       @ForAll("availability") Boolean available,
-      @ForAll boolean alreadyBid) {
+      @ForAll boolean alreadyBid,
+      @ForAll boolean eligible) {
     SosRequest sos =
         SosRequest.builder()
             .sosId(sosId)
@@ -111,6 +114,7 @@ class BidRulesFuzzTest {
                     .build()));
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
         .thenReturn(alreadyBid);
+    when(sosService.isEligibleMechanic(any(), any())).thenReturn(eligible);
     when(bidSosRepository.save(any(BidSos.class))).thenAnswer(inv -> inv.getArgument(0));
     when(bidSosMapper.toResponse(any()))
         .thenReturn(new BidSosResponse(null, null, null, null, null, null, null, null, null, null));
@@ -123,8 +127,10 @@ class BidRulesFuzzTest {
     }
 
     boolean windowOpen = windowOffsetSeconds == null || windowOffsetSeconds > 0;
-    boolean allowed =
-        status == SosStatus.PENDING && windowOpen && Boolean.TRUE.equals(available) && !alreadyBid;
+    boolean openAndAvailable =
+        status == SosStatus.PENDING && windowOpen && Boolean.TRUE.equals(available);
+    // Order of the rules: ticket open, mechanic available, mechanic eligible (404), no duplicate.
+    boolean allowed = openAndAvailable && eligible && !alreadyBid;
     String c =
         "status="
             + status
@@ -133,13 +139,20 @@ class BidRulesFuzzTest {
             + "s available="
             + available
             + " alreadyBid="
-            + alreadyBid;
+            + alreadyBid
+            + " eligible="
+            + eligible;
     if (allowed) {
       assertThat(thrown).as(c).isNull();
       verify(bidSosRepository).save(any(BidSos.class));
       verify(sosEventProducer).publishBidCreated(any());
     } else {
-      assertThat(thrown).as(c).isInstanceOf(IllegalStateException.class);
+      assertThat(thrown)
+          .as(c)
+          .isInstanceOf(
+              openAndAvailable && !eligible
+                  ? jakarta.persistence.EntityNotFoundException.class
+                  : IllegalStateException.class);
       verify(bidSosRepository, never()).save(any());
       verify(sosEventProducer, never()).publishBidCreated(any());
       verify(sosEventProducer, never()).publishNotification(any());

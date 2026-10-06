@@ -108,7 +108,9 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
 
   /**
    * H3 Grid Filter + Mechanic Skill Match combined. Uses unnest() to search inside the skill_tags
-   * TEXT[] array.
+   * TEXT[] array. Also drops a mechanic who is already on a live job (an ACCEPTED bid on a ticket
+   * that has not finished) and one whose last location ping is older than {@code seenSince}. A
+   * mechanic with no recorded ping time is kept.
    */
   @Query(
       value =
@@ -117,6 +119,14 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
             JOIN mechanic_skill ms ON ms.mechanic_profile_id = m.id
             WHERE m.current_h3_index IN :cellIds
               AND m.available_status = true
+              AND (m.location_updated_at IS NULL OR m.location_updated_at >= :seenSince)
+              AND NOT EXISTS (
+                  SELECT 1 FROM bid_sos b
+                  JOIN sos_request s ON s.sos_id = b.sos_id
+                  WHERE b.mechanic_id = m.id
+                    AND b.status = 'ACCEPTED'
+                    AND s.status IN ('ACCEPTED', 'ON_THE_WAY', 'ARRIVED', 'IN_PROGRESS')
+              )
               AND EXISTS (
                   SELECT 1 FROM unnest(ms.skill_tags) tag
                   WHERE UPPER(tag) = :problemType
@@ -124,7 +134,9 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
             """,
       nativeQuery = true)
   List<UUID> findByH3CellsAndSkillTag(
-      @Param("cellIds") List<String> cellIds, @Param("problemType") String problemType);
+      @Param("cellIds") List<String> cellIds,
+      @Param("problemType") String problemType,
+      @Param("seenSince") java.time.LocalDateTime seenSince);
 
   /** Mechanics by id with their rating joined in, so mapping them costs one query, not N + 1. */
   @EntityGraph(attributePaths = "rate")

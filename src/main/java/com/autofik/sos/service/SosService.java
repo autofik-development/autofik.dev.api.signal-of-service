@@ -127,4 +127,14 @@ public interface SosService {
    * @return the ticket, back in PENDING state
    */
   SosRequestResponse releaseByMechanic(UUID sosId, UUID mechanicId);
+
+  /**
+   * True when the mechanic would have been offered this SOS: near enough, right skill, available,
+   * not on another live job and recently seen. Used to refuse a bid from a mechanic who was never
+   * offered the job.
+   *
+   * @param sos the ticket being bid on
+   * @param mechanicId the bidding mechanic
+   */
+  boolean isEligibleMechanic(com.autofik.sos.domain.entity.SosRequest sos, UUID mechanicId);
 }

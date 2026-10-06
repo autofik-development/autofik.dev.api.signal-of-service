@@ -39,7 +39,7 @@ class StompFlowIntegrationTest extends FlowTestSupport {
   @Test
   void ping_travelsThroughRedisPubSub_toTheCustomerSubscribedOnThatSos() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     // Only the assigned mechanic's pings are broadcast on this SOS.
     assignMechanic(d, m, sosId);
@@ -88,7 +88,7 @@ class StompFlowIntegrationTest extends FlowTestSupport {
   @Test
   void unsubscribe_stopsDelivery() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     // Only the assigned mechanic's pings are broadcast on this SOS.
     assignMechanic(d, m, sosId);
@@ -115,7 +115,7 @@ class StompFlowIntegrationTest extends FlowTestSupport {
   @Test
   void invalidPing_isAnswered_onTheCallersErrorQueue_andNeverBroadcast() throws Exception {
     Driver d = newDriver();
-    Mechanic m = newMechanic(11.55, 104.92);
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
     UUID sosId = createSosOk(d);
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession mechanic =

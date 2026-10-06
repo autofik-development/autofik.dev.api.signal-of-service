@@ -102,6 +102,31 @@ class MechanicLocationWriterTest {
     verify(mechanicRepository).save(mechanic);
   }
 
+  // Dispatch skips a mechanic whose last ping is too old, so a persisted ping must stamp the time
+  // and a throttled one (which writes nothing) must not.
+  @Test
+  void notThrottled_stampsWhenTheLocationWasLastWritten() {
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
+    java.time.LocalDateTime before = java.time.LocalDateTime.now().minusSeconds(1);
+
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+
+    assertThat(mechanic.getLocationUpdatedAt())
+        .isBetween(before, java.time.LocalDateTime.now().plusSeconds(1));
+  }
+
+  @Test
+  void throttled_doesNotTouchTheLocationTimestamp() {
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
+    when(mechanicRepository.existsById(mechanicId)).thenReturn(true);
+
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+
+    assertThat(mechanic.getLocationUpdatedAt()).isNull();
+  }
+
   @Test
   void redisUnavailable_writesToPostgresOnEveryPing() {
     when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("Redis down"));

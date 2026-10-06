@@ -243,7 +243,7 @@ class StompFrameFuzzIntegrationTest extends FlowTestSupport {
   void randomFrames_neverHurtTheServer_neverLeakAnotherSosLocation_andHonestClientsStillWork()
       throws Exception {
     Driver victim = newDriver();
-    Mechanic victimMechanic = newMechanic(11.55, 104.92);
+    Mechanic victimMechanic = skilledMechanic(11.55, 104.92, "TOW");
     UUID victimSos = createSosOk(victim);
     assignMechanic(victim, victimMechanic, victimSos); // only the assigned mechanic is broadcast
     StompSession victimSession =
