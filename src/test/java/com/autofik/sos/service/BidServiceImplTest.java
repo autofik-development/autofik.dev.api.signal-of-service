@@ -107,7 +107,12 @@ class BidServiceImplTest {
         .when(bidSosRepository.currentStatus(bidId))
         .thenAnswer(inv -> Optional.ofNullable(bid).map(BidSos::getStatus));
     user = User.builder().userId(userId).name("Alice").build();
-    vehicle = Vehicle.builder().id(UUID.randomUUID()).carBrand("Honda").carModel("Civic").build();
+    vehicle =
+        Vehicle.builder()
+            .id(UUID.randomUUID().toString())
+            .carBrand("Honda")
+            .carModel("Civic")
+            .build();
     mechanic =
         Mechanic.builder()
             .mechanicId(mechanicId)

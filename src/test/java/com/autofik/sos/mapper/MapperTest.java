@@ -108,7 +108,8 @@ class MapperTest {
   @Test
   void sos_mapsLocationNestedUserAndVehicle_andLeavesMechanicForTheService() {
     User u = user();
-    Vehicle v = Vehicle.builder().id(UUID.randomUUID()).carBrand("Toyota").user(u).build();
+    Vehicle v =
+        Vehicle.builder().id(UUID.randomUUID().toString()).carBrand("Toyota").user(u).build();
     LocalDateTime start = LocalDateTime.of(2026, 10, 3, 10, 0);
     SosRequest sos =
         SosRequest.builder()

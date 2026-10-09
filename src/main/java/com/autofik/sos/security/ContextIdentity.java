@@ -6,9 +6,9 @@ import java.util.Optional;
  * The block of a gateway context header that names the caller.
  *
  * <p>{@code user-context} and {@code mechanic-context} carry the same verification report under
- * different keys, and the checks that decide whether this service will act on one — session alive,
- * otp and profile cleared, role recognised — are the same checks either way. They live here once so
- * the two headers cannot drift into trusting different things.
+ * different keys, and the check that decides whether this service will act on one — role recognised
+ * (session and otp/profile verification are the internal gateway's job) — is the same either way.
+ * They live here once so the two headers cannot drift into trusting different things.
  *
  * @see MicroserviceTokenSdk for where these are applied.
  */
@@ -20,14 +20,6 @@ public sealed interface ContextIdentity permits UserContext.User, MechanicContex
 
   String deviceId();
 
-  Boolean otpVerify();
-
-  Boolean profileVerify();
-
-  String tokenStatus();
-
-  Boolean isLogout();
-
   /**
    * The role the block itself implies, regardless of the role string inside it.
    *
@@ -37,16 +29,4 @@ public sealed interface ContextIdentity permits UserContext.User, MechanicContex
    * than picking a winner from.
    */
   Optional<CallerRole> impliedRole();
-
-  default boolean otpVerified() {
-    return Boolean.TRUE.equals(otpVerify());
-  }
-
-  default boolean profileVerified() {
-    return Boolean.TRUE.equals(profileVerify());
-  }
-
-  default boolean loggedOut() {
-    return Boolean.TRUE.equals(isLogout());
-  }
 }

@@ -52,7 +52,7 @@ class RequestValidationTest {
   }
 
   private static CreateSosRequest sos(Double lat, Double lng, Integer radius, String group) {
-    return new CreateSosRequest(ID, group, "d", lat, lng, ID, radius);
+    return new CreateSosRequest(ID, group, "d", lat, lng, ID.toString(), radius);
   }
 
   @Test

@@ -45,7 +45,7 @@ class SosEventProducerTest {
   void sosCreated_goesToSosCreated_keyedBySosId() {
     SosCreatedEvent e =
         new SosCreatedEvent(
-            sosId, other, other, "TOW", "d", 11.5, 104.9, null, LocalDateTime.now());
+            sosId, other, other.toString(), "TOW", "d", 11.5, 104.9, null, LocalDateTime.now());
     producer.publishSosCreated(e);
     verify(kafkaTemplate).send(KafkaConfig.TOPIC_SOS_CREATED, sosId.toString(), e);
   }

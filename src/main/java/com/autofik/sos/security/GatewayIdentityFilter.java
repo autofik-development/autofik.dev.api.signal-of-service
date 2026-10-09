@@ -1,6 +1,7 @@
 package com.autofik.sos.security;
 
 import com.autofik.sos.service.impl.MechanicProfileSync;
+import com.autofik.sos.service.impl.UserProfileSync;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -54,6 +55,9 @@ public class GatewayIdentityFilter extends OncePerRequestFilter {
   @Autowired(required = false)
   MechanicProfileSync profileSync;
 
+  @Autowired(required = false)
+  UserProfileSync userProfileSync;
+
   @Override
   protected void doFilterInternal(
       HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -69,7 +73,7 @@ public class GatewayIdentityFilter extends OncePerRequestFilter {
 
     if (caller.isPresent()) {
       authenticate(caller.get(), request);
-      syncMechanicProfile(caller.get(), request);
+      syncProfile(caller.get(), request);
     } else {
       logUnusableContext(request);
     }
@@ -77,18 +81,20 @@ public class GatewayIdentityFilter extends OncePerRequestFilter {
   }
 
   /**
-   * Only for a context already accepted above (verified, not logged out), so an unverified mechanic
-   * never gets a row. Never throws: a profile glitch must not stop the request.
+   * Only for a context already accepted above (not logged out, known role). Never throws: a profile
+   * glitch must not stop the request.
    */
-  private void syncMechanicProfile(CurrentUser caller, HttpServletRequest request) {
-    if (profileSync == null || caller.role() != CallerRole.MECHANIC) {
-      return;
-    }
+  private void syncProfile(CurrentUser caller, HttpServletRequest request) {
     try {
-      profileSync.sync(
-          caller.id(), AppHeaderContext.from(request::getHeader, objectMapper).mechanic());
+      if (caller.role() == CallerRole.MECHANIC && profileSync != null) {
+        profileSync.sync(
+            caller.id(), AppHeaderContext.from(request::getHeader, objectMapper).mechanic());
+      } else if (caller.role() == CallerRole.USER && userProfileSync != null) {
+        userProfileSync.sync(
+            caller.id(), AppHeaderContext.from(request::getHeader, objectMapper).user());
+      }
     } catch (RuntimeException e) {
-      log.warn("Mechanic profile sync failed for {}: {}", caller.id(), e.toString());
+      log.warn("Profile sync failed for {}: {}", caller.id(), e.toString());
     }
   }
 

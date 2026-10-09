@@ -1,8 +1,6 @@
 package com.autofik.sos.security;
 
-import java.util.Locale;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.function.UnaryOperator;
 import lombok.RequiredArgsConstructor;
@@ -27,9 +25,6 @@ import tools.jackson.databind.ObjectMapper;
 @RequiredArgsConstructor
 public class MicroserviceTokenSdk {
 
-  /** Statuses the gateway reports for a session that is no longer usable. */
-  private static final Set<String> INVALID_TOKEN_STATUSES = Set.of("unauth", "expired", "failed");
-
   private final ObjectMapper objectMapper;
 
   /**
@@ -37,8 +32,8 @@ public class MicroserviceTokenSdk {
    * health check, or a caller the chain will answer 401 for.
    *
    * @param headers case-insensitive header lookup for the request being handled
-   * @throws UserContextRejectedException when a context arrived but names a session or a role this
-   *     service will not act on
+   * @throws UserContextRejectedException when a context arrived but names a role this service will
+   *     not act on
    */
   public Optional<CurrentUser> resolveCurrentUser(UnaryOperator<String> headers) {
     AppHeaderContext context = AppHeaderContext.from(headers, objectMapper);
@@ -57,13 +52,9 @@ public class MicroserviceTokenSdk {
       return Optional.empty();
     }
 
-    if (identity.loggedOut() || isInvalidTokenStatus(identity.tokenStatus())) {
-      throw UserContextRejectedException.unauthorized("Access token is no longer valid");
-    }
-
-    if (!identity.otpVerified() || !identity.profileVerified()) {
-      throw UserContextRejectedException.forbidden("User profile is not fully verified");
-    }
+    // Session state (logged out, expired token) and otpVerify / profileVerify are not checked
+    // here: the internal gateway verifies the token and refuses such a caller before forwarding, so
+    // a second check would only repeat it.
 
     return Optional.of(
         new CurrentUser(id, resolveRole(identity), identity.deviceId(), context.serviceCode()));
@@ -91,11 +82,6 @@ public class MicroserviceTokenSdk {
           "Role '" + identity.role() + "' does not belong in a " + implied.get() + " context");
     }
     return declared.get();
-  }
-
-  private static boolean isInvalidTokenStatus(String tokenStatus) {
-    return tokenStatus != null
-        && INVALID_TOKEN_STATUSES.contains(tokenStatus.trim().toLowerCase(Locale.ROOT));
   }
 
   private static UUID parseUuid(String raw) {

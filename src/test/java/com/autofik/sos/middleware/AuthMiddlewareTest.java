@@ -116,20 +116,6 @@ class AuthMiddlewareTest {
         .andExpect(jsonPath("$.status").value(401));
   }
 
-  // The filter rejects first, so the middleware never runs and the 403 keeps its own message.
-  @Test
-  void unverifiedProfile_keepsTheFiltersAnswer() throws Exception {
-    String unverified =
-        "{\"user\":{\"uuid\":\""
-            + UUID.randomUUID()
-            + "\",\"role\":\"USER\",\"otpVerify\":true,\"profileVerify\":false}}";
-
-    mockMvc
-        .perform(get("/api/v1/probe").header("user-context", unverified))
-        .andExpect(status().isForbidden())
-        .andExpect(jsonPath("$.message").value("User profile is not fully verified"));
-  }
-
   // A browser cannot put identity headers on a preflight; 401ing it would break CORS outright.
   // Driven straight at preHandle: standalone MockMvc has no adapter for Spring's preflight
   // handler, and the guard under test is here rather than in the dispatch.

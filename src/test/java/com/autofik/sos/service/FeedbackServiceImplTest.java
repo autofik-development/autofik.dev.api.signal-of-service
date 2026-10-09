@@ -79,7 +79,11 @@ class FeedbackServiceImplTest {
             .email("bob@fix.com")
             .build();
     Vehicle vehicle =
-        Vehicle.builder().id(UUID.randomUUID()).carBrand("Toyota").carModel("Camry").build();
+        Vehicle.builder()
+            .id(UUID.randomUUID().toString())
+            .carBrand("Toyota")
+            .carModel("Camry")
+            .build();
     completedSos =
         SosRequest.builder()
             .sosId(sosId)
@@ -170,7 +174,7 @@ class FeedbackServiceImplTest {
             .problemType("X")
             .status(SosStatus.PENDING)
             .user(user)
-            .vehicle(Vehicle.builder().id(UUID.randomUUID()).build())
+            .vehicle(Vehicle.builder().id(UUID.randomUUID().toString()).build())
             .build();
     CreateFeedbackRequest request =
         new CreateFeedbackRequest(userId, mechanicId, sosId, BigDecimal.valueOf(4.0), null);

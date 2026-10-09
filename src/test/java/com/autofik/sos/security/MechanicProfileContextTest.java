@@ -42,7 +42,6 @@ class MechanicProfileContextTest {
         .containsExactly("engine_repair", "brake_service", "oil_change");
     assertThat(m.skillService().serviceRadiusKm()).isEqualTo(50);
     assertThat(m.avgRate()).isEqualTo("4.80");
-    assertThat(m.otpVerified()).isTrue();
   }
 
   @Test
@@ -57,6 +56,18 @@ class MechanicProfileContextTest {
             "{\"status\":\"success\",\"code\":\"PROFILE_GET_SUCCESS\",\"data\":{\"mechanic\":"
                 + MECHANIC
                 + "}}"));
+  }
+
+  // The gateway now sends avgRate as a JSON number; the whole header must still parse.
+  @Test
+  void numericAvgRate_isRead() {
+    MechanicContext.Mechanic m =
+        parse("{\"mechanic\":" + MECHANIC.replace("\"avgRate\":\"4.80\"", "\"avgRate\":4.8") + "}");
+
+    assertThat(m).isNotNull();
+    assertThat(m.uuid()).isEqualTo(ID.toString());
+    assertThat(m.profile().fullName()).isEqualTo("John Doe");
+    assertThat(new java.math.BigDecimal(m.avgRate())).isEqualByComparingTo("4.8");
   }
 
   @Test

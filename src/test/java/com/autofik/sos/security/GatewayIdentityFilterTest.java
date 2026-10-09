@@ -166,26 +166,12 @@ class GatewayIdentityFilterTest {
   }
 
   @Test
-  void loggedOutSession_answers401AndStopsTheChain() throws Exception {
-    MockHttpServletResponse response = filterWithContext(context("\"isLogout\":true"));
-
-    assertThat(response.getStatus()).isEqualTo(401);
-    assertThat(response.getContentAsString()).contains("no longer valid");
-    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
-    verify(chain, never())
-        .doFilter(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
-  }
-
-  @Test
-  void unverifiedProfile_answers403AndStopsTheChain() throws Exception {
+  void unknownRole_answers403AndStopsTheChain() throws Exception {
     MockHttpServletResponse response =
-        filterWithContext(
-            "{\"user\":{\"uuid\":\""
-                + UUID.randomUUID()
-                + "\",\"role\":\"USER\",\"otpVerify\":true,\"profileVerify\":false}}");
+        filterWithContext("{\"user\":{\"uuid\":\"" + UUID.randomUUID() + "\",\"role\":\"ADMIN\"}}");
 
     assertThat(response.getStatus()).isEqualTo(403);
-    assertThat(response.getContentAsString()).contains("not fully verified");
+    assertThat(response.getContentAsString()).contains("not permitted");
     verify(chain, never())
         .doFilter(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
   }

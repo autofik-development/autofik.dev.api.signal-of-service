@@ -18,14 +18,14 @@ The service does **not** validate tokens. The internal gateway verifies the call
 Rules (`MicroserviceTokenSdk`, `CallerRole`):
 - **`X-User-Id` / `X-Mechanic-Id` are ignored.** Sending only those gives 401.
 - Unknown JSON fields are ignored, so the gateway can add fields.
+- `user-context` may also carry the driver's SSO profile: `phoneNumber`, `profile.username`, and `vehicles[]` (`id`, `carBrand`, `carModel`, `carModelYear`, `fuelType`, `licensePlate`). Bounds: name 100, phone 20, vehicle id 64, other vehicle fields 50, at most 20 vehicles; a value over its bound is skipped, never a reason to refuse the request.
 - Roles: `USER`, `CUSTOM`, `CUSTOMER` are a driver; `MECHANIC`, `GARAGE` are a mechanic. Any other role gives 403. A `mechanic-context` that names a driver role gives 403.
-- `otpVerify` and `profileVerify` must both be exactly `true`, otherwise 403 "User profile is not fully verified". A missing key counts as false.
-- `isLogout: true`, or `tokenStatus` of `unauth`, `expired` or `failed`, gives 401. (Other `tokenStatus` values pass; the gateway should only send the values above for invalid sessions.)
+- `otpVerify`, `profileVerify`, `isLogout` and `tokenStatus` are **not checked by SOS**. The internal gateway verifies the token and refuses an unverified, logged-out or expired caller before forwarding, so SOS does not repeat it. Sending them is fine; they are ignored.
 - Both headers present with different uuids gives 401 "Conflicting identity".
 - Malformed JSON, or a non-UUID `uuid`, is treated as no identity: 401.
 - **Request bodies still carry `userId` / `mechanicId` and they must equal the header uuid** (otherwise 403). They are required (`@NotNull`) until the contract is relaxed.
 
-**Security note for the gateway team:** the headers are unsigned. The gateway must strip any client-supplied `user-context` / `mechanic-context` and the SOS port must be reachable only from the gateway network.
+**Security note for the gateway team:** the headers are unsigned. The gateway must strip any client-supplied `user-context` / `mechanic-context` and the SOS port must be reachable only from the gateway network. As a second layer, set `SOS_GATEWAY_SECRET`: SOS then answers 401 "Missing or invalid gateway credential" to any request without the same value in the `X-Edge-Auth` header (`SOS_GATEWAY_HEADER` renames it). `/`, `/healthy` and `/actuator/**` stay open; the WebSocket upgrade needs the header too. Blank turns the check off.
 
 ## 2. Conventions
 
@@ -91,7 +91,7 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 | `PATCH /sos/{sosId}/cancel` | owner | none | `SosRequestResponse` | 404, 409 |
 | `POST /sos/{sosId}/rebroadcast` | owner | none | `SosRequestResponse` | 404, 409, 429 |
 
-`CreateSosRequest`: `userId`, `serviceGroupId` (Medusa id; the service derives `problemType` from it), `description` (optional), `latitude`, `longitude`, `vehicleId`, `broadcastRadiusKm` (optional, 5–20, default 15). **The customer's user and vehicle must already exist locally** (see Known gaps).
+`CreateSosRequest`: `userId`, `serviceGroupId` (Medusa id; the service derives `problemType` from it), `description` (optional), `latitude`, `longitude`, `vehicleId` (SSO's vehicle id, **a string up to 64 characters, not a UUID**, for example `"648123456789135"`), `broadcastRadiusKm` (optional, 5–20, default 15). **The customer's user and vehicle rows are created from the driver profile in `user-context`** (see §1); a driver the gateway has not yet sent a profile for gets 404.
 
 ### Bids
 | Method and path | Who | Request | Response |
@@ -182,7 +182,7 @@ Events, and the WebSocket frames sent from the same code, are published after th
 
 What the other teams must know before integrating. Tracked in the vault audit and the repository issues.
 
-1. **No user or vehicle provisioning.** `POST /sos` returns 404 "User not found" unless the user and vehicle already exist in SOS's tables. The internal team decides how that data arrives.
+1. **Driver and vehicle rows come from the `user-context` profile.** The first request with `phoneNumber`, `profile.username` and `vehicles[]` creates the driver and the vehicles; later requests keep name, phone and each vehicle's brand, model, year, fuel type and plate in step with SSO. SOS never deletes a vehicle, never changes `status` or `referralCode`, and skips a vehicle that already belongs to another driver. **If the phone in the header belongs to another SOS user, that user's phone is replaced by `released:<their id>` and the caller takes it**, so this is only safe while the SOS port is reachable only from the internal gateway (SIT-4). A header with no profile still gets 404 "User not found" for a driver SOS has never seen.
 2. **There is no mechanic-side cancel.** A mechanic who cannot attend cannot release the job; the customer must cancel. After a customer cancel the assigned mechanic and pending bidders are notified (`SOS_CANCELLED`), but pending bids stay `PENDING` in the database until withdrawn.
 3. **The completion push does not carry the `historyId`.** After a push or a missed `COMPLETION_REQUESTED` frame the app reads `pendingCompletionHistoryId` and `pendingCompletionApproveBy` from `GET /sos/{sosId}`. An unanswered request is approved automatically after the window (default 2 minutes, `SOS_COMPLETION_APPROVAL_WINDOW_SECONDS`); the product owner should confirm that is the wanted behaviour and the length.
 4. **Expiry and a single bid reject send no WebSocket frame** to bidders.
@@ -204,5 +204,6 @@ Required environment variables (no defaults): `SPRING_PROFILES_ACTIVE`, `DB_HOST
 - **Never use the `dev` profile outside a laptop.** It enables `websocket.dev-insecure-handshake`, which lets any client connect as any user. The service refuses to start with that flag under any other profile.
 - The schema is created by Hibernate; there are no migrations yet. `prod` uses `ddl-auto: validate`, so the schema and the PostGIS extension must exist before the first start.
 - `SOS_ARRIVAL_APPROVAL_WINDOW_SECONDS` (default 60) is how long a customer has to answer an arrival request before ARRIVED is confirmed for them; `SOS_CUSTOMER_WAIT_MINUTES` (default 10, 0 turns the action off) is how long after ARRIVED a mechanic must wait before `customer-no-show`.
+- `SOS_GATEWAY_SECRET` (default blank = off) and `SOS_GATEWAY_HEADER` (default `X-Edge-Auth`): the shared secret the internal gateway sends on every request. Under the `prod` profile a blank secret logs an error at startup.
 - `SOS_COMPLETION_APPROVAL_WINDOW_SECONDS` (default 120) is how long a customer has to answer a completion request; `SOS_COMPLETION_SWEEP_INTERVAL_MS` (default 15000) is how often overdue requests are looked for.
 - Medusa is called on every SOS create (timeouts 2 s connect, 3 s read; `medusa.connect-timeout-ms`, `medusa.read-timeout-ms`).

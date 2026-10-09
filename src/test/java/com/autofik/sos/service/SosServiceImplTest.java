@@ -87,7 +87,7 @@ class SosServiceImplTest {
 
   private final UUID userId = UUID.randomUUID();
   private final UUID sosId = UUID.randomUUID();
-  private final UUID vehicleId = UUID.randomUUID();
+  private final String vehicleId = UUID.randomUUID().toString();
   private final UUID mechanicId = UUID.randomUUID();
   private final UUID historyId = UUID.randomUUID();
   private final String serviceGroupId = "sg_01ABC123";

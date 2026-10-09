@@ -60,25 +60,25 @@ class SsoProjectionTest {
   @Test
   void vehicle_ownedByCaller_isReturned() {
     User owner = User.builder().userId(UUID.randomUUID()).build();
-    Vehicle v = Vehicle.builder().id(id).user(owner).build();
-    when(vehicles.findById(id)).thenReturn(Optional.of(v));
-    assertThat(projection.vehicle(id, owner)).isSameAs(v);
+    Vehicle v = Vehicle.builder().id(id.toString()).user(owner).build();
+    when(vehicles.findById(id.toString())).thenReturn(Optional.of(v));
+    assertThat(projection.vehicle(id.toString(), owner)).isSameAs(v);
   }
 
   @Test
   void vehicle_ownedBySomeoneElse_isDenied() {
     User owner = User.builder().userId(UUID.randomUUID()).build();
     User caller = User.builder().userId(UUID.randomUUID()).build();
-    when(vehicles.findById(id))
-        .thenReturn(Optional.of(Vehicle.builder().id(id).user(owner).build()));
-    assertThatThrownBy(() -> projection.vehicle(id, caller))
+    when(vehicles.findById(id.toString()))
+        .thenReturn(Optional.of(Vehicle.builder().id(id.toString()).user(owner).build()));
+    assertThatThrownBy(() -> projection.vehicle(id.toString(), caller))
         .isInstanceOf(AccessDeniedException.class);
   }
 
   @Test
   void vehicle_missing_isNotFound() {
-    when(vehicles.findById(id)).thenReturn(Optional.empty());
-    assertThatThrownBy(() -> projection.vehicle(id, User.builder().userId(id).build()))
+    when(vehicles.findById(id.toString())).thenReturn(Optional.empty());
+    assertThatThrownBy(() -> projection.vehicle(id.toString(), User.builder().userId(id).build()))
         .isInstanceOf(EntityNotFoundException.class);
   }
 }

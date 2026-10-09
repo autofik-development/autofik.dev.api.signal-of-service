@@ -116,12 +116,13 @@ class WebSocketHandshakeTest {
     assertThat(handshake("ws://h/ws", Map.of(), new HashMap<>())).isFalse();
   }
 
+  // The internal gateway refuses unverified callers; the handshake does not check the flags again.
   @Test
-  void unverifiedProfile_isRefused() throws Exception {
+  void otpFlagFalse_isAccepted() throws Exception {
     assertThat(
             handshake(
                 "ws://h/ws", Map.of("user-context", ctx("user", "USER", false)), new HashMap<>()))
-        .isFalse();
+        .isTrue();
   }
 
   @Test

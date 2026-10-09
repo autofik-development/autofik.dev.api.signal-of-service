@@ -106,47 +106,29 @@ class MicroserviceTokenSdkTest {
         .isEqualTo(HttpStatus.FORBIDDEN);
   }
 
-  // 401, not 403: the app has to know to send the user back through login.
+  // The internal gateway verifies the token and refuses a logged-out or expired session before
+  // forwarding; SOS does not repeat it.
   @Test
-  void loggedOutSession_isUnauthorized() {
-    assertThatThrownBy(() -> resolve(Map.of("isLogout", true)))
-        .isInstanceOf(UserContextRejectedException.class)
-        .extracting(e -> ((UserContextRejectedException) e).status())
-        .isEqualTo(HttpStatus.UNAUTHORIZED);
+  void sessionFields_areNotCheckedHere() {
+    assertThat(resolve(Map.of("isLogout", true))).isPresent();
+    assertThat(resolve(Map.of("tokenStatus", "expired"))).isPresent();
   }
 
-  @ParameterizedTest
-  @ValueSource(strings = {"unauth", "expired", "failed", "EXPIRED", " Failed "})
-  void deadTokenStatus_isUnauthorized(String tokenStatus) {
-    assertThatThrownBy(() -> resolve(Map.of("tokenStatus", tokenStatus)))
-        .isInstanceOf(UserContextRejectedException.class)
-        .extracting(e -> ((UserContextRejectedException) e).status())
-        .isEqualTo(HttpStatus.UNAUTHORIZED);
-  }
-
-  // 403, not 401: logging in again will not fix it — the verification has to be finished.
+  // The internal gateway refuses unverified callers before forwarding; SOS does not repeat it.
   @ParameterizedTest
   @CsvSource({"otpVerify,false", "profileVerify,false"})
-  void unverifiedProfile_isForbidden(String field, boolean value) {
-    assertThatThrownBy(() -> resolve(Map.of(field, value)))
-        .isInstanceOf(UserContextRejectedException.class)
-        .extracting(e -> ((UserContextRejectedException) e).status())
-        .isEqualTo(HttpStatus.FORBIDDEN);
+  void verificationFlags_areNotCheckedHere(String field, boolean value) {
+    assertThat(resolve(Map.of(field, value))).isPresent();
   }
 
-  // A flag the gateway omitted is not a flag that passed.
   @Test
-  void missingVerificationFlags_areForbidden() {
+  void missingVerificationFlags_resolve() {
     String context =
         "{\"user\":{\"uuid\":\"" + ID + "\",\"role\":\"USER\",\"tokenStatus\":\"active\"}}";
 
-    assertThatThrownBy(
-            () ->
-                sdk.resolveCurrentUser(
-                    headers(Map.of(AppHeaderContext.USER_CONTEXT_HEADER, context))))
-        .isInstanceOf(UserContextRejectedException.class)
-        .extracting(e -> ((UserContextRejectedException) e).status())
-        .isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(
+            sdk.resolveCurrentUser(headers(Map.of(AppHeaderContext.USER_CONTEXT_HEADER, context))))
+        .isPresent();
   }
 
   @Test

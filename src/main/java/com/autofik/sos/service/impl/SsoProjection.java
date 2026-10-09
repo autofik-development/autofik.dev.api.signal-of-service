@@ -45,7 +45,7 @@ public class SsoProjection {
   }
 
   @Transactional(readOnly = true)
-  public Vehicle vehicle(UUID vehicleId, User owner) {
+  public Vehicle vehicle(String vehicleId, User owner) {
     Vehicle vehicle =
         vehicleRepository
             .findById(vehicleId)
