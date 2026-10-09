@@ -249,95 +249,122 @@ public class SosServiceImpl implements SosService {
   @Value("${sos.auto-expand.max-km:35}")
   private int autoExpandMaxKm;
 
-  // Not @Transactional, same as the per-ticket expiry timer below: doExpire may auto-expand, which
-  // calls Google (offer estimates) and pushes over the broker, and none of that should hold a
-  // Postgres connection. Each repository call is its own short transaction.
+  // At startup: expire what was missed while the service was down, then re-arm a timer for every
+  // window still open. Not @Transactional: each expiry is its own short transaction, and the
+  // auto-expand fan-out after it calls Google and the broker, which must not hold a connection.
   @EventListener(ApplicationReadyEvent.class)
   public void expireOverduePendingRequests() {
-    LocalDateTime now = LocalDateTime.now();
-
-    List<SosRequest> overdue =
-        sosRequestRepository.findByStatusAndBiddingExpiresAtBefore(SosStatus.PENDING, now);
-    if (!overdue.isEmpty()) {
-      log.warn("Expiring {} PENDING SOS request(s) missed while offline", overdue.size());
-      overdue.forEach(this::doExpire);
-      sosRequestRepository.saveAll(overdue);
-    }
+    expireOverdue();
 
     List<SosRequest> active =
-        sosRequestRepository.findByStatusAndBiddingExpiresAtAfter(SosStatus.PENDING, now);
+        sosRequestRepository.findByStatusAndBiddingExpiresAtAfter(
+            SosStatus.PENDING, LocalDateTime.now());
     if (!active.isEmpty()) {
       log.info("Re-arming bidding expiry timer for {} PENDING SOS request(s)", active.size());
       active.forEach(this::scheduleBiddingExpiry);
     }
   }
 
-  private void doExpire(SosRequest s) {
-    UUID sosId = s.getSosId();
-    // A true zero-response expiry auto-widens the search instead of leaving the customer stuck;
-    // a ticket that already has bids (even unaccepted ones) is a decision for the customer, not
-    // the system, so it still goes terminal below.
-    if (!bidSosRepository.existsBySosRequestSosId(sosId)
-        && s.getRebroadcastCount() < maxRebroadcast) {
-      autoExpandAndRebroadcast(s);
-      return;
-    }
+  /**
+   * Safety net for the in-memory timers: a timer that threw, or one lost some other way, would
+   * otherwise leave the ticket PENDING (an active ticket, so the driver cannot raise another) until
+   * the next restart. Does not re-arm timers; the startup hook does that once.
+   */
+  @Scheduled(fixedDelayString = "${sos.expiry.sweep-interval-ms:30000}")
+  public void sweepOverdueExpiry() {
+    expireOverdue();
+  }
 
-    s.setStatus(SosStatus.EXPIRED);
-    // The bids die with the request. A failure here must not keep the ticket from expiring, so it
-    // is logged and the bids are left as they were.
-    List<RejectedBid> closedBids = List.of();
-    try {
-      closedBids = transactionTemplate.execute(status -> rejectPendingBids(sosId));
-    } catch (RuntimeException e) {
-      log.error("SOS {} expired but its bids could not be closed", sosId, e);
-    }
-    UUID userId = s.getUser().getUserId();
-    sosEventProducer.publishStatusUpdated(
-        new SosStatusUpdatedEvent(
-            sosId, null, userId, SosStatus.PENDING, SosStatus.EXPIRED, LocalDateTime.now()));
-    boolean retriesLeft = s.getRebroadcastCount() < maxRebroadcast;
-    String body =
-        retriesLeft
-            ? "No mechanic was found. Tap to try again."
-            : "No mechanic available after " + maxRebroadcast + " attempts. Please call support.";
-    sosEventProducer.publishNotification(
-        new SosNotificationEvent(
-            "BIDDING_EXPIRED", userId, "USER", sosId, "Bidding window closed", body));
-    AfterCommit.run(
-        () ->
-            messagingTemplate.convertAndSendToUser(
-                userId.toString(),
-                "/queue/sos-updates",
-                Map.of(
-                    "type",
-                    "BIDDING_EXPIRED",
-                    "sosId",
-                    sosId,
-                    "retriesLeft",
-                    retriesLeft,
-                    "attemptsLeft",
-                    maxRebroadcast - s.getRebroadcastCount())));
-    try {
-      notifyBiddersOfExpiry(sosId, closedBids == null ? List.of() : closedBids);
-    } catch (RuntimeException e) {
-      log.error("SOS {} expired but its bidders could not be told", sosId, e);
+  private void expireOverdue() {
+    List<SosRequest> overdue =
+        sosRequestRepository.findByStatusAndBiddingExpiresAtBefore(
+            SosStatus.PENDING, LocalDateTime.now());
+    if (overdue.isEmpty()) return;
+    log.warn("Expiring {} overdue PENDING SOS request(s)", overdue.size());
+    for (SosRequest s : overdue) {
+      try {
+        expireIfDue(s.getSosId());
+      } catch (RuntimeException e) {
+        // One bad ticket must not stop the others; it is looked at again on the next sweep.
+        log.error("Expiry of SOS {} failed: {}", s.getSosId(), e.getMessage());
+      }
     }
   }
 
-  // Zero bids at expiry: widen the net and try again automatically, instead of the customer
-  // having to notice the ticket died and tap manual retry. Status stays PENDING throughout — this
-  // never surfaces as EXPIRED, it just quietly casts a wider net.
-  private void autoExpandAndRebroadcast(SosRequest s) {
-    UUID sosId = s.getSosId();
-    UUID userId = s.getUser().getUserId();
-    int currentRadiusKm =
-        s.getBroadcastRadiusKm() != null ? s.getBroadcastRadiusKm() : defaultBroadcastKm;
-    int newRadiusKm = Math.min(currentRadiusKm + autoExpandStepKm, autoExpandMaxKm);
+  private record Expired(
+      SosRequest sos, UUID userId, boolean autoExpanded, List<RejectedBid> closedBids) {}
 
-    s.setBroadcastRadiusKm(newRadiusKm);
-    s.setRebroadcastCount(s.getRebroadcastCount() + 1);
-    s.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(biddingWindowSeconds));
+  /**
+   * The one way a bidding window ends, used by the timer, the startup hook and the sweep. The
+   * change is made under the ticket lock and only if the ticket is still PENDING and past its
+   * window, so an accept or cancel that lands first wins, a stale timer does nothing, and running
+   * it twice is harmless. Everything external happens after the commit.
+   */
+  private void expireIfDue(UUID sosId) {
+    Expired expired = transactionTemplate.execute(status -> expireStep(sosId));
+    if (expired != null) finishExpiry(expired);
+  }
+
+  // Runs inside the transaction opened by expireIfDue(); keep external calls out of it.
+  private Expired expireStep(UUID sosId) {
+    // RACE GUARD: the ticket lock accept, cancel and release also take, so whoever comes second
+    // sees the status the first one committed.
+    if (!SosStatus.PENDING.name().equals(sosRequestRepository.lockStatus(sosId).orElse(null))) {
+      return null;
+    }
+    SosRequest s = findSosOrThrow(sosId);
+    LocalDateTime now = LocalDateTime.now();
+    if (s.getBiddingExpiresAt() == null || s.getBiddingExpiresAt().isAfter(now)) {
+      return null; // a window renewed since the timer was set (release, rebroadcast, auto-expand)
+    }
+    UUID userId = s.getUser().getUserId();
+
+    // A true zero-response expiry auto-widens the search instead of leaving the customer stuck;
+    // a ticket that already has bids (even unaccepted ones) is a decision for the customer, not
+    // the system, so it still goes terminal below. Status stays PENDING when widening.
+    if (!bidSosRepository.existsBySosRequestSosId(sosId)
+        && s.getRebroadcastCount() < maxRebroadcast) {
+      int currentRadiusKm =
+          s.getBroadcastRadiusKm() != null ? s.getBroadcastRadiusKm() : defaultBroadcastKm;
+      s.setBroadcastRadiusKm(Math.min(currentRadiusKm + autoExpandStepKm, autoExpandMaxKm));
+      s.setRebroadcastCount(s.getRebroadcastCount() + 1);
+      s.setBiddingExpiresAt(now.plusSeconds(biddingWindowSeconds));
+      sosRequestRepository.save(s);
+      return new Expired(s, userId, true, List.of());
+    }
+
+    s.setStatus(SosStatus.EXPIRED);
+    sosRequestRepository.save(s);
+    // The bids die with the request, in the same transaction: if closing them fails the ticket
+    // stays PENDING and the next sweep tries again, rather than an EXPIRED ticket with live bids.
+    return new Expired(s, userId, false, rejectPendingBids(sosId));
+  }
+
+  /** Everything that follows a committed expiry. None of it may undo or fail the expiry. */
+  private void finishExpiry(Expired expired) {
+    SosRequest s = expired.sos();
+    UUID sosId = s.getSosId();
+    UUID userId = expired.userId();
+    if (expired.autoExpanded()) {
+      // First, and before anything that can fail: the widened window must always close.
+      scheduleBiddingExpiry(s);
+    }
+    try {
+      if (expired.autoExpanded()) {
+        announceAutoExpand(s, userId);
+      } else {
+        announceExpiry(s, userId, expired.closedBids());
+      }
+    } catch (RuntimeException e) {
+      log.error("SOS {} expired but notifying/broadcasting failed", sosId, e);
+    }
+  }
+
+  // Zero bids at expiry: tell the customer the net was widened and offer the job again, instead of
+  // the customer having to notice the ticket died and tap manual retry.
+  private void announceAutoExpand(SosRequest s, UUID userId) {
+    UUID sosId = s.getSosId();
+    int newRadiusKm = s.getBroadcastRadiusKm();
     // Previous window's route estimate (if any) no longer applies to a freshly widened search.
     routeEtaService.clear(sosId);
 
@@ -369,8 +396,36 @@ public class SosServiceImpl implements SosService {
 
     fanOutToNearbyMechanics(
         sosId, s.getLocation().getY(), s.getLocation().getX(), s.getProblemType(), newRadiusKm);
+  }
 
-    scheduleBiddingExpiry(s);
+  private void announceExpiry(SosRequest s, UUID userId, List<RejectedBid> closedBids) {
+    UUID sosId = s.getSosId();
+    sosEventProducer.publishStatusUpdated(
+        new SosStatusUpdatedEvent(
+            sosId, null, userId, SosStatus.PENDING, SosStatus.EXPIRED, LocalDateTime.now()));
+    boolean retriesLeft = s.getRebroadcastCount() < maxRebroadcast;
+    String body =
+        retriesLeft
+            ? "No mechanic was found. Tap to try again."
+            : "No mechanic available after " + maxRebroadcast + " attempts. Please call support.";
+    sosEventProducer.publishNotification(
+        new SosNotificationEvent(
+            "BIDDING_EXPIRED", userId, "USER", sosId, "Bidding window closed", body));
+    AfterCommit.run(
+        () ->
+            messagingTemplate.convertAndSendToUser(
+                userId.toString(),
+                "/queue/sos-updates",
+                Map.of(
+                    "type",
+                    "BIDDING_EXPIRED",
+                    "sosId",
+                    sosId,
+                    "retriesLeft",
+                    retriesLeft,
+                    "attemptsLeft",
+                    maxRebroadcast - s.getRebroadcastCount())));
+    notifyBiddersOfExpiry(sosId, closedBids);
   }
 
   // Same "we're already casting a wider net" message the zero-bid expiry retry sends above —
@@ -2072,23 +2127,20 @@ public class SosServiceImpl implements SosService {
   }
 
   /**
-   * Registers an isolated thread execution wrapper targeting the exact timestamp the ticket closes.
-   * The internal lambda re-fetches the database record at trigger time to eliminate race conditions
-   * or dirty-write status tracking.
+   * Fires when the ticket's bidding window closes. {@link #expireIfDue} re-reads the ticket under
+   * its lock, so a timer that outlived its window (renewed since) does nothing; a timer that is
+   * lost or throws is covered by {@link #sweepOverdueExpiry}.
    */
   private void scheduleBiddingExpiry(SosRequest sos) {
     if (sos.getBiddingExpiresAt() == null) return;
     UUID sosId = sos.getSosId();
     taskScheduler.schedule(
         () -> {
-          sosRequestRepository
-              .findById(sosId)
-              .ifPresent(
-                  s -> {
-                    if (s.getStatus() != SosStatus.PENDING) return;
-                    doExpire(s);
-                    sosRequestRepository.save(s);
-                  });
+          try {
+            expireIfDue(sosId);
+          } catch (RuntimeException e) {
+            log.error("Expiry timer for SOS {} failed, the sweep will retry", sosId, e);
+          }
         },
         sos.getBiddingExpiresAt().atZone(ZoneId.systemDefault()).toInstant());
   }

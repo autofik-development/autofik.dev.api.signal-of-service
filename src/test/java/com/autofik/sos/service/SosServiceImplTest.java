@@ -228,6 +228,19 @@ class SosServiceImplTest {
         .build();
   }
 
+  // A PENDING ticket whose bidding window has run out, as the expiry step reads it under the lock.
+  private SosRequest overduePending() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    sos.setBiddingExpiresAt(LocalDateTime.now().minusSeconds(1));
+    when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of("PENDING"));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    return sos;
+  }
+
+  private void expireIfDue() {
+    ReflectionTestUtils.invokeMethod(sosService, "expireIfDue", sosId);
+  }
+
   // The mechanic advancing a job is the one whose bid was accepted; every updateStatus path
   // has to pass that gate before reaching the behaviour under test.
   private void stubAssignedMechanic(SosRequest sos) {
@@ -1828,14 +1841,14 @@ class SosServiceImplTest {
         .isInstanceOf(IllegalStateException.class);
   }
 
-  // ── doExpire: auto-expand on a true zero-bid expiry ─────────────────────────
+  // ── expiry: auto-expand on a true zero-bid expiry ───────────────────────────
 
   @Test
-  void doExpire_zeroBidsBelowMaxRebroadcast_autoExpandsInsteadOfExpiring() {
-    SosRequest sos = sosAt(SosStatus.PENDING);
+  void expiry_zeroBidsBelowMaxRebroadcast_autoExpandsInsteadOfExpiring() {
+    SosRequest sos = overduePending();
     when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
 
-    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+    expireIfDue();
 
     assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
     assertThat(sos.getBroadcastRadiusKm()).isEqualTo(20); // default-km(15) + step(5)
@@ -1947,23 +1960,23 @@ class SosServiceImplTest {
   }
 
   @Test
-  void doExpire_zeroBidsAtMaxRebroadcast_expiresInsteadOfExpandingFurther() {
-    SosRequest sos = sosAt(SosStatus.PENDING);
+  void expiry_zeroBidsAtMaxRebroadcast_expiresInsteadOfExpandingFurther() {
+    SosRequest sos = overduePending();
     sos.setRebroadcastCount(3); // sos.bidding.max-rebroadcast
     when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
 
-    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+    expireIfDue();
 
     assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
     verify(sosEventProducer).publishStatusUpdated(any());
   }
 
   @Test
-  void doExpire_hasBidsEvenIfNoneAccepted_expiresInsteadOfAutoExpanding() {
-    SosRequest sos = sosAt(SosStatus.PENDING);
+  void expiry_hasBidsEvenIfNoneAccepted_expiresInsteadOfAutoExpanding() {
+    SosRequest sos = overduePending();
     when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
 
-    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+    expireIfDue();
 
     assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
     assertThat(sos.getBroadcastRadiusKm()).isNull(); // untouched — never widened
@@ -2609,7 +2622,7 @@ class SosServiceImplTest {
 
   @Test
   void expiry_withBids_closesThem_andTellsEachBidderOnce_withOneBatchedPush() {
-    SosRequest sos = sosAt(SosStatus.PENDING);
+    SosRequest sos = overduePending();
     UUID bidderA = UUID.randomUUID();
     UUID bidderB = UUID.randomUUID();
     BidSos a = bidBy(bidderA, BidStatus.PENDING, sos);
@@ -2618,7 +2631,7 @@ class SosServiceImplTest {
     when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
         .thenReturn(List.of(a, b));
 
-    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+    expireIfDue();
 
     assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
     assertThat(a.getStatus()).isEqualTo(BidStatus.REJECTED);
@@ -2645,11 +2658,11 @@ class SosServiceImplTest {
 
   @Test
   void expiry_withNoBids_touchesNoBidAndSendsNoBidderFrame() {
-    SosRequest sos = sosAt(SosStatus.PENDING);
+    SosRequest sos = overduePending();
     sos.setRebroadcastCount(3);
     when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
 
-    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+    expireIfDue();
 
     assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
     verify(bidSosRepository, never()).saveAll(any());
@@ -2659,17 +2672,101 @@ class SosServiceImplTest {
   }
 
   @Test
-  void expiry_aFailureClosingTheBids_stillExpiresTheTicket() {
-    SosRequest sos = sosAt(SosStatus.PENDING);
+  void expiry_aFailureClosingTheBids_failsTheWholeStep_andAnnouncesNothing() {
+    overduePending();
     when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
     when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
         .thenThrow(new RuntimeException("db hiccup"));
 
-    ReflectionTestUtils.invokeMethod(sosService, "doExpire", sos);
+    // The transaction rolls back (the ticket stays PENDING in the DB); the sweep tries again.
+    assertThatThrownBy(this::expireIfDue).hasMessageContaining("db hiccup");
+
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+    verifyNoInteractions(messagingTemplate);
+  }
+
+  @Test
+  void expiry_takesTheTicketLockBeforeReadingTheTicket() {
+    overduePending();
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
+
+    expireIfDue();
+
+    var order = inOrder(sosRequestRepository);
+    order.verify(sosRequestRepository).lockStatus(sosId);
+    order.verify(sosRequestRepository).findById(sosId);
+  }
+
+  @Test
+  void expiry_ofATicketNoLongerPending_isANoOp() {
+    for (String status : List.of("ACCEPTED", "EXPIRED", "CANCELLED")) {
+      reset(sosRequestRepository, sosEventProducer, messagingTemplate);
+      when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of(status));
+
+      expireIfDue();
+
+      verify(sosRequestRepository, never()).findById(any());
+      verify(sosRequestRepository, never()).save(any());
+      verifyNoInteractions(sosEventProducer, messagingTemplate);
+    }
+  }
+
+  @Test
+  void expiry_whenTheWindowWasRenewedSinceTheTimerWasSet_isANoOp() {
+    SosRequest sos = overduePending();
+    sos.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(30));
+
+    expireIfDue();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+    verify(sosRequestRepository, never()).save(any());
+    verifyNoInteractions(sosEventProducer, messagingTemplate);
+  }
+
+  @Test
+  void expiry_runTwice_announcesOnce() {
+    SosRequest sos = overduePending();
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
+
+    expireIfDue();
+    // The second run (timer plus sweep) sees the committed EXPIRED under the lock.
+    when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of(sos.getStatus().name()));
+    expireIfDue();
+
+    verify(sosEventProducer, times(1)).publishStatusUpdated(any());
+    verify(messagingTemplate, times(1))
+        .convertAndSendToUser(eq(userId.toString()), eq("/queue/sos-updates"), any());
+  }
+
+  @Test
+  void sweep_expiresEveryOverdueTicket_andGoesOnAfterOneFails() {
+    UUID brokenId = UUID.randomUUID();
+    SosRequest broken = SosRequest.builder().sosId(brokenId).build();
+    SosRequest sos = overduePending();
+    when(sosRequestRepository.findByStatusAndBiddingExpiresAtBefore(eq(SosStatus.PENDING), any()))
+        .thenReturn(List.of(broken, sos));
+    when(sosRequestRepository.lockStatus(brokenId)).thenThrow(new RuntimeException("lock timeout"));
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(true);
+
+    sosService.sweepOverdueExpiry();
 
     assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
-    verify(messagingTemplate)
-        .convertAndSendToUser(eq(userId.toString()), eq("/queue/sos-updates"), any());
+    verify(sosEventProducer).publishStatusUpdated(any());
+  }
+
+  @Test
+  void expiryTimer_runsTheLockedStep_andSwallowsAFailure() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    sos.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(60));
+    ReflectionTestUtils.invokeMethod(sosService, "scheduleBiddingExpiry", sos);
+    ArgumentCaptor<Runnable> timer = ArgumentCaptor.forClass(Runnable.class);
+    verify(taskScheduler).schedule(timer.capture(), any(java.time.Instant.class));
+    when(sosRequestRepository.lockStatus(sosId)).thenThrow(new RuntimeException("db down"));
+
+    timer.getValue().run(); // must not throw into the scheduler thread
+
+    verify(sosRequestRepository).lockStatus(sosId);
+    verify(sosRequestRepository, never()).save(any());
   }
 
   @Test
