@@ -107,10 +107,9 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 ### Mechanics
 | Method and path | Who | Notes |
 |---|---|---|
-| `POST /mechanics` | mechanic | `CreateMechanicRequest`; the id is the header uuid. 201 `MechanicResponse`. **Do not call twice** (see Known gaps) |
 | `GET /mechanics/{id}` | any caller | |
 | `GET /mechanics/available?lat=&lng=&problemType=&radiusKm=` | customer | radius 5–20, default 15 |
-| `POST /mechanics/{id}/skills`, `GET`, `PUT /{id}/skills/{skillId}`, `DELETE` | the mechanic (GET: any) | `{skillTags: [..], vehicleSpecialization}`. **Skill tags are upper-cased and must equal the Medusa service-group `key`, or the mechanic is never dispatched** |
+| `GET /mechanics/{id}/skills` | any caller | the skill entries; empty means the mechanic is not dispatchable. There is no write endpoint: skill tags come from the SSO profile in `mechanic-context` (`skillService.skillTag`). **Skill tags are upper-cased and must equal the Medusa service-group `key`, or the mechanic is never dispatched** |
 | `PATCH /mechanics/{id}/location?lat=&lng=&sosId=` | the mechanic | 204. `sosId` is optional and is only used if this mechanic is assigned to that active SOS |
 | `GET /mechanics/{id}/location` | the mechanic, or the customer on an active job with them | `{latitude, longitude, asOf}`; 403 otherwise |
 | `PATCH /mechanics/{id}/availability?available=` | the mechanic | |
@@ -188,7 +187,7 @@ What the other teams must know before integrating. Tracked in the vault audit an
 4. **Expiry and a single bid reject send no WebSocket frame** to bidders.
 5. **A mechanic cannot re-bid after withdrawing**, and rebroadcast re-offers the SOS to mechanics who already bid.
 6. **A mechanic who misses the WebSocket frame never sees a new SOS:** there is no REST list of open nearby SOS.
-7. **`POST /mechanics` is not idempotent.** Calling it again for an existing mechanic overwrites the row (likely resetting availability and location) and duplicates skills. Call it once. It is also no longer needed to create a mechanic: when the `mechanic-context` header carries the SSO profile (`profile`, `phoneNumber`, `mechanicType`, `skillService`, `avgRate`), the first request creates the mechanic and later requests keep name, phone, email, role, service radius, skill tags and rating in step with SSO, and a call to this endpoint or the skill endpoints is overwritten by the next request. Availability, location and the rating count stay this service's own.
+7. **There is no endpoint to create a mechanic or write skills** (`POST /mechanics` and the skill `POST`, `PUT` and `DELETE` were removed). When the `mechanic-context` header carries the SSO profile (`profile`, `phoneNumber`, `mechanicType`, `skillService`, `avgRate`), the first request creates the mechanic and later requests keep name, phone, email, role, service radius, skill tags and rating in step with SSO. A header with no profile does not create a row, so the gateway must send the profile; if its profile call fails it sends identity only, and a brand-new mechanic then has no row (and gets no offers) until a request carries the profile. Availability, location and the rating count stay this service's own.
 8. **SOS does not store or check KYC.** A mechanic must be KYC-verified to bid; SSO or the gateway has to refuse unverified mechanics before the request reaches this service.
 9. **Mechanic profile fields are limited:** `fullName` and `email` 30 characters, `phoneNumber` 20, with no validation message; longer values fail with 409.
 10. **Plan, subscription and tag-verification endpoints do not exist,** and there is no service-to-service authentication.

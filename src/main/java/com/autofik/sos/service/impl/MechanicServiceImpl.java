@@ -1,11 +1,8 @@
 package com.autofik.sos.service.impl;
 
 import com.autofik.sos.domain.entity.Mechanic;
-import com.autofik.sos.domain.entity.MechanicSkill;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.external.EtaInfo;
-import com.autofik.sos.dto.request.CreateMechanicRequest;
-import com.autofik.sos.dto.request.CreateMechanicSkillRequest;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.MechanicSkillResponse;
@@ -32,9 +29,6 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.locationtech.jts.geom.Coordinate;
-import org.locationtech.jts.geom.GeometryFactory;
-import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.access.AccessDeniedException;
@@ -56,8 +50,6 @@ public class MechanicServiceImpl implements MechanicService {
   @Value("${sos.h3.center-to-center-km:2.114}")
   private double h3CenterToCenterKm;
 
-  private static final GeometryFactory GEOMETRY_FACTORY =
-      new GeometryFactory(new PrecisionModel(), 4326);
   // The service is Cambodia-only — see the coordinate bounds on the controller.
   private static final ZoneId CAMBODIA = ZoneId.of("Asia/Phnom_Penh");
   private static final H3Core H3;
@@ -88,59 +80,6 @@ public class MechanicServiceImpl implements MechanicService {
   private final ObjectMapper objectMapper;
 
   @Override
-  @Transactional
-  public MechanicResponse create(CreateMechanicRequest request, UUID mechanicId) {
-    Mechanic mechanic =
-        Mechanic.builder()
-            .mechanicId(mechanicId)
-            .fullName(request.fullName())
-            .phoneNumber(request.phoneNumber())
-            .email(request.email())
-            .mechanicRole(request.mechanicRole())
-            .address(request.address())
-            .serviceRadiusKm(request.serviceRadiusKm() != null ? request.serviceRadiusKm() : 10)
-            .baseLocation(
-                GEOMETRY_FACTORY.createPoint(
-                    new Coordinate(request.longitude(), request.latitude())))
-            .build();
-    Mechanic saved = mechanicRepository.save(mechanic);
-
-    if (request.skills() != null && !request.skills().isEmpty()) {
-      mechanicSkillRepository.saveAll(
-          request.skills().stream()
-              .map(
-                  skill ->
-                      MechanicSkill.builder()
-                          .mechanic(saved)
-                          .skillTags(normalizeTags(skill.skillTags()))
-                          .vehicleSpecialization(skill.vehicleSpecialization())
-                          .build())
-              .toList());
-    } else {
-      // Dispatch inner-joins mechanic_skill, so this account cannot receive any SOS until a
-      // skill entry is added. Logged because the mechanic looks healthy from every other angle.
-      log.warn(
-          "Mechanic {} created with no skills — it will not be dispatched until skills are added",
-          saved.getMechanicId());
-    }
-
-    return mechanicMapper.toResponse(saved);
-  }
-
-  @Override
-  @Transactional
-  public MechanicSkillResponse addSkill(UUID mechanicId, CreateMechanicSkillRequest request) {
-    Mechanic mechanic = ssoProjection.mechanic(mechanicId);
-    MechanicSkill skill =
-        MechanicSkill.builder()
-            .mechanic(mechanic)
-            .skillTags(normalizeTags(request.skillTags()))
-            .vehicleSpecialization(request.vehicleSpecialization())
-            .build();
-    return mechanicSkillMapper.toResponse(mechanicSkillRepository.save(skill));
-  }
-
-  @Override
   @Transactional(readOnly = true)
   public List<MechanicSkillResponse> getSkills(UUID mechanicId) {
     // Distinguishes "unknown mechanic" (404) from "known mechanic, no skills yet" (empty list).
@@ -149,32 +88,6 @@ public class MechanicServiceImpl implements MechanicService {
     }
     return mechanicSkillMapper.toResponseList(
         mechanicSkillRepository.findByMechanicMechanicId(mechanicId));
-  }
-
-  @Override
-  @Transactional
-  public MechanicSkillResponse updateSkill(
-      UUID mechanicId, UUID skillId, CreateMechanicSkillRequest request) {
-    MechanicSkill skill = findOwnedSkill(mechanicId, skillId);
-    skill.setSkillTags(normalizeTags(request.skillTags()));
-    skill.setVehicleSpecialization(request.vehicleSpecialization());
-    return mechanicSkillMapper.toResponse(mechanicSkillRepository.save(skill));
-  }
-
-  @Override
-  @Transactional
-  public void deleteSkill(UUID mechanicId, UUID skillId) {
-    mechanicSkillRepository.delete(findOwnedSkill(mechanicId, skillId));
-  }
-
-  // Scoping the lookup by mechanic means a guessed skill id cannot touch another mechanic's row.
-  private MechanicSkill findOwnedSkill(UUID mechanicId, UUID skillId) {
-    return mechanicSkillRepository
-        .findByIdAndMechanicMechanicId(skillId, mechanicId)
-        .orElseThrow(
-            () ->
-                new EntityNotFoundException(
-                    "Skill " + skillId + " not found for mechanic " + mechanicId));
   }
 
   /**
