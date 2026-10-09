@@ -9,10 +9,8 @@ import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.MechanicSkill;
 import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.external.EtaInfo;
-import com.autofik.sos.dto.request.CreateMechanicSkillRequest;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
-import com.autofik.sos.dto.response.MechanicSkillResponse;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.mapper.MechanicSkillMapper;
@@ -199,41 +197,6 @@ class MechanicServiceImplTest {
 
   // ── skills ────────────────────────────────────────────────────────────────
 
-  /**
-   * Tags are dispatch keys compared against the upper-cased Medusa service group key, so they are
-   * normalised on write — otherwise "flat_tire" silently never matches problem type "FLAT_TIRE".
-   */
-  @Test
-  void addSkill_normalisesTagsToUpperCaseTrimmedAndDeduped() {
-    when(ssoProjection.mechanic(mechanicId)).thenReturn(mechanic);
-    when(mechanicSkillRepository.save(any(MechanicSkill.class)))
-        .thenAnswer(inv -> inv.getArgument(0));
-
-    mechanicService.addSkill(
-        mechanicId,
-        new CreateMechanicSkillRequest(List.of("flat_tire", "  Battery  ", "FLAT_TIRE"), "Asia"));
-
-    ArgumentCaptor<MechanicSkill> captor = ArgumentCaptor.forClass(MechanicSkill.class);
-    verify(mechanicSkillRepository).save(captor.capture());
-    assertThat(captor.getValue().getSkillTags()).containsExactly("FLAT_TIRE", "BATTERY");
-    assertThat(captor.getValue().getVehicleSpecialization()).isEqualTo("Asia");
-    assertThat(captor.getValue().getMechanic()).isSameAs(mechanic);
-  }
-
-  @Test
-  void addSkill_mechanicNotFound_throws() {
-    // The projection is what fails now: an unknown mechanic is one SSO will not verify.
-    when(ssoProjection.mechanic(mechanicId))
-        .thenThrow(new EntityNotFoundException("Mechanic not found"));
-
-    assertThatThrownBy(
-            () ->
-                mechanicService.addSkill(
-                    mechanicId, new CreateMechanicSkillRequest(List.of("FLAT_TIRE"), null)))
-        .isInstanceOf(EntityNotFoundException.class);
-    verify(mechanicSkillRepository, never()).save(any());
-  }
-
   // A known mechanic with nothing declared is a valid state — empty list, not 404.
   @Test
   void getSkills_knownMechanicWithNoSkills_returnsEmptyList() {
@@ -250,59 +213,6 @@ class MechanicServiceImplTest {
 
     assertThatThrownBy(() -> mechanicService.getSkills(mechanicId))
         .isInstanceOf(EntityNotFoundException.class);
-  }
-
-  /**
-   * Ownership guard: a skill id that belongs to a different mechanic must not be editable, even
-   * though the id itself is valid.
-   */
-  @Test
-  void updateSkill_skillBelongsToAnotherMechanic_throws() {
-    UUID skillId = UUID.randomUUID();
-    when(mechanicSkillRepository.findByIdAndMechanicMechanicId(skillId, mechanicId))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(
-            () ->
-                mechanicService.updateSkill(
-                    mechanicId, skillId, new CreateMechanicSkillRequest(List.of("BATTERY"), null)))
-        .isInstanceOf(EntityNotFoundException.class);
-    verify(mechanicSkillRepository, never()).save(any());
-  }
-
-  @Test
-  void updateSkill_replacesTagsOnOwnedSkill() {
-    UUID skillId = UUID.randomUUID();
-    MechanicSkill existing =
-        MechanicSkill.builder()
-            .id(skillId)
-            .mechanic(mechanic)
-            .skillTags(new String[] {"FLAT_TIRE"})
-            .build();
-    when(mechanicSkillRepository.findByIdAndMechanicMechanicId(skillId, mechanicId))
-        .thenReturn(Optional.of(existing));
-    when(mechanicSkillRepository.save(existing)).thenReturn(existing);
-    when(mechanicSkillMapper.toResponse(existing))
-        .thenReturn(
-            new MechanicSkillResponse(skillId, mechanicId, List.of("BATTERY"), "Europe", null));
-
-    MechanicSkillResponse result =
-        mechanicService.updateSkill(
-            mechanicId, skillId, new CreateMechanicSkillRequest(List.of("battery"), "Europe"));
-
-    assertThat(existing.getSkillTags()).containsExactly("BATTERY");
-    assertThat(result.skillTags()).containsExactly("BATTERY");
-  }
-
-  @Test
-  void deleteSkill_skillBelongsToAnotherMechanic_throws() {
-    UUID skillId = UUID.randomUUID();
-    when(mechanicSkillRepository.findByIdAndMechanicMechanicId(skillId, mechanicId))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> mechanicService.deleteSkill(mechanicId, skillId))
-        .isInstanceOf(EntityNotFoundException.class);
-    verify(mechanicSkillRepository, never()).delete(any());
   }
 
   // ── updateLocation ────────────────────────────────────────────────────────

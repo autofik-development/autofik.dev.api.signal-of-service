@@ -1,7 +1,5 @@
 package com.autofik.sos.controller;
 
-import com.autofik.sos.dto.request.CreateMechanicRequest;
-import com.autofik.sos.dto.request.CreateMechanicSkillRequest;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.MechanicSkillResponse;
@@ -10,7 +8,6 @@ import com.autofik.sos.security.AuthUser;
 import com.autofik.sos.security.Caller;
 import com.autofik.sos.security.CurrentUser;
 import com.autofik.sos.service.MechanicService;
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
@@ -27,8 +24,9 @@ import org.springframework.web.bind.annotation.*;
  * REST Controller for mechanic availability, skills, and real-time GPS tracking. Base URL:
  * /api/mechanics
  *
- * <p>There is no create endpoint: mechanics are born in SSO and the row here is a projection of
- * that identity, carrying the same UUID. It is created on the mechanic's first authenticated call.
+ * <p>There is no create or skill-write endpoint: mechanics are born in SSO, and the row here, with
+ * its skill tags and service radius, is created and kept in step from the SSO profile in the
+ * mechanic-context header (MechanicProfileSync).
  */
 @RestController
 @RequestMapping("/api/v1/mechanics")
@@ -37,17 +35,6 @@ import org.springframework.web.bind.annotation.*;
 public class MechanicController {
 
   private final MechanicService mechanicService;
-
-  // POST /api/mechanics — Mechanic registers themselves with this service
-  // The row's id is the caller's SSO mechanic id, never a fresh one: everything downstream
-  // (bids, dispatch, WebSocket routing) keys on the SSO identity.
-  // Interim: this is what lazy projection replaces once SOS can read /mechanic/profile itself.
-  @PostMapping
-  @ResponseStatus(HttpStatus.CREATED)
-  public MechanicResponse create(
-      @Valid @RequestBody CreateMechanicRequest request, @AuthMechanic CurrentUser mechanic) {
-    return mechanicService.create(request, mechanic.id());
-  }
 
   // GET /api/mechanics/{mechanicId} — Fetch a single mechanic profile by ID
   @GetMapping("/{mechanicId}")
@@ -70,47 +57,11 @@ public class MechanicController {
     return mechanicService.findAvailable(lat, lng, problemType, radiusKm);
   }
 
-  // POST /api/v1/mechanics/{mechanicId}/skills — Declare work this mechanic can take on
-  // Required for dispatch: the SOS fan-out inner-joins the skill table, so a mechanic with no
-  // skill entry is never matched. Tags must equal the Medusa service group key (case-insensitive).
-  @PostMapping("/{mechanicId}/skills")
-  @ResponseStatus(HttpStatus.CREATED)
-  public MechanicSkillResponse addSkill(
-      @PathVariable UUID mechanicId,
-      @Valid @RequestBody CreateMechanicSkillRequest request,
-      @AuthMechanic CurrentUser mechanic) {
-    Caller.mustMatch(mechanic.id(), mechanicId);
-    return mechanicService.addSkill(mechanicId, request);
-  }
-
   // GET /api/v1/mechanics/{mechanicId}/skills — List a mechanic's declared skills
   // An empty array means the mechanic exists but is not currently dispatchable
   @GetMapping("/{mechanicId}/skills")
   public List<MechanicSkillResponse> getSkills(@PathVariable UUID mechanicId) {
     return mechanicService.getSkills(mechanicId);
-  }
-
-  // PUT /api/v1/mechanics/{mechanicId}/skills/{skillId} — Replace one skill entry
-  @PutMapping("/{mechanicId}/skills/{skillId}")
-  public MechanicSkillResponse updateSkill(
-      @PathVariable UUID mechanicId,
-      @PathVariable UUID skillId,
-      @Valid @RequestBody CreateMechanicSkillRequest request,
-      @AuthMechanic CurrentUser mechanic) {
-    Caller.mustMatch(mechanic.id(), mechanicId);
-    return mechanicService.updateSkill(mechanicId, skillId, request);
-  }
-
-  // DELETE /api/v1/mechanics/{mechanicId}/skills/{skillId} — Withdraw a skill entry
-  // Removing the last one makes the mechanic undispatchable again
-  @DeleteMapping("/{mechanicId}/skills/{skillId}")
-  @ResponseStatus(HttpStatus.NO_CONTENT)
-  public void deleteSkill(
-      @PathVariable UUID mechanicId,
-      @PathVariable UUID skillId,
-      @AuthMechanic CurrentUser mechanic) {
-    Caller.mustMatch(mechanic.id(), mechanicId);
-    mechanicService.deleteSkill(mechanicId, skillId);
   }
 
   // PATCH /api/mechanics/{mechanicId}/location?lat=&lng=&sosId= — Update mechanic's real-time GPS

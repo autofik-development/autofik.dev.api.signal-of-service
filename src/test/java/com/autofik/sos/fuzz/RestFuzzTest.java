@@ -292,34 +292,12 @@ class RestFuzzTest {
     asBothRoles(() -> get("/api/v1/feedback/mechanic/{id}", value), value);
   }
 
-  @ParameterizedTest(name = "mechanic bodies #{index}")
-  @MethodSource("fewJsonBodies")
-  void mechanics_bodies_neverReturn5xx(String body) {
-    String mech = "33333333-3333-3333-3333-333333333333";
-    asBothRoles(
-        () -> post("/api/v1/mechanics").contentType(MediaType.APPLICATION_JSON).content(body),
-        body);
-    asBothRoles(
-        () ->
-            post("/api/v1/mechanics/{id}/skills", mech)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(body),
-        body);
-    asBothRoles(
-        () ->
-            put("/api/v1/mechanics/{id}/skills/{skill}", mech, mech)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(body),
-        body);
-  }
-
   @ParameterizedTest(name = "mechanic params #{index}")
   @MethodSource("fewStrings")
   void mechanics_badPathAndQueryParams_neverReturn5xx(String value) {
     asBothRoles(() -> get("/api/v1/mechanics/{id}", value), value);
     asBothRoles(() -> get("/api/v1/mechanics/{id}/skills", value), value);
     asBothRoles(() -> get("/api/v1/mechanics/{id}/location", value), value);
-    asBothRoles(() -> delete("/api/v1/mechanics/{id}/skills/{skill}", value, value), value);
     asBothRoles(
         () ->
             get("/api/v1/mechanics/available")

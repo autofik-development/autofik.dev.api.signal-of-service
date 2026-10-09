@@ -4,11 +4,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -311,22 +309,6 @@ class GatewayContextHttpTest {
         route("GET /bids/mechanic/{id}", get("/api/v1/bids/mechanic/" + MECHANIC), "MECHANIC"),
         route("PATCH /bids/{id}/cancel", patch("/api/v1/bids/" + ANY + "/cancel"), "MECHANIC"),
         route(
-            "POST /mechanics",
-            post("/api/v1/mechanics")
-                .content(
-                    "{\"fullName\":\"M\",\"phoneNumber\":\"+855100000011\",\"email\":\"m@example.com\","
-                        + "\"mechanicRole\":\"FREELANCE\",\"latitude\":11.55,\"longitude\":104.92}"),
-            "MECHANIC"),
-        route(
-            "POST /mechanics/{id}/skills",
-            post(m + "/skills").content("{\"skillTags\":[\"TIRE\"]}"),
-            "MECHANIC"),
-        route(
-            "PUT /mechanics/{id}/skills/{skillId}",
-            put(m + "/skills/" + ANY).content("{\"skillTags\":[\"TIRE\"]}"),
-            "MECHANIC"),
-        route("DELETE /mechanics/{id}/skills/{skillId}", delete(m + "/skills/" + ANY), "MECHANIC"),
-        route(
             "PATCH /mechanics/{id}/location",
             patch(m + "/location").param("lat", "11.55").param("lng", "104.92"),
             "MECHANIC"),
@@ -375,5 +357,32 @@ class GatewayContextHttpTest {
       verifyNoInteractions(
           sosService, bidService, mechanicService, feedbackService, sosMediaService);
     }
+  }
+
+  /**
+   * The mechanic row and its skill tags come from the SSO profile in mechanic-context now; the old
+   * write endpoints were removed, and the mechanic must not be able to bring them back by accident.
+   */
+  @ParameterizedTest(name = "{0} is gone")
+  @org.junit.jupiter.params.provider.ValueSource(
+      strings = {
+        "POST /api/v1/mechanics",
+        "POST /api/v1/mechanics/" + MECHANIC + "/skills",
+        "PUT /api/v1/mechanics/" + MECHANIC + "/skills/" + ANY,
+        "DELETE /api/v1/mechanics/" + MECHANIC + "/skills/" + ANY
+      })
+  void removedMechanicWriteRoutes_areNotServed(String call) throws Exception {
+    String[] parts = call.split(" ");
+    var request =
+        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request(
+                org.springframework.http.HttpMethod.valueOf(parts[0]), parts[1])
+            .header("mechanic-context", MECHANIC_HEADER)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"skillTags\":[\"TIRE\"]}");
+
+    int status = mockMvc.perform(request).andReturn().getResponse().getStatus();
+
+    org.assertj.core.api.Assertions.assertThat(status).isIn(404, 405);
+    verifyNoInteractions(mechanicService);
   }
 }
