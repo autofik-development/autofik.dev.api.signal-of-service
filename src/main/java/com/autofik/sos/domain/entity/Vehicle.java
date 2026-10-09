@@ -3,7 +3,6 @@ package com.autofik.sos.domain.entity;
 import com.autofik.sos.domain.enums.FuelType;
 import jakarta.persistence.*;
 import java.util.List;
-import java.util.UUID;
 import lombok.*;
 
 /**
@@ -21,11 +20,12 @@ import lombok.*;
 public class Vehicle {
 
   // Assigned, not generated: this row is a projection of an SSO vehicle and must carry that
-  // same UUID, because the driver names it by SSO's id when raising an SOS.
+  // same id, because the driver names it by SSO's id when raising an SOS. SSO's ids are not UUIDs
+  // (e.g. "648123456789135"), so this is a string.
   @Id
-  @Column(name = "id", updatable = false, nullable = false)
+  @Column(name = "id", length = 64, updatable = false, nullable = false)
   @ToString.Include
-  private UUID id;
+  private String id;
 
   // Registration plate. What the mechanic actually looks for on arrival.
   @Column(name = "license_plate")

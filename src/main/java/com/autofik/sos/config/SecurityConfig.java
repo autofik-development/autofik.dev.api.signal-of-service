@@ -2,9 +2,11 @@ package com.autofik.sos.config;
 
 import com.autofik.sos.security.AuthErrorResponder;
 import com.autofik.sos.security.GatewayIdentityFilter;
+import com.autofik.sos.security.GatewaySecretFilter;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -28,6 +30,11 @@ public class SecurityConfig {
 
   private final GatewayIdentityFilter gatewayIdentityFilter;
   private final AuthErrorResponder errorResponder;
+
+  // Optional so the web-layer test slices, which import this config without the rest of the app,
+  // do not need it.
+  @Autowired(required = false)
+  GatewaySecretFilter gatewaySecretFilter;
 
   /**
    * Serves the WebSocket test console and lets the handshake fall back to {@code ?clientId=}. See
@@ -103,6 +110,10 @@ public class SecurityConfig {
                                 HttpStatus.FORBIDDEN,
                                 "You are not allowed to perform this action")))
         .addFilterBefore(gatewayIdentityFilter, UsernamePasswordAuthenticationFilter.class);
+    if (gatewaySecretFilter != null) {
+      // Ahead of the identity filter: a request without the secret never has its headers read.
+      http.addFilterBefore(gatewaySecretFilter, GatewayIdentityFilter.class);
+    }
 
     return http.build();
   }

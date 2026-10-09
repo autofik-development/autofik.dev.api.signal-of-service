@@ -117,36 +117,36 @@ class GatewayContextHttpTest {
             MECHANIC),
         testCase("GARAGE role", Map.of("user-context", user("GARAGE", OK)), 200, null, DRIVER),
         testCase("CUSTOMER role", Map.of("user-context", user("CUSTOMER", OK)), 200, null, DRIVER),
+        // Session state is the internal gateway's check, not repeated in SOS.
         testCase(
-            "logged out",
+            "logged out, gateway already verified",
             Map.of(
                 "user-context",
                 user("USER", OK.replace("\"isLogout\":false", "\"isLogout\":true"))),
-            401,
-            "Access token is no longer valid",
-            null),
+            200,
+            null,
+            DRIVER),
         testCase(
-            "token expired",
+            "token expired, gateway already verified",
             Map.of("user-context", user("USER", OK.replace("active", "expired"))),
-            401,
-            "Access token is no longer valid",
-            null),
+            200,
+            null,
+            DRIVER),
+        // The internal gateway refuses unverified callers; SOS does not check the flags again.
         testCase(
-            "otp not verified",
+            "otp flag false, gateway already verified",
             Map.of(
                 "user-context",
                 user("USER", OK.replace("\"otpVerify\":true", "\"otpVerify\":false"))),
-            403,
-            "User profile is not fully verified",
-            null),
+            200,
+            null,
+            DRIVER),
         testCase(
-            "profile not verified",
-            Map.of(
-                "user-context",
-                user("USER", OK.replace("\"profileVerify\":true", "\"profileVerify\":false"))),
-            403,
-            "User profile is not fully verified",
-            null),
+            "no verification flags",
+            Map.of("user-context", user("USER", "\"tokenStatus\":\"active\"")),
+            200,
+            null,
+            DRIVER),
         testCase(
             "unknown role ADMIN",
             Map.of("user-context", user("ADMIN", OK)),

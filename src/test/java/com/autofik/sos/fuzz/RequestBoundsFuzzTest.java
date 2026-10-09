@@ -37,7 +37,8 @@ class RequestBoundsFuzzTest {
   void sosCoordinates_areValidExactlyInsideTheCambodiaBox(
       @ForAll("latitudes") Double lat, @ForAll("longitudes") Double lng) {
     CreateSosRequest r =
-        new CreateSosRequest(UUID.randomUUID(), "sg", null, lat, lng, UUID.randomUUID(), null);
+        new CreateSosRequest(
+            UUID.randomUUID(), "sg", null, lat, lng, UUID.randomUUID().toString(), null);
 
     boolean inside =
         lat != null
@@ -59,7 +60,13 @@ class RequestBoundsFuzzTest {
   void broadcastRadius_isOptional_andOtherwiseValidFrom5To20Km(@ForAll("radii") Integer radiusKm) {
     CreateSosRequest r =
         new CreateSosRequest(
-            UUID.randomUUID(), "sg", null, 11.5564, 104.9282, UUID.randomUUID(), radiusKm);
+            UUID.randomUUID(),
+            "sg",
+            null,
+            11.5564,
+            104.9282,
+            UUID.randomUUID().toString(),
+            radiusKm);
 
     boolean valid = radiusKm == null || (radiusKm >= 5 && radiusKm <= 20);
 

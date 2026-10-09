@@ -59,18 +59,16 @@ class WebConfigWiringTest {
         .andExpect(jsonPath("$.message").value("Missing or invalid user context"));
   }
 
-  // The gateway named someone whose session is over: 401 with a body, not the chain's bare 401.
+  // The gateway named someone with a role this service does not know: 403 with a body, not the
+  // chain's bare 403.
   @Test
   void rejectedContextIsAnsweredWithTheSharedErrorShape() throws Exception {
-    String loggedOut =
-        "{\"user\":{\"uuid\":\""
-            + UUID.randomUUID()
-            + "\",\"role\":\"USER\",\"otpVerify\":true,\"profileVerify\":true,"
-            + "\"isLogout\":true}}";
+    String unknownRole = "{\"user\":{\"uuid\":\"" + UUID.randomUUID() + "\",\"role\":\"ADMIN\"}}";
 
     mockMvc
-        .perform(get("/api/v1/sos/" + UUID.randomUUID()).header("user-context", loggedOut))
-        .andExpect(status().isUnauthorized())
-        .andExpect(jsonPath("$.message").value("Access token is no longer valid"));
+        .perform(get("/api/v1/sos/" + UUID.randomUUID()).header("user-context", unknownRole))
+        .andExpect(status().isForbidden())
+        .andExpect(
+            jsonPath("$.message").value("Role 'ADMIN' is not permitted to use this service"));
   }
 }

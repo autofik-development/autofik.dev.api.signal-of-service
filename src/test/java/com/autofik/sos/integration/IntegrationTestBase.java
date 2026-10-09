@@ -199,7 +199,7 @@ public abstract class IntegrationTestBase {
     Vehicle vehicle =
         vehicleRepository.save(
             Vehicle.builder()
-                .id(UUID.randomUUID())
+                .id(UUID.randomUUID().toString())
                 .carBrand("Toyota")
                 .carModel("Camry")
                 .user(user)

@@ -202,6 +202,12 @@ sos:
     max-photos: ${SOS_BROADCAST_MAX_PHOTOS:3}
     # Starting radius (km) when the customer doesn't set broadcastRadiusKm.
     default-km: ${SOS_DEFAULT_BROADCAST_KM:15}
+  gateway:
+    # The secret only the internal gateway knows, sent on every request in this header. Blank
+    # turns the check off (local runs, tests); set it in every deployed environment, because
+    # user-context / mechanic-context are unsigned and SOS acts on them completely.
+    header: ${SOS_GATEWAY_HEADER:X-Edge-Auth}
+    secret: ${SOS_GATEWAY_SECRET:}
   bidding:
     # Seconds mechanics have to bid per broadcast attempt, and max rebroadcasts per ticket.
     window-seconds: ${SOS_BIDDING_WINDOW_SECONDS:60}

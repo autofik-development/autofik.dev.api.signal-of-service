@@ -169,6 +169,11 @@ public class MechanicProfileSync {
     return mechanic.getMechanicId();
   }
 
+  /** Shared with {@link UserProfileSync}: trimmed value, or null when blank or over {@code max}. */
+  static String bounded(String field, String value, int max) {
+    return Snapshot.bounded(field, value, max);
+  }
+
   /** The header's profile after every bound has been applied; a failed bound leaves a null. */
   private static final class Snapshot {
     String fullName;

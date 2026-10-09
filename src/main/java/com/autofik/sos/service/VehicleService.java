@@ -14,7 +14,7 @@ public interface VehicleService {
    * @param vehicleId the ID of the vehicle to fetch
    * @return the vehicle's details as a VehicleResponse
    */
-  VehicleResponse getById(UUID vehicleId);
+  VehicleResponse getById(String vehicleId);
 
   /**
    * Use case : fetch all vehicles registered by a given user

@@ -109,29 +109,11 @@ class MechanicContextTest {
         .isEqualTo(HttpStatus.FORBIDDEN);
   }
 
+  // Session state is the internal gateway's check, not repeated here.
   @Test
-  void loggedOutSession_isUnauthorized() {
-    assertThatThrownBy(() -> resolve(Map.of("isLogout", true)))
-        .isInstanceOf(UserContextRejectedException.class)
-        .extracting(e -> ((UserContextRejectedException) e).status())
-        .isEqualTo(HttpStatus.UNAUTHORIZED);
-  }
-
-  @ParameterizedTest
-  @ValueSource(strings = {"unauth", "expired", "failed", "EXPIRED"})
-  void deadTokenStatus_isUnauthorized(String tokenStatus) {
-    assertThatThrownBy(() -> resolve(Map.of("tokenStatus", tokenStatus)))
-        .isInstanceOf(UserContextRejectedException.class)
-        .extracting(e -> ((UserContextRejectedException) e).status())
-        .isEqualTo(HttpStatus.UNAUTHORIZED);
-  }
-
-  @Test
-  void unverifiedProfile_isForbidden() {
-    assertThatThrownBy(() -> resolve(Map.of("profileVerify", false)))
-        .isInstanceOf(UserContextRejectedException.class)
-        .extracting(e -> ((UserContextRejectedException) e).status())
-        .isEqualTo(HttpStatus.FORBIDDEN);
+  void sessionFields_areNotCheckedHere() {
+    assertThat(resolve(Map.of("isLogout", true))).isPresent();
+    assertThat(resolve(Map.of("tokenStatus", "expired"))).isPresent();
   }
 
   @ParameterizedTest
