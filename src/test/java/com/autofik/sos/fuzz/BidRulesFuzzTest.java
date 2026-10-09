@@ -52,6 +52,7 @@ class BidRulesFuzzTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock SimpMessagingTemplate messagingTemplate;
 
+  @Mock com.autofik.sos.repository.SosOfferRepository sosOfferRepository;
   @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
   @Mock com.autofik.sos.service.SosService sosService;

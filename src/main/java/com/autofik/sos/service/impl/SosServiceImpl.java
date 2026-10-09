@@ -29,6 +29,7 @@ import com.autofik.sos.mapper.SosMapper;
 import com.autofik.sos.mapper.SosStatusHistoryMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
+import com.autofik.sos.repository.SosOfferRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.repository.UserRepository;
@@ -216,6 +217,7 @@ public class SosServiceImpl implements SosService {
   private final MechanicRepository mechanicRepository;
   private final BidSosRepository bidSosRepository;
   private final SosStatusHistoryRepository sosStatusHistoryRepository;
+  private final SosOfferRepository sosOfferRepository;
   private final SosMapper sosMapper;
   private final SosStatusHistoryMapper sosStatusHistoryMapper;
   private final MechanicMapper mechanicMapper;
@@ -1582,8 +1584,14 @@ public class SosServiceImpl implements SosService {
             ? mechanicRepository.filterByRadiusAndBroadcast(
                 coarse, lat, lng, broadcastRadiusKm * 1000.0)
             : mechanicRepository.filterByRadius(coarse, lat, lng);
+    // A mechanic who released this ticket cannot bid on it again (BidServiceImpl.priorBid), so
+    // never offer it to them, whichever path is fanning out.
+    Set<UUID> releasers =
+        sosStatusHistoryRepository.findMechanicIdsByToStatus(sosId, SosStatus.PENDING);
     List<UUID> matchedIds =
-        inRange.stream().filter(id -> !excludeMechanicIds.contains(id)).toList();
+        inRange.stream()
+            .filter(id -> !excludeMechanicIds.contains(id) && !releasers.contains(id))
+            .toList();
     if (matchedIds.isEmpty()) return;
     // Entities only for the offer estimates (they need each mechanic's location); one query.
     List<Mechanic> matched = mechanicRepository.findAllWithRateById(matchedIds);
@@ -1611,6 +1619,19 @@ public class SosServiceImpl implements SosService {
                 m.getMechanicId().toString(),
                 "/queue/sos-new-request",
                 offerFrame(sosId, problemType, photoUrls, estimates.get(m.getMechanicId()))));
+    recordOffers(sosId, reachable);
+  }
+
+  // G12: who was offered, so an offer never answered by a bid can be counted later. A statistics
+  // write must never fail or delay the offer itself.
+  private void recordOffers(UUID sosId, List<Mechanic> offered) {
+    if (offered.isEmpty()) return;
+    try {
+      sosOfferRepository.recordOffered(
+          sosId, offered.stream().map(Mechanic::getMechanicId).toList());
+    } catch (RuntimeException e) {
+      log.warn("Could not record the offers for SOS {}: {}", sosId, e.toString());
+    }
   }
 
   // The offer a mechanic receives, shared by the broadcast and the reconnect sync so the two cannot
