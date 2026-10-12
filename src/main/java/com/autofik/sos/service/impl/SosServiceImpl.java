@@ -833,6 +833,9 @@ public class SosServiceImpl implements SosService {
       throw new IllegalArgumentException(
           "Only COMPLETED requires customer approval here. Use POST /api/v1/sos/{sosId}/arrival for ARRIVED and PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and IN_PROGRESS.");
     }
+    // Same ticket lock a cancel, a release and proposeArrival take, so a proposal cannot be written
+    // for a ticket that was just cancelled or released.
+    sosRequestRepository.lockStatus(sosId);
     return propose(findSosOrThrow(sosId), request.mechanicId(), request.toStatus());
   }
 

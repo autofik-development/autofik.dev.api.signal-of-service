@@ -1467,6 +1467,31 @@ class SosServiceImplTest {
     assertThat(result).isEqualTo(historyResponse);
   }
 
+  // Same ticket lock as a cancel and a release, so a proposal cannot be written for a dead ticket.
+  @Test
+  void proposeStatusChange_takesTheTicketLock() {
+    SosRequest sos = inProgressSosOwnedByUser();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    stubAssignedMechanic(sos);
+    when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
+        .thenAnswer(
+            inv -> {
+              SosStatusHistory h = inv.getArgument(0);
+              h.setId(historyId);
+              return h;
+            });
+    when(sosStatusHistoryMapper.toResponse(any(SosStatusHistory.class)))
+        .thenReturn(historyResponse);
+
+    sosService.proposeStatusChange(
+        sosId, new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED));
+
+    var order = inOrder(sosRequestRepository);
+    order.verify(sosRequestRepository).lockStatus(sosId);
+    order.verify(sosRequestRepository).findById(sosId);
+  }
+
   // A double tap or a timeout retry must not leave two approvable rows or push the customer twice.
   @Test
   void proposeStatusChange_whenOneIsAlreadyWaiting_returnsIt_withoutANewRowOrPush() {
