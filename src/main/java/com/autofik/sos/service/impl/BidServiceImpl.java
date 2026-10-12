@@ -21,6 +21,7 @@ import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
+import com.autofik.sos.repository.SosOfferRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.service.BidService;
@@ -54,6 +55,7 @@ public class BidServiceImpl implements BidService {
   private final BidSosRepository bidSosRepository;
   private final SosRequestRepository sosRequestRepository;
   private final SosStatusHistoryRepository sosStatusHistoryRepository;
+  private final SosOfferRepository sosOfferRepository;
   private final MechanicRepository mechanicRepository;
   private final BidSosMapper bidSosMapper; // Converts between Database Entities and DTO Responses
   private final GoogleMapsService googleMapsService; // Calculates real road mileage and times
@@ -192,6 +194,7 @@ public class BidServiceImpl implements BidService {
 
     // Save the compiled Bid object into the PostgreSQL database table
     BidSos savedBid = bidSosRepository.save(bidBuilder.build());
+    sosOfferRepository.recordBid(request.sosId(), request.mechanicId()); // G12 reliability record
 
     // KAFKA FAN-OUT: Publish the creation event to sync down other microservices
     sosEventProducer.publishBidCreated(

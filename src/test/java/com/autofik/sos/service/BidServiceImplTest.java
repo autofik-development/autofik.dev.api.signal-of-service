@@ -64,6 +64,7 @@ class BidServiceImplTest {
   @Mock SimpMessagingTemplate messagingTemplate;
 
   @Mock com.autofik.sos.repository.SosStatusHistoryRepository sosStatusHistoryRepository;
+  @Mock com.autofik.sos.repository.SosOfferRepository sosOfferRepository;
 
   @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
@@ -163,6 +164,7 @@ class BidServiceImplTest {
 
     assertThat(bidService.create(request)).isEqualTo(bidResponse);
     verify(bidSosRepository).save(any(BidSos.class));
+    verify(sosOfferRepository).recordBid(sosId, mechanicId);
     verify(sosEventProducer).publishBidCreated(any(BidCreatedEvent.class));
     verify(sosEventProducer).publishNotification(any(SosNotificationEvent.class));
   }

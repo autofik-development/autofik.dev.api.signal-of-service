@@ -65,6 +65,7 @@ class SosServiceImplTest {
   @Mock MechanicRepository mechanicRepository;
   @Mock BidSosRepository bidSosRepository;
   @Mock SosStatusHistoryRepository sosStatusHistoryRepository;
+  @Mock SosOfferRepository sosOfferRepository;
   @Mock SosMapper sosMapper;
   @Mock SosStatusHistoryMapper sosStatusHistoryMapper;
   @Mock MechanicMapper mechanicMapper;
@@ -2245,6 +2246,71 @@ class SosServiceImplTest {
     verify(messagingTemplate)
         .convertAndSendToUser(
             eq(far.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+  }
+
+  @Test
+  void fanOut_recordsExactlyTheMechanicsThatWereOffered() {
+    expiredSosWithRadius();
+    Mechanic near = otherMechanic(104.9283);
+    Mechanic far = otherMechanic(104.9284);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(near, far));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(near, far));
+    when(googleMapsService.getDistanceInfos(any(), any()))
+        .thenReturn(
+            List.of(
+                new DistanceInfo(1_000, 120, "1 km", "2 mins"),
+                new DistanceInfo(90_000, 3 * 3600, "90 km", "3 hours")));
+    ReflectionTestUtils.setField(sosService, "maxRoadEtaMinutes", 30);
+
+    sosService.rebroadcast(sosId, userId);
+
+    // The far mechanic is over the road-ETA cap, so they got no frame and no row.
+    verify(sosOfferRepository).recordOffered(sosId, List.of(near.getMechanicId()));
+  }
+
+  @Test
+  void fanOut_aFailedStatisticsWrite_doesNotStopTheOffer() {
+    expiredSosWithRadius();
+    Mechanic near = otherMechanic(104.9283);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any())).thenReturn(ids(near));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(near));
+    org.mockito.Mockito.doThrow(new RuntimeException("db down"))
+        .when(sosOfferRepository)
+        .recordOffered(any(), any(java.util.Collection.class));
+
+    sosService.rebroadcast(sosId, userId);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(near.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+  }
+
+  @Test
+  void rebroadcast_neverOffersTheTicketToAMechanicWhoReleasedIt() {
+    expiredSosWithRadius();
+    Mechanic releaser = otherMechanic(104.9283);
+    Mechanic other = otherMechanic(104.9284);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(releaser, other));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(releaser, other));
+    when(sosStatusHistoryRepository.findMechanicIdsByToStatus(sosId, SosStatus.PENDING))
+        .thenReturn(java.util.Set.of(releaser.getMechanicId()));
+
+    sosService.rebroadcast(sosId, userId);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(other.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
+    verify(messagingTemplate, never())
+        .convertAndSendToUser(
+            eq(releaser.getMechanicId().toString()), eq("/queue/sos-new-request"), any());
   }
 
   // ── no-show: ask a mechanic who stopped moving, release them if they do not answer ──

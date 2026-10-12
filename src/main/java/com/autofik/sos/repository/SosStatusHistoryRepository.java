@@ -6,6 +6,7 @@ import com.autofik.sos.domain.enums.SosStatus;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -28,6 +29,13 @@ public interface SosStatusHistoryRepository extends JpaRepository<SosStatusHisto
    */
   boolean existsBySosRequestSosIdAndProposedByMechanicIdAndToStatus(
       UUID sosId, UUID mechanicId, SosStatus toStatus);
+
+  /** Every mechanic who walked away from this ticket (same rule as the exists check above). */
+  @Query(
+      "select distinct h.proposedBy.mechanicId from SosStatusHistory h "
+          + "where h.sosRequest.sosId = :sosId and h.toStatus = :toStatus")
+  Set<UUID> findMechanicIdsByToStatus(
+      @Param("sosId") UUID sosId, @Param("toStatus") SosStatus toStatus);
 
   /**
    * The approval state as it is in the database right now. A scalar query, so it is not answered
