@@ -693,6 +693,30 @@ class SosServiceImplTest {
     verify(sosRequestRepository, never()).save(any());
   }
 
+  // The first check is unlocked: a rebroadcast can commit a live ticket after it. The check is
+  // repeated under the customer's row lock, and a hit there writes nothing and frees the cooldown.
+  @Test
+  void create_anotherTicketCommittedMeanwhile_isConflictUnderTheUserLock() {
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any()))
+        .thenReturn(false, true);
+    when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+    when(medusaService.resolveServiceGroupKey(serviceGroupId)).thenReturn(resolvedKey);
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
+
+    assertThatThrownBy(() -> sosService.create(request))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("active SOS request");
+
+    org.mockito.InOrder order = inOrder(userRepository, sosRequestRepository);
+    order.verify(userRepository).lockById(userId);
+    order.verify(sosRequestRepository).existsByUserUserIdAndStatusIn(eq(userId), any());
+    verify(sosRequestRepository, never()).save(any());
+    verify(ssoProjection, never()).user(any());
+    verify(redisTemplate).delete(endsWith(userId.toString()));
+  }
+
   // ── create guards ─────────────────────────────────────────────────────────
 
   @Test
@@ -2139,12 +2163,13 @@ class SosServiceImplTest {
   // A double tap must queue behind the first reopen: the lock comes before the ticket is read, so
   // the second request reads PENDING instead of the EXPIRED it would have read before the lock.
   @Test
-  void rebroadcast_takesTheTicketLockBeforeReadingTheTicket() {
+  void rebroadcast_takesTheUserLockThenTheTicketLockBeforeReadingTheTicket() {
     expiredSosWithRadius();
 
     sosService.rebroadcast(sosId, userId);
 
-    org.mockito.InOrder order = inOrder(sosRequestRepository);
+    org.mockito.InOrder order = inOrder(userRepository, sosRequestRepository);
+    order.verify(userRepository).lockById(userId);
     order.verify(sosRequestRepository).lockStatus(sosId);
     order.verify(sosRequestRepository).findById(sosId);
   }

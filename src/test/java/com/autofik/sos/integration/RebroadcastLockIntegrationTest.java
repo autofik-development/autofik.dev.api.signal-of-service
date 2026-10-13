@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.repository.SosRequestRepository;
+import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.impl.SosServiceImpl;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -32,7 +33,8 @@ import tools.jackson.databind.JsonNode;
 /**
  * The customer's retry of an EXPIRED ticket. It takes the ticket lock, so a double tap reopens it
  * once (one timer, one fan-out, one count), and it refuses while the customer has another live
- * ticket.
+ * ticket. It also takes the customer's row lock, the one create takes, so the two cannot each miss
+ * the other's live ticket.
  */
 class RebroadcastLockIntegrationTest extends FlowTestSupport {
 
@@ -41,6 +43,7 @@ class RebroadcastLockIntegrationTest extends FlowTestSupport {
   private static final String PROBLEM_TYPE = "TOW";
 
   @Autowired private SosRequestRepository sosRequestRepository;
+  @Autowired private UserRepository userRepository;
   @Autowired private SosServiceImpl sosService;
   @Autowired private TransactionTemplate transactionTemplate;
   @Autowired private JdbcTemplate jdbc;
@@ -245,5 +248,72 @@ class RebroadcastLockIntegrationTest extends FlowTestSupport {
         .isTrue();
     customer.disconnect();
     watching.disconnect();
+  }
+
+  /**
+   * Retry of an EXPIRED ticket and a new SOS at the same moment, both held at the customer's row
+   * lock and released together: whichever goes second must see the other's live ticket.
+   */
+  @Test
+  void createAndRebroadcastAtOnce_leaveOneLiveTicket() throws Exception {
+    Driver d = newDriver();
+    UUID expired = expiredTicket(d);
+    redis.delete("sos:cooldown:" + d.user().getUserId());
+
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    List<CompletableFuture<String>> calls = new ArrayList<>();
+    boolean[] bothWaited = new boolean[1];
+    transactionTemplate.executeWithoutResult(
+        status -> {
+          userRepository.lockById(d.user().getUserId()); // what both take first
+          calls.add(
+              CompletableFuture.supplyAsync(
+                  () -> {
+                    try {
+                      return "create:" + createSos(d).statusCode();
+                    } catch (Exception e) {
+                      throw new IllegalStateException(e);
+                    }
+                  },
+                  pool));
+          calls.add(
+              CompletableFuture.supplyAsync(
+                      () -> sosService.rebroadcast(expired, d.user().getUserId()), pool)
+                  .handle(
+                      (ok, ex) ->
+                          "rebroadcast:"
+                              + (ex == null
+                                  ? "OK"
+                                  : ex.getCause() instanceof IllegalStateException
+                                      ? "CONFLICT"
+                                      : String.valueOf(ex.getCause()))));
+          try {
+            bothWaited[0] = awaitBlockedSessions(2);
+          } catch (InterruptedException e) {
+            throw new IllegalStateException(e);
+          }
+        });
+    List<String> outcomes = new ArrayList<>();
+    try {
+      for (CompletableFuture<String> c : calls) outcomes.add(c.get(30, TimeUnit.SECONDS));
+    } finally {
+      pool.shutdownNow();
+    }
+
+    assertThat(outcomes)
+        .as("one wins, the other is refused")
+        .containsAnyOf("create:201", "rebroadcast:OK")
+        .containsAnyOf("create:409", "rebroadcast:CONFLICT")
+        .hasSize(2);
+    Integer live =
+        jdbc.queryForObject(
+            "SELECT count(*) FROM sos_request WHERE user_id = ?"
+                + " AND status IN ('PENDING','ACCEPTED','ON_THE_WAY','ARRIVED','IN_PROGRESS')",
+            Integer.class,
+            d.user().getUserId());
+    assertThat(live).isEqualTo(1);
+    assertThat(bothWaited[0])
+        .as("both calls waited for the customer lock; active sessions: %s", lastSnapshot)
+        .isTrue();
   }
 }
