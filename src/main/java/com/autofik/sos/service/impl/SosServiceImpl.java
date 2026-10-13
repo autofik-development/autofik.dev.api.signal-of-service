@@ -514,11 +514,13 @@ public class SosServiceImpl implements SosService {
     User user = sos.getUser();
 
     // Geocode coordinates to map a readable address. External call, outside any transaction; the
-    // update below is its own short write.
+    // update below is its own short write. Only the address column: `sos` is the copy from before
+    // the call, and saving it whole would undo a cancel or an accept that landed meanwhile. The
+    // copy keeps the address for the created event and the response.
     String address = googleMapsService.reverseGeocode(request.latitude(), request.longitude());
     if (address != null) {
       sos.setLocationAddress(address);
-      sosRequestRepository.save(sos);
+      sosRequestRepository.updateLocationAddress(sos.getSosId(), address, LocalDateTime.now());
     }
 
     // Queue automated closing of the auction window if no responses come through. First, and
