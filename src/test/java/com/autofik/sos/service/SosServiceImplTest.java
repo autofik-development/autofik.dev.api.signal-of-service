@@ -1867,6 +1867,151 @@ class SosServiceImplTest {
         .isInstanceOf(IllegalStateException.class);
   }
 
+  // ── cancel closes the requests still waiting for the customer (D2) ─────────
+
+  private SosStatusHistory waitingRequest(SosStatus from, SosStatus to) {
+    return historyRow(
+        from, to, ApprovedStatus.PENDING_APPROVAL, LocalDateTime.now().minusMinutes(1), null);
+  }
+
+  private void stubCancel(SosRequest sos, List<SosStatusHistory> waiting) {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosRequestRepository.save(sos)).thenReturn(sos);
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+    when(sosStatusHistoryRepository.findBySosRequestSosIdAndApprovedStatus(
+            sosId, ApprovedStatus.PENDING_APPROVAL))
+        .thenReturn(waiting);
+  }
+
+  @Test
+  void cancel_withACompletionWaitingForApproval_closesItAsRejected() {
+    SosRequest sos = sosAt(SosStatus.IN_PROGRESS);
+    SosStatusHistory waiting = waitingRequest(SosStatus.IN_PROGRESS, SosStatus.COMPLETED);
+    stubCancel(sos, List.of(waiting));
+
+    sosService.cancel(sosId, userId);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.CANCELLED);
+    assertThat(waiting.getApprovedStatus()).isEqualTo(ApprovedStatus.REJECTED);
+    assertThat(waiting.getApproveAt()).isNotNull();
+    assertThat(waiting.getApprovedBy()).as("the system closed it, not the customer").isNull();
+    verify(sosStatusHistoryRepository).saveAll(List.of(waiting));
+  }
+
+  @Test
+  void cancel_closesEveryPendingApprovalRow_ifMultipleArePossible() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    SosStatusHistory arrival = waitingRequest(SosStatus.ON_THE_WAY, SosStatus.ARRIVED);
+    SosStatusHistory completion = waitingRequest(SosStatus.IN_PROGRESS, SosStatus.COMPLETED);
+    stubCancel(sos, List.of(arrival, completion));
+
+    sosService.cancel(sosId, userId);
+
+    assertThat(List.of(arrival, completion))
+        .allSatisfy(row -> assertThat(row.getApprovedStatus()).isEqualTo(ApprovedStatus.REJECTED));
+    assertThat(arrival.getApproveAt()).isNotNull().isEqualTo(completion.getApproveAt());
+    verify(sosStatusHistoryRepository).saveAll(List.of(arrival, completion));
+  }
+
+  @Test
+  void cancel_withNothingWaiting_writesNoHistory() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    stubCancel(sos, List.of());
+
+    sosService.cancel(sosId, userId);
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.CANCELLED);
+    verify(sosStatusHistoryRepository, never()).save(any());
+    verify(sosStatusHistoryRepository).saveAll(List.of());
+  }
+
+  @Test
+  void cancel_isIdempotent_doesNotDuplicateHistoryOrEvents() {
+    SosRequest cancelled = sosAt(SosStatus.CANCELLED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(cancelled));
+
+    assertThatThrownBy(() -> sosService.cancel(sosId, userId))
+        .isInstanceOf(IllegalStateException.class);
+
+    verify(sosStatusHistoryRepository, never())
+        .findBySosRequestSosIdAndApprovedStatus(any(), any());
+    verify(sosStatusHistoryRepository, never()).save(any());
+    verify(sosStatusHistoryRepository, never()).saveAll(any());
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+    verify(sosEventProducer, never()).publishNotification(any());
+    verifyNoInteractions(messagingTemplate);
+  }
+
+  // The closed row is the history evidence; no separate CANCELLED row is written (audit item 7).
+  @Test
+  void cancel_cancellationHistoryAndMechanicNotificationArePresent() {
+    SosRequest sos = sosAt(SosStatus.IN_PROGRESS);
+    SosStatusHistory waiting = waitingRequest(SosStatus.IN_PROGRESS, SosStatus.COMPLETED);
+    stubCancel(sos, List.of(waiting));
+    UUID assigned = UUID.randomUUID();
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(bidBy(assigned, BidStatus.ACCEPTED, sos)));
+
+    sosService.cancel(sosId, userId);
+
+    assertThat(waiting.getApprovedStatus()).isEqualTo(ApprovedStatus.REJECTED);
+    assertThat(waiting.getApproveAt()).isNotNull();
+    verify(sosStatusHistoryRepository, never()).save(any());
+    verify(sosStatusHistoryRepository).saveAll(List.of(waiting));
+
+    ArgumentCaptor<SosStatusUpdatedEvent> event =
+        ArgumentCaptor.forClass(SosStatusUpdatedEvent.class);
+    verify(sosEventProducer).publishStatusUpdated(event.capture());
+    assertThat(event.getValue().fromStatus()).isEqualTo(SosStatus.IN_PROGRESS);
+    assertThat(event.getValue().toStatus()).isEqualTo(SosStatus.CANCELLED);
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(assigned.toString()),
+            eq("/queue/sos-updates"),
+            eq(Map.of("type", "SOS_CANCELLED", "sosId", sosId, "fromStatus", "IN_PROGRESS")));
+    ArgumentCaptor<SosNotificationEvent> pushes =
+        ArgumentCaptor.forClass(SosNotificationEvent.class);
+    verify(sosEventProducer, times(2)).publishNotification(pushes.capture());
+    assertThat(pushes.getAllValues())
+        .extracting(SosNotificationEvent::type)
+        .containsExactlyInAnyOrder("STATUS_CANCELLED", "SOS_CANCELLED");
+  }
+
+  // The customer's answer arrives after a cancel closed the request: refused before anything is
+  // applied, even though the ticket copy approve loaded is still IN_PROGRESS.
+  @Test
+  void approveStatusChange_rowClosedByACancel_isRefusedBeforeAnythingIsApplied() {
+    SosRequest staleSos = sosAt(SosStatus.IN_PROGRESS);
+    SosStatusHistory history =
+        SosStatusHistory.builder()
+            .id(historyId)
+            .fromStatus(SosStatus.IN_PROGRESS)
+            .toStatus(SosStatus.COMPLETED)
+            .proposedBy(mechanic)
+            .sosRequest(staleSos)
+            .approvedStatus(ApprovedStatus.PENDING_APPROVAL)
+            .build();
+    when(sosStatusHistoryRepository.findById(historyId)).thenReturn(Optional.of(history));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+    when(sosStatusHistoryRepository.findApprovedStatusById(historyId))
+        .thenReturn(Optional.of(ApprovedStatus.REJECTED));
+
+    assertThatThrownBy(
+            () ->
+                sosService.approveStatusChange(
+                    new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.ACCEPTED)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("already REJECTED");
+
+    assertThat(staleSos.getStatus()).isEqualTo(SosStatus.IN_PROGRESS);
+    assertThat(staleSos.getJobCompletedAt()).isNull();
+    verify(sosRequestRepository, never()).save(any());
+    verify(sosStatusHistoryRepository, never()).save(any());
+    verify(sosEventProducer, never()).publishStatusUpdated(any());
+    verify(sosEventProducer, never()).publishNotification(any());
+    verifyNoInteractions(messagingTemplate);
+  }
+
   // ── expiry: auto-expand on a true zero-bid expiry ───────────────────────────
 
   @Test
