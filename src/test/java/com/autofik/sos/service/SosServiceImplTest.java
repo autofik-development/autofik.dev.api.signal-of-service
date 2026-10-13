@@ -3488,6 +3488,85 @@ class SosServiceImplTest {
                 ApprovedStatus.PENDING_APPROVAL));
   }
 
+  // A customer cancel writes no row; the timeline still ends with it, at the cancel's update time.
+  @Test
+  void getHistory_cancelledBeforeAnyAccept_endsWithPendingToCancelled() {
+    SosRequest sos = sosAt(SosStatus.CANCELLED);
+    LocalDateTime t = LocalDateTime.of(2026, 10, 7, 10, 0);
+    sos.setUpdatedAt(t);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId))
+        .thenReturn(List.of());
+
+    assertThat(sosService.getHistory(sosId, userId))
+        .extracting(
+            SosStatusHistoryEntry::fromStatus,
+            SosStatusHistoryEntry::toStatus,
+            SosStatusHistoryEntry::at,
+            SosStatusHistoryEntry::decision)
+        .containsExactly(tuple(SosStatus.PENDING, SosStatus.CANCELLED, t, ApprovedStatus.ACCEPTED));
+  }
+
+  // The step starts from the last state that took effect, not from the arrival request the cancel
+  // itself closed as REJECTED.
+  @Test
+  void getHistory_cancelledOnTheWay_appendsTheCancelAfterTheStoredSteps() {
+    SosRequest sos = sosAt(SosStatus.CANCELLED);
+    LocalDateTime t = LocalDateTime.of(2026, 10, 7, 10, 0);
+    sos.setUpdatedAt(t.plusMinutes(20));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId))
+        .thenReturn(
+            List.of(
+                historyRow(SosStatus.PENDING, SosStatus.ACCEPTED, ApprovedStatus.ACCEPTED, t, t),
+                historyRow(
+                    SosStatus.ACCEPTED,
+                    SosStatus.ON_THE_WAY,
+                    ApprovedStatus.ACCEPTED,
+                    t.plusMinutes(3),
+                    t.plusMinutes(3)),
+                historyRow(
+                    SosStatus.ON_THE_WAY,
+                    SosStatus.ARRIVED,
+                    ApprovedStatus.REJECTED,
+                    t.plusMinutes(10),
+                    t.plusMinutes(20))));
+
+    List<SosStatusHistoryEntry> entries = sosService.getHistory(sosId, userId);
+
+    assertThat(entries).hasSize(4);
+    assertThat(entries.get(3))
+        .isEqualTo(
+            new SosStatusHistoryEntry(
+                SosStatus.ON_THE_WAY,
+                SosStatus.CANCELLED,
+                t.plusMinutes(20),
+                ApprovedStatus.ACCEPTED));
+  }
+
+  // The no-show cancel writes its own ARRIVED -> CANCELLED row: no second step.
+  @Test
+  void getHistory_noShowCancelAlreadyHasItsRow_isNotDoubled() {
+    SosRequest sos = sosAt(SosStatus.CANCELLED);
+    LocalDateTime t = LocalDateTime.of(2026, 10, 7, 10, 0);
+    sos.setUpdatedAt(t.plusMinutes(30));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId))
+        .thenReturn(
+            List.of(
+                historyRow(SosStatus.PENDING, SosStatus.ACCEPTED, ApprovedStatus.ACCEPTED, t, t),
+                historyRow(
+                    SosStatus.ARRIVED,
+                    SosStatus.CANCELLED,
+                    ApprovedStatus.ACCEPTED,
+                    t.plusMinutes(30),
+                    t.plusMinutes(30))));
+
+    assertThat(sosService.getHistory(sosId, userId))
+        .extracting(SosStatusHistoryEntry::toStatus)
+        .containsExactly(SosStatus.ACCEPTED, SosStatus.CANCELLED);
+  }
+
   // The mechanic whose bid was accepted reads the same list the customer does.
   @Test
   void getHistory_theMechanicWhoseBidWasAccepted_getsTheSameEntries() {

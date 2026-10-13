@@ -791,10 +791,10 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
         .isEqualTo(404);
   }
 
-  // The known limit: a customer cancel writes no row (proposed_by is NOT NULL), so the timeline
-  // shows the steps up to the cancel and not the cancel itself.
+  // A customer cancel writes no row (proposed_by is NOT NULL); the timeline rebuilds the step from
+  // the ticket, so both the customer and the accepted mechanic see the job end in CANCELLED.
   @Test
-  void history_hasNoEntryForACustomerCancel() throws Exception {
+  void history_endsWithTheCustomerCancel() throws Exception {
     Driver d = newDriver();
     Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
     UUID sosId = createSosOk(d);
@@ -809,10 +809,13 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     HttpResponse<String> asOwner = historyAs("user-context", userContextHeader(d), sosId);
 
     assertThat(asOwner.statusCode()).isEqualTo(200);
-    assertThat(transitionsOf(asOwner)).containsExactly("PENDING>ACCEPTED");
-    assertThat(historyAs("mechanic-context", mechanicContextHeader(m), sosId).statusCode())
+    assertThat(transitionsOf(asOwner)).containsExactly("PENDING>ACCEPTED", "ACCEPTED>CANCELLED");
+    HttpResponse<String> asMechanic =
+        historyAs("mechanic-context", mechanicContextHeader(m), sosId);
+    assertThat(asMechanic.statusCode())
         .as("the accepted mechanic can still read a cancelled job's timeline")
         .isEqualTo(200);
+    assertThat(transitionsOf(asMechanic)).containsExactly("PENDING>ACCEPTED", "ACCEPTED>CANCELLED");
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
