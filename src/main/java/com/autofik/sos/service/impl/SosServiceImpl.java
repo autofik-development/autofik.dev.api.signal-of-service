@@ -2141,6 +2141,10 @@ public class SosServiceImpl implements SosService {
 
   // Runs inside the transaction opened by rebroadcast(); keep external calls out of it.
   private Rebroadcast reopenSos(UUID sosId, UUID userId) {
+    // RACE GUARD: the ticket lock cancel, release and accept take, before the ticket is read. A
+    // double tap queues behind the first reopen and then sees PENDING, so only one fan-out, one
+    // timer and one count increment happen.
+    sosRequestRepository.lockStatus(sosId);
     SosRequest sos = findSosOrThrow(sosId);
 
     if (!sos.getUser().getUserId().equals(userId)) {
@@ -2152,6 +2156,11 @@ public class SosServiceImpl implements SosService {
     if (sos.getRebroadcastCount() >= maxRebroadcast) {
       throw new TooManyRequestsException(
           "Maximum rebroadcast attempts (" + maxRebroadcast + ") reached. Please call support.");
+    }
+    // Same rule as create: one live ticket per customer. This ticket is EXPIRED, so only another
+    // one can match.
+    if (sosRequestRepository.existsByUserUserIdAndStatusIn(userId, ACTIVE_STATUSES)) {
+      throw new IllegalStateException("You already have an active SOS request");
     }
 
     // A new round: the last one's bids were closed at expiry (or turned down by the customer) and

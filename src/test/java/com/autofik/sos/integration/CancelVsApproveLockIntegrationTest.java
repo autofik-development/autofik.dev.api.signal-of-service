@@ -93,6 +93,9 @@ class CancelVsApproveLockIntegrationTest extends FlowTestSupport {
   private void awaitABlockedLock() throws InterruptedException {
     long deadline = System.currentTimeMillis() + 10_000;
     while (System.currentTimeMillis() < deadline) {
+      // pg_stat_activity is a snapshot kept for the whole transaction, and this runs inside the
+      // one that holds the lock: without this, a poll before the waiters arrive is the last one.
+      jdbc.execute("SELECT pg_stat_clear_snapshot()");
       Integer waiting =
           jdbc.queryForObject(
               "SELECT count(*) FROM pg_stat_activity"

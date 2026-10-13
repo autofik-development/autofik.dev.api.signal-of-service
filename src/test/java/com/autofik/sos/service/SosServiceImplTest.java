@@ -2130,6 +2130,73 @@ class SosServiceImplTest {
         .isInstanceOf(IllegalStateException.class);
   }
 
+  // A double tap must queue behind the first reopen: the lock comes before the ticket is read, so
+  // the second request reads PENDING instead of the EXPIRED it would have read before the lock.
+  @Test
+  void rebroadcast_takesTheTicketLockBeforeReadingTheTicket() {
+    expiredSosWithRadius();
+
+    sosService.rebroadcast(sosId, userId);
+
+    org.mockito.InOrder order = inOrder(sosRequestRepository);
+    order.verify(sosRequestRepository).lockStatus(sosId);
+    order.verify(sosRequestRepository).findById(sosId);
+  }
+
+  @Test
+  void rebroadcast_userHasAnotherActiveTicket_isConflictAndNothingChanges() {
+    SosRequest sos = sosAt(SosStatus.EXPIRED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), anyList()))
+        .thenReturn(true);
+
+    assertThatThrownBy(() -> sosService.rebroadcast(sosId, userId))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("already have an active SOS");
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
+    assertThat(sos.getRebroadcastCount()).isZero();
+    verify(sosRequestRepository, never()).save(any());
+    verify(bidSosRepository, never()).deleteBySosRequestSosIdAndStatus(any(), any());
+    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
+    verifyNoInteractions(messagingTemplate);
+    verifyNoInteractions(googleMapsService);
+    verify(mechanicRepository, never()).findByH3CellsAndSkillTag(any(), any(), any());
+    verify(sosEventProducer, never()).publishNotification(any());
+  }
+
+  // Only the owner's other live tickets count, and the five live statuses are the ones create uses.
+  @Test
+  void rebroadcast_checksActiveTicketsForTheOwnerOnly() {
+    expiredSosWithRadius();
+
+    sosService.rebroadcast(sosId, userId);
+
+    verify(sosRequestRepository)
+        .existsByUserUserIdAndStatusIn(
+            userId,
+            List.of(
+                SosStatus.PENDING,
+                SosStatus.ACCEPTED,
+                SosStatus.ON_THE_WAY,
+                SosStatus.ARRIVED,
+                SosStatus.IN_PROGRESS));
+  }
+
+  @Test
+  void rebroadcast_missingTicket_is404AndNothingChanges() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.rebroadcast(sosId, userId))
+        .isInstanceOf(EntityNotFoundException.class);
+
+    verify(sosRequestRepository, never()).existsByUserUserIdAndStatusIn(any(), any());
+    verify(sosRequestRepository, never()).save(any());
+    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
+    verifyNoInteractions(messagingTemplate);
+    verifyNoInteractions(googleMapsService);
+  }
+
   @Test
   void expiry_zeroBidsAtMaxRebroadcast_expiresInsteadOfExpandingFurther() {
     SosRequest sos = overduePending();
