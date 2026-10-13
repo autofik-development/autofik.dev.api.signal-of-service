@@ -314,6 +314,16 @@ public class BidServiceImpl implements BidService {
             .findById(bidId)
             .orElseThrow(() -> new EntityNotFoundException("Bid not found: " + bidId));
 
+    // RACE GUARD: lock the ticket before anything reads it. The id comes from the lazy proxy, so
+    // the row is loaded only after the lock, and the full-row save on accept writes what is
+    // committed now instead of a copy from before (an address create wrote, a radius expiry
+    // widened). Concurrent bid placements and a second accept on the same ticket queue behind this
+    // one; the status is read fresh under the lock, so whoever comes second sees ACCEPTED and is
+    // refused instead of leaving a PENDING bid behind. Rejecting takes the lock too, so it cannot
+    // interleave with the mechanic withdrawing the same bid (cancel takes it as well).
+    String ticketStatus =
+        sosRequestRepository.lockStatus(bid.getSosRequest().getSosId()).orElse(null);
+
     // SECURITY CHECK: Ensure that the person executing this call is the actual owner who created
     // the SOS ticket
     UUID sosOwnerId = bid.getSosRequest().getUser().getUserId();
@@ -321,13 +331,6 @@ public class BidServiceImpl implements BidService {
       throw new AccessDeniedException("You can only respond to bids on your own SOS request");
     }
 
-    // RACE GUARD: lock the ticket before touching any bid. Concurrent bid placements and a second
-    // accept on the same ticket now queue behind this one; the status is read fresh under the lock,
-    // so whoever comes second sees ACCEPTED and is refused instead of leaving a PENDING bid behind.
-    // Rejecting takes the lock too, so it cannot interleave with the mechanic withdrawing the same
-    // bid (cancel takes it as well).
-    String ticketStatus =
-        sosRequestRepository.lockStatus(bid.getSosRequest().getSosId()).orElse(null);
     if (request.status() == BidStatus.ACCEPTED && !SosStatus.PENDING.name().equals(ticketStatus)) {
       throw new IllegalStateException("This SOS request is no longer open for accepting bids");
     }

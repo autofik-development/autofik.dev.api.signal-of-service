@@ -790,6 +790,23 @@ class BidServiceImplTest {
     order.verify(bidSosRepository).save(bid);
   }
 
+  // The accept saves the whole ticket row, so the ticket must be read after the lock: a copy read
+  // before it would write back an address or radius another transaction committed in between.
+  @Test
+  void updateStatus_takesTheTicketLockBeforeReadingTheTicket() {
+    SosRequest ticket = spy(pendingSos);
+    bid.setSosRequest(ticket);
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED));
+
+    var order = inOrder(sosRequestRepository, ticket);
+    order.verify(sosRequestRepository).lockStatus(sosId);
+    order.verify(ticket).getUser();
+  }
+
   @Test
   void updateStatus_rejected_doesNotTakeTheMechanicLock() {
     when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
@@ -887,6 +904,7 @@ class BidServiceImplTest {
 
     verify(bidSosRepository, never()).save(any());
     verify(sosEventProducer, never()).publishBidAccepted(any());
+    verify(sosRequestRepository).lockStatus(sosId);
   }
 
   @Test
