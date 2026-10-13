@@ -9,9 +9,11 @@ import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Data Access Object (DAO) interface for managing emergency SosRequest records. Provides the data
@@ -58,6 +60,21 @@ public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
 
   // check if user already has an active SOS in any of the given statuses
   boolean existsByUserUserIdAndStatusIn(UUID userId, List<SosStatus> statuses);
+
+  /**
+   * Writes only the reverse-geocoded address. create() gets it after the ticket is committed, and a
+   * full save of its detached copy would put back the status and anything else a cancel or an
+   * accept changed meanwhile. A bulk update skips {@code @PreUpdate}, so updatedAt is set here.
+   */
+  @Transactional
+  @Modifying
+  @Query(
+      "UPDATE SosRequest s SET s.locationAddress = :address, s.updatedAt = :now"
+          + " WHERE s.sosId = :sosId")
+  int updateLocationAddress(
+      @Param("sosId") UUID sosId,
+      @Param("address") String address,
+      @Param("now") LocalDateTime now);
 
   /**
    * Dynamic finder query targeted by background cleanup threads and startup listeners. Evaluates a

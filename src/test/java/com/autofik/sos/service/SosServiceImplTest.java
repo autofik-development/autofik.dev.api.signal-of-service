@@ -637,7 +637,7 @@ class SosServiceImplTest {
   }
 
   @Test
-  void create_mapsReturnsAddress_setsLocationAddressAndSavesTwice() {
+  void create_mapsReturnsAddress_writesOnlyTheAddress() {
     stubCreateGuards();
     CreateSosRequest request =
         new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
@@ -649,9 +649,14 @@ class SosServiceImplTest {
 
     sosService.create(request);
 
-    ArgumentCaptor<SosRequest> captor = ArgumentCaptor.forClass(SosRequest.class);
-    verify(sosRequestRepository, times(2)).save(captor.capture());
-    assertThat(captor.getValue().getLocationAddress()).isEqualTo("Sukhumvit Rd, Bangkok");
+    // One save (the insert); the address afterwards is a single-column update, so a cancel or an
+    // accept during the lookup is not overwritten by the copy create still holds.
+    verify(sosRequestRepository, times(1)).save(any(SosRequest.class));
+    verify(sosRequestRepository)
+        .updateLocationAddress(eq(sosId), eq("Sukhumvit Rd, Bangkok"), any(LocalDateTime.class));
+    ArgumentCaptor<SosCreatedEvent> event = ArgumentCaptor.forClass(SosCreatedEvent.class);
+    verify(sosEventProducer).publishSosCreated(event.capture());
+    assertThat(event.getValue().locationAddress()).isEqualTo("Sukhumvit Rd, Bangkok");
   }
 
   @Test
@@ -668,6 +673,7 @@ class SosServiceImplTest {
     sosService.create(request);
 
     verify(sosRequestRepository, times(1)).save(any(SosRequest.class));
+    verify(sosRequestRepository, never()).updateLocationAddress(any(), any(), any());
   }
 
   @Test
