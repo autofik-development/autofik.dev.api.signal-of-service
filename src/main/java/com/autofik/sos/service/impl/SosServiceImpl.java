@@ -578,6 +578,14 @@ public class SosServiceImpl implements SosService {
   }
 
   private SosRequest persistSos(CreateSosRequest request, String problemTypeKey) {
+    // RACE GUARD: create's first check is unlocked, so a rebroadcast (or, with Redis down, a second
+    // create) can commit a live ticket after it. The customer's row lock is the one rebroadcast
+    // takes too; the check repeated under it sees what the other committed. A missing user still
+    // fails below, as before.
+    userRepository.lockById(request.userId());
+    if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
+      throw new IllegalStateException("You already have an active SOS request");
+    }
     // Both rows are projections of SSO. ponytail: no SSO round-trip for today's test (see
     // SsoProjection) — the vehicle lookup checks local ownership instead of SSO's per-user
     // scoping, so a driver still can't file a breakdown against a stranger's car.
@@ -2143,9 +2151,11 @@ public class SosServiceImpl implements SosService {
 
   // Runs inside the transaction opened by rebroadcast(); keep external calls out of it.
   private Rebroadcast reopenSos(UUID sosId, UUID userId) {
-    // RACE GUARD: the ticket lock cancel, release and accept take, before the ticket is read. A
-    // double tap queues behind the first reopen and then sees PENDING, so only one fan-out, one
-    // timer and one count increment happen.
+    // RACE GUARD: the customer's row lock first (the one create takes, so the two cannot each miss
+    // the other's live ticket), then the ticket lock cancel, release and accept take, before the
+    // ticket is read. A double tap queues behind the first reopen and then sees PENDING, so only
+    // one fan-out, one timer and one count increment happen. Order: user, ticket, mechanic.
+    userRepository.lockById(userId);
     sosRequestRepository.lockStatus(sosId);
     SosRequest sos = findSosOrThrow(sosId);
 
