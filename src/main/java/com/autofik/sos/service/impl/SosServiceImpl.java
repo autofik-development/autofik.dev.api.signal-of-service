@@ -883,12 +883,12 @@ public class SosServiceImpl implements SosService {
   // during the call still wins.
   @Override
   public SosStatusHistoryResponse proposeArrival(UUID sosId, UUID mechanicId) {
+    ArrivalCheck check = transactionTemplate.execute(status -> arrivalCheck(sosId, mechanicId));
+    if (check.waiting() != null) return check.waiting();
+    requireMechanicAtSos(check.mechanic(), check.sos());
     return transactionTemplate.execute(
         status -> {
           sosRequestRepository.lockStatus(sosId);
-          ArrivalCheck check = arrivalCheck(sosId, mechanicId);
-          if (check.waiting() != null) return check.waiting();
-          requireMechanicAtSos(check.mechanic(), check.sos());
           return propose(findSosOrThrow(sosId), mechanicId, SosStatus.ARRIVED);
         });
   }
