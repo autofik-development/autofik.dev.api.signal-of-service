@@ -197,6 +197,13 @@ class SosStateMachineFuzzTest {
   @Property(seed = Fuzz.SEED)
   void proposeArrival_onlyFromOnTheWay_andNeverMovesTheTicket(@ForAll SosStatus from) {
     SosRequest sos = ticketAt(from);
+    // proposeArrival runs its two short transactions through the template; run them inline.
+    when(transactionTemplate.execute(any()))
+        .thenAnswer(
+            inv ->
+                ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null));
     when(sosStatusHistoryRepository.save(any(SosStatusHistory.class)))
         .thenAnswer(
             inv -> {

@@ -336,6 +336,21 @@ class SosServiceImplTest {
             argThat(n -> n.type().equals("ARRIVAL_REQUESTED") && n.recipientId().equals(userId)));
   }
 
+  // Google can take seconds; a cancel or the customer's answer must not wait for it on the lock.
+  @Test
+  void proposeArrival_callsMapsBeforeTakingTheTicketLock() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    stubProposeArrival(sos);
+    when(googleMapsService.getDistanceInfo(any(), any()))
+        .thenReturn(new DistanceInfo(48, 30, "48 m", "1 min"));
+
+    sosService.proposeArrival(sosId, mechanicId);
+
+    var order = inOrder(googleMapsService, sosRequestRepository);
+    order.verify(googleMapsService).getDistanceInfo(any(), any());
+    order.verify(sosRequestRepository).lockStatus(sosId);
+  }
+
   // The whole point of the gate: a mechanic who is not there cannot claim to be.
   @Test
   void proposeArrival_beyondLimit_rejected_andNothingIsAsked() {
@@ -426,7 +441,13 @@ class SosServiceImplTest {
     assertThatThrownBy(() -> sosService.proposeArrival(sosId, mechanicId))
         .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
 
-    verify(sosStatusHistoryRepository, never()).save(any(SosStatusHistory.class));
+    verify(sosStatusHistoryRepository, never())
+        .save(
+            any(
+                SosStatusHistory
+                    .class)); // An outsider never costs a Maps call or holds the ticket lock.
+    verify(googleMapsService, never()).getDistanceInfo(any(), any());
+    verify(sosRequestRepository, never()).lockStatus(any());
   }
 
   @Test

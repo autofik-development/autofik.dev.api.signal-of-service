@@ -1,9 +1,12 @@
 package com.autofik.sos.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosStatusHistory;
+import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import com.autofik.sos.service.impl.SosServiceImpl;
@@ -12,6 +15,9 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.stomp.StompSession;
@@ -156,5 +162,63 @@ class ArrivalConfirmationIntegrationTest extends FlowTestSupport {
 
     assertThat(proposeArrival(outsider, sosId).statusCode()).isEqualTo(403);
     assertThat(sosStatus(d, sosId)).isEqualTo("ON_THE_WAY");
+  }
+
+  /**
+   * The road-distance call to Google runs before the ticket lock, so a customer cancel during a
+   * slow call does not wait for it; the arrival, checked again under the lock, is then refused.
+   */
+  @Test
+  void aCancelDuringTheMapsCall_doesNotWait_andTheArrivalIsThenRefused() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = onTheWay(d, m);
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    when(googleMapsService.getDistanceInfo(any(), any()))
+        .thenAnswer(
+            inv -> {
+              entered.countDown();
+              release.await(30, TimeUnit.SECONDS);
+              return null; // no route: the straight-line fallback, 0 m here
+            });
+
+    CompletableFuture<HttpResponse<String>> arrival =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                return proposeArrival(m, sosId);
+              } catch (Exception e) {
+                throw new IllegalStateException(e);
+              }
+            });
+    try {
+      assertThat(entered.await(10, TimeUnit.SECONDS)).as("the arrival reached Google").isTrue();
+
+      CompletableFuture<HttpResponse<String>> cancel =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  return send(
+                      req("/api/v1/sos/" + sosId + "/cancel")
+                          .header("user-context", userContext(d.user().getUserId()))
+                          .method("PATCH", HttpRequest.BodyPublishers.noBody()));
+                } catch (Exception e) {
+                  throw new IllegalStateException(e);
+                }
+              });
+      HttpResponse<String> cancelled = cancel.get(2, TimeUnit.SECONDS);
+      assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
+    } finally {
+      release.countDown();
+    }
+
+    HttpResponse<String> refused = arrival.get(30, TimeUnit.SECONDS);
+    assertThat(refused.statusCode()).as(refused.body()).isEqualTo(409);
+    assertThat(sosStatus(d, sosId)).isEqualTo("CANCELLED");
+    assertThat(
+            historyRepository.findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+                sosId, ApprovedStatus.PENDING_APPROVAL))
+        .isEmpty();
   }
 }
