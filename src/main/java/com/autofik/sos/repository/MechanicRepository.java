@@ -138,6 +138,17 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
       @Param("problemType") String problemType,
       @Param("seenSince") java.time.LocalDateTime seenSince);
 
+  /**
+   * Holds the mechanic's row lock until the calling transaction ends, so two accepts of the same
+   * mechanic on different tickets run one after the other. NO KEY UPDATE excludes other lockers and
+   * row updates but not the FOR KEY SHARE a bid insert takes through its foreign key. Empty when no
+   * such row exists.
+   */
+  @Query(
+      value = "SELECT id FROM mechanic WHERE id = :mechanicId FOR NO KEY UPDATE",
+      nativeQuery = true)
+  Optional<UUID> lockById(@Param("mechanicId") UUID mechanicId);
+
   /** Mechanics by id with their rating joined in, so mapping them costs one query, not N + 1. */
   @EntityGraph(attributePaths = "rate")
   @Query("SELECT m FROM Mechanic m WHERE m.mechanicId IN :ids")

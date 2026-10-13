@@ -1,6 +1,8 @@
 package com.autofik.sos.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -41,6 +43,29 @@ class GatewaySecretFilterTest {
     MockHttpServletResponse response = new MockHttpServletResponse();
     filter.doFilter(request, response, chain);
     return response;
+  }
+
+  @Test
+  void prodWithoutASecret_refusesToStart() {
+    var prod = new MockEnvironment();
+    prod.setActiveProfiles("prod");
+    var unset =
+        new GatewaySecretFilter("X-Edge-Auth", "", new AuthErrorResponder(objectMapper), prod);
+
+    assertThatThrownBy(unset::announce)
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("SOS_GATEWAY_SECRET");
+  }
+
+  @Test
+  void prodWithASecret_andLocalWithout_start() {
+    var prod = new MockEnvironment();
+    prod.setActiveProfiles("prod");
+    var set =
+        new GatewaySecretFilter("X-Edge-Auth", SECRET, new AuthErrorResponder(objectMapper), prod);
+
+    assertThatCode(set::announce).doesNotThrowAnyException();
+    assertThatCode(filter("")::announce).doesNotThrowAnyException();
   }
 
   @Test

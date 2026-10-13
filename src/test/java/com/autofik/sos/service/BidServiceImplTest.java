@@ -103,6 +103,9 @@ class BidServiceImplTest {
     // The ticket row lock re-reads the status from the database; by default the ticket is still
     // open.
     lenient().when(sosRequestRepository.lockStatus(sosId)).thenReturn(Optional.of("PENDING"));
+    // Accepting also locks the mechanic's row and finds them free by default.
+    lenient().when(mechanicRepository.lockById(mechanicId)).thenReturn(Optional.of(mechanicId));
+    lenient().when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
     // The stored status is re-read under the lock; by default it is whatever the test set on bid.
     lenient()
         .when(bidSosRepository.currentStatus(bidId))
@@ -720,6 +723,83 @@ class BidServiceImplTest {
     assertThat(bid.getStatus()).isNotEqualTo(BidStatus.ACCEPTED);
     verify(bidSosRepository, never()).save(any());
     verify(bidSosRepository, never()).saveAll(anyList());
+  }
+
+  // The mechanic was accepted on another ticket meanwhile: refuse, change and send nothing.
+  @Test
+  void updateStatus_accept_mechanicAlreadyOnAJob_refusedNothingWrittenNothingSent() {
+    BidSos otherJob =
+        BidSos.builder()
+            .bidId(UUID.randomUUID())
+            .status(BidStatus.ACCEPTED)
+            .sosRequest(pendingSos)
+            .mechanic(mechanic)
+            .build();
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.of(otherJob));
+
+    assertThatThrownBy(
+            () ->
+                bidService.updateStatus(
+                    bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED)))
+        .isInstanceOf(IllegalStateException.class);
+
+    assertThat(bid.getStatus()).isNotEqualTo(BidStatus.ACCEPTED);
+    assertThat(pendingSos.getStatus()).isEqualTo(SosStatus.PENDING);
+    verify(bidSosRepository, never()).save(any());
+    verify(bidSosRepository, never()).saveAll(anyList());
+    verify(sosRequestRepository, never()).save(any());
+    verify(sosStatusHistoryRepository, never()).save(any());
+    verify(sosEventProducer, never()).publishBidAccepted(any());
+    verify(sosEventProducer, never()).publishBidRejected(any());
+    verify(sosEventProducer, never()).publishNotification(any());
+    verifyNoInteractions(messagingTemplate);
+  }
+
+  @Test
+  void updateStatus_accept_mechanicRowMissing_throwsNotFoundAndWritesNothing() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(mechanicRepository.lockById(mechanicId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(
+            () ->
+                bidService.updateStatus(
+                    bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED)))
+        .isInstanceOf(EntityNotFoundException.class)
+        .hasMessageContaining(mechanicId.toString());
+
+    verify(bidSosRepository, never()).findActiveJob(any());
+    verify(bidSosRepository, never()).save(any());
+    verify(sosRequestRepository, never()).save(any());
+    verify(sosEventProducer, never()).publishBidAccepted(any());
+    verifyNoInteractions(messagingTemplate);
+  }
+
+  @Test
+  void updateStatus_accept_locksTicketThenMechanicThenChecksJobBeforeAnyWrite() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED));
+
+    var order = inOrder(sosRequestRepository, mechanicRepository, bidSosRepository);
+    order.verify(sosRequestRepository).lockStatus(sosId);
+    order.verify(mechanicRepository).lockById(mechanicId);
+    order.verify(bidSosRepository).findActiveJob(mechanicId);
+    order.verify(bidSosRepository).save(bid);
+  }
+
+  @Test
+  void updateStatus_rejected_doesNotTakeTheMechanicLock() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.REJECTED));
+
+    verify(mechanicRepository, never()).lockById(any());
+    verify(bidSosRepository, never()).findActiveJob(any());
   }
 
   @Test

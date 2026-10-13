@@ -338,6 +338,21 @@ public class BidServiceImpl implements BidService {
     // Read under the lock: the bid loaded above may have been withdrawn while this waited.
     requirePending(bid, "responded to");
 
+    // A mechanic may hold pending bids on several tickets but be assigned to one. Ticket locks are
+    // per ticket, so two accepts for the same mechanic only meet on the mechanic's row: lock it
+    // after the ticket (the order confirmStillComing uses), then read the active job. Under READ
+    // COMMITTED that read gets a fresh snapshot, so it sees what the winner committed before
+    // unlocking. Nothing is written yet, so a refusal leaves ticket and bid PENDING, sends nothing.
+    if (request.status() == BidStatus.ACCEPTED) {
+      UUID mechanicId = bid.getMechanic().getMechanicId();
+      mechanicRepository
+          .lockById(mechanicId)
+          .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+      if (bidSosRepository.findActiveJob(mechanicId).isPresent()) {
+        throw new IllegalStateException("This mechanic has just been assigned to another job");
+      }
+    }
+
     // Commit the status change (e.g., ACCEPTED) to the database
     bid.setStatus(request.status());
     bid.setRespondedAt(LocalDateTime.now());
