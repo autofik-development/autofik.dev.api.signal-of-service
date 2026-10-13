@@ -5,6 +5,7 @@ import jakarta.persistence.*;
 import java.util.List;
 import java.util.UUID;
 import lombok.*;
+import org.hibernate.annotations.DynamicUpdate;
 import org.locationtech.jts.geom.Point;
 
 /**
@@ -23,6 +24,10 @@ import org.locationtech.jts.geom.Point;
 @AllArgsConstructor
 @Builder
 @ToString(onlyExplicitlyIncluded = true)
+// Several writers (location ping, profile sync, availability, still-coming) load this row and save
+// it without a lock, each changing different columns. Updating only the changed columns keeps one
+// from writing back another's stale values (e.g. a ping undoing a just-tapped "go offline").
+@DynamicUpdate
 public class Mechanic {
 
   // Assigned, not generated: this row is a projection of an SSO mechanic and must carry that
