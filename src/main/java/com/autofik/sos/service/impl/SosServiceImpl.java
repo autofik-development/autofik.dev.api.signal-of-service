@@ -628,15 +628,37 @@ public class SosServiceImpl implements SosService {
     if (!sos.getUser().getUserId().equals(callerId) && !assigned) {
       throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
-    return sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId).stream()
-        .map(
-            h ->
-                new SosStatusHistoryEntry(
-                    h.getFromStatus(),
-                    h.getToStatus(),
-                    h.getApproveAt() != null ? h.getApproveAt() : h.getChangeAt(),
-                    h.getApprovedStatus()))
-        .toList();
+    List<SosStatusHistory> rows =
+        sosStatusHistoryRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId);
+    List<SosStatusHistoryEntry> entries =
+        new ArrayList<>(
+            rows.stream()
+                .map(
+                    h ->
+                        new SosStatusHistoryEntry(
+                            h.getFromStatus(),
+                            h.getToStatus(),
+                            h.getApproveAt() != null ? h.getApproveAt() : h.getChangeAt(),
+                            h.getApprovedStatus()))
+                .toList());
+
+    // A customer cancel writes no row (proposed_by is a mechanic and NOT NULL), so its step is
+    // rebuilt from the ticket: from the last state that actually took effect (rejected proposals,
+    // including the ones the cancel itself closed, do not count), at the cancel's update time.
+    // The no-show cancel already has its own row. ponytail: updatedAt can be a few seconds late if
+    // the cancel landed during create's address lookup; a cancelled_at column fixes that if needed.
+    if (sos.getStatus() == SosStatus.CANCELLED) {
+      SosStatus from = SosStatus.PENDING;
+      for (SosStatusHistory h : rows) {
+        if (h.getApprovedStatus() == ApprovedStatus.ACCEPTED) from = h.getToStatus();
+      }
+      if (from != SosStatus.CANCELLED) {
+        entries.add(
+            new SosStatusHistoryEntry(
+                from, SosStatus.CANCELLED, sos.getUpdatedAt(), ApprovedStatus.ACCEPTED));
+      }
+    }
+    return entries;
   }
 
   @Override

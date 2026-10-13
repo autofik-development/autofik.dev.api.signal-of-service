@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.enums.ApprovedStatus;
 import com.autofik.sos.domain.enums.SosStatus;
+import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.SosStatusHistoryRepository;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -37,6 +38,7 @@ class MechanicSingleJobIntegrationTest extends FlowTestSupport {
   private static final String PROBLEM_TYPE = "TOW";
 
   @Autowired private SosStatusHistoryRepository historyRepository;
+  @Autowired private SosRequestRepository sosRequestRepository;
   @Autowired private TransactionTemplate transactionTemplate;
   @Autowired private JdbcTemplate jdbc;
 
@@ -119,7 +121,7 @@ class MechanicSingleJobIntegrationTest extends FlowTestSupport {
       if (waiting != null && waiting >= count) return;
       Thread.sleep(25);
     }
-    throw new AssertionError(count + " accepts never waited for the mechanic lock");
+    throw new AssertionError(count + " accepts never waited for a lock");
   }
 
   // ── sequential ─────────────────────────────────────────────────────────────
@@ -329,5 +331,59 @@ class MechanicSingleJobIntegrationTest extends FlowTestSupport {
   void transactionsRunAtReadCommitted() {
     assertThat(jdbc.queryForObject("SHOW transaction_isolation", String.class))
         .isEqualTo("read committed");
+  }
+
+  /**
+   * An accept takes the ticket lock before it reads the ticket, so columns another transaction
+   * writes while it waits (create's address, an expiry widening) are not saved back over. The
+   * accept is held at the lock, the columns change, and only then is it let through.
+   */
+  @Test
+  void anAcceptWaitingForTheTicketLock_keepsColumnsWrittenMeanwhile() throws Exception {
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Offer o = bidOnNewTicket(m);
+
+    CompletableFuture<Integer> accepting = new CompletableFuture<>();
+    transactionTemplate.executeWithoutResult(
+        status -> {
+          sosRequestRepository.lockStatus(o.sosId()); // what the accept takes first
+          CompletableFuture.supplyAsync(
+                  () -> {
+                    try {
+                      return accept(o);
+                    } catch (Exception e) {
+                      throw new IllegalStateException(e);
+                    }
+                  })
+              .whenComplete(
+                  (code, ex) -> {
+                    if (ex != null) accepting.completeExceptionally(ex);
+                    else accepting.complete(code);
+                  });
+          try {
+            awaitBlockedSessions(1);
+          } catch (InterruptedException e) {
+            throw new IllegalStateException(e);
+          }
+          jdbc.update(
+              "UPDATE sos_request SET location_address = 'Updated', broadcast_radius_km = 77"
+                  + " WHERE sos_id = ?",
+              o.sosId());
+        });
+
+    assertThat(accepting.get(30, TimeUnit.SECONDS)).isEqualTo(200);
+    assertThat(sosStatus(o.driver(), o.sosId())).isEqualTo("ACCEPTED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT location_address FROM sos_request WHERE sos_id = ?",
+                String.class,
+                o.sosId()))
+        .isEqualTo("Updated");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT broadcast_radius_km FROM sos_request WHERE sos_id = ?",
+                Integer.class,
+                o.sosId()))
+        .isEqualTo(77);
   }
 }
