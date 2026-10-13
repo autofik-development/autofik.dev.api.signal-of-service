@@ -1181,6 +1181,21 @@ public class SosServiceImpl implements SosService {
     sosRequestRepository.save(sos);
     routeEtaService.clear(sosId); // job is over — drop any countdown still cached
 
+    // Requests the mechanic made and the customer has not answered end with the ticket. Closing
+    // them under this lock is what lets a concurrent approveStatusChange, which re-reads the row
+    // after waiting for the lock, see REJECTED and refuse instead of applying it to a dead ticket.
+    // propose() keeps it to one row per ticket; closing all of them also covers older data.
+    LocalDateTime closedAt = LocalDateTime.now();
+    List<SosStatusHistory> waiting =
+        sosStatusHistoryRepository.findBySosRequestSosIdAndApprovedStatus(
+            sosId, ApprovedStatus.PENDING_APPROVAL);
+    waiting.forEach(
+        row -> {
+          row.setApprovedStatus(ApprovedStatus.REJECTED);
+          row.setApproveAt(closedAt);
+        });
+    sosStatusHistoryRepository.saveAll(waiting);
+
     // Whoever was on the job, or had bid on it, must hear it is off: an assigned mechanic would
     // otherwise keep driving to a cancelled job.
     UUID assignedMechanicId =

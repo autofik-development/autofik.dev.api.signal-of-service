@@ -55,6 +55,10 @@ public interface SosStatusHistoryRepository extends JpaRepository<SosStatusHisto
   Optional<SosStatusHistory> findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
       UUID sosId, ApprovedStatus approvedStatus);
 
+  /** Every history row for a SOS in the given approval state, e.g. all requests still waiting. */
+  List<SosStatusHistory> findBySosRequestSosIdAndApprovedStatus(
+      UUID sosId, ApprovedStatus approvedStatus);
+
   /** The newest row that moved the SOS to {@code toStatus} and was decided as {@code approved}. */
   Optional<SosStatusHistory>
       findFirstBySosRequestSosIdAndToStatusAndApprovedStatusOrderByChangeAtDesc(
