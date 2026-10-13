@@ -25,8 +25,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * leaked port or a mis-set security group does not let anyone act as anyone.
  *
  * <p>Off when {@code sos.gateway.secret} is blank, so a laptop and the test suite need no setup.
- * Under the {@code prod} profile a blank secret logs an error at startup, because the service is
- * then trusting headers from anything that can reach it.
+ * Under the {@code prod} profile a blank secret stops the service from starting, because it would
+ * then trust headers from anything that can reach it.
  *
  * <p>Health checks stay open: the load balancer carries no secret.
  */
@@ -55,9 +55,9 @@ public class GatewaySecretFilter extends OncePerRequestFilter {
     if (secret != null) {
       log.info("Gateway shared secret required on every request except health checks");
     } else if (environment.acceptsProfiles(Profiles.of("prod"))) {
-      log.error(
-          "sos.gateway.secret is not set: user-context and mechanic-context are trusted from"
-              + " anything that can reach this port. Set SOS_GATEWAY_SECRET.");
+      throw new IllegalStateException(
+          "sos.gateway.secret is not set: under the prod profile user-context and mechanic-context"
+              + " would be trusted from anything that can reach this port. Set SOS_GATEWAY_SECRET.");
     } else {
       log.warn("sos.gateway.secret is not set: the gateway shared secret is not being checked");
     }
