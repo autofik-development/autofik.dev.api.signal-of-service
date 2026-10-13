@@ -874,12 +874,43 @@ public class SosServiceImpl implements SosService {
   // ARRIVED works like COMPLETED: the mechanic says they are there, the customer gets a pop-up and
   // confirms, and a customer who does not answer is confirmed automatically after
   // sos.arrival.approval-window-seconds. The ticket stays ON_THE_WAY until then.
+  //
+  // Not @Transactional: the road-distance check calls Google (up to ~7 s), and holding the ticket
+  // lock and a connection across it made a cancel, the customer's answer and expiry on this ticket
+  // wait. The cheap checks run first without the lock, so an outsider or a retry never costs a Maps
+  // call; Google runs outside any transaction; then propose() checks everything again under the
+  // same ticket lock a cancel, a release and the customer's answer take, so a cancel that landed
+  // during the call still wins.
   @Override
-  @Transactional
   public SosStatusHistoryResponse proposeArrival(UUID sosId, UUID mechanicId) {
-    // Same ticket lock a cancel, a release and the customer's answer take.
-    sosRequestRepository.lockStatus(sosId);
-    return propose(findSosOrThrow(sosId), mechanicId, SosStatus.ARRIVED);
+    return transactionTemplate.execute(
+        status -> {
+          sosRequestRepository.lockStatus(sosId);
+          ArrivalCheck check = arrivalCheck(sosId, mechanicId);
+          if (check.waiting() != null) return check.waiting();
+          requireMechanicAtSos(check.mechanic(), check.sos());
+          return propose(findSosOrThrow(sosId), mechanicId, SosStatus.ARRIVED);
+        });
+  }
+
+  /** What proposeArrival needs before the Maps call, or the request already waiting. */
+  private record ArrivalCheck(
+      Mechanic mechanic, SosRequest sos, SosStatusHistoryResponse waiting) {}
+
+  // The same checks propose() makes, in the same order, without the ticket lock.
+  private ArrivalCheck arrivalCheck(UUID sosId, UUID mechanicId) {
+    SosRequest sos = findSosOrThrow(sosId);
+    validateTransition(sos.getStatus(), SosStatus.ARRIVED);
+    Mechanic mechanic =
+        mechanicRepository
+            .findById(mechanicId)
+            .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+    requireAssignedMechanic(sos, mechanicId);
+    return sosStatusHistoryRepository
+        .findFirstBySosRequestSosIdAndApprovedStatusOrderByChangeAtDesc(
+            sosId, ApprovedStatus.PENDING_APPROVAL)
+        .map(w -> new ArrivalCheck(null, null, sosStatusHistoryMapper.toResponse(w)))
+        .orElse(new ArrivalCheck(mechanic, sos, null));
   }
 
   /** A mechanic's request to move the ticket to ARRIVED or COMPLETED, waiting for the customer. */
@@ -899,9 +930,8 @@ public class SosServiceImpl implements SosService {
     if (alreadyWaiting.isPresent()) {
       return sosStatusHistoryMapper.toResponse(alreadyWaiting.get());
     }
-    if (toStatus == SosStatus.ARRIVED) {
-      requireMechanicAtSos(mechanic, sos);
-    }
+    // ARRIVED's distance check ran before the lock (proposeArrival), so Google is never called
+    // here.
     SosStatusHistory history =
         SosStatusHistory.builder()
             .sosRequest(sos)
