@@ -10,7 +10,14 @@ import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * The mechanic-context header carries the mechanic's SSO profile, and the first request after it
@@ -20,6 +27,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 class MechanicProfileSyncIntegrationTest extends FlowTestSupport {
 
   @Autowired private MechanicRateRepository rateRepository;
+  @Autowired private PlatformTransactionManager txManager;
+  @Autowired private JdbcTemplate jdbc;
 
   /** SSO's own response shape: the mechanic block inside {@code data}. */
   private static String profileContext(
@@ -129,5 +138,40 @@ class MechanicProfileSyncIntegrationTest extends FlowTestSupport {
 
     assertThat(tagsOf(id)).hasSize(1);
     assertThat(tagsOf(id).get(0)).containsExactly("TIRE");
+  }
+
+  /**
+   * A ping loads the row, another transaction commits "go offline" and a profile change, then the
+   * ping saves its copy. Only the columns the ping changed are written, so the others survive.
+   */
+  @Test
+  void aStaleCopySaved_keepsColumnsAnotherTransactionCommitted() {
+    Mechanic m = skilledMechanic(11.5564, 104.9282, "TOW");
+    UUID id = m.getMechanicId();
+    TransactionTemplate outer = new TransactionTemplate(txManager);
+    TransactionTemplate inner = new TransactionTemplate(txManager);
+    inner.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+    outer.executeWithoutResult(
+        status -> {
+          Mechanic ping = mechanicRepository.findById(id).orElseThrow();
+          inner.executeWithoutResult(
+              s ->
+                  jdbc.update(
+                      "UPDATE mechanic SET available_status = false, full_name = 'Synced Name',"
+                          + " service_radius_km = 25 WHERE id = ?",
+                      id));
+          ping.setCurrentLocation(
+              new GeometryFactory(new PrecisionModel(), 4326)
+                  .createPoint(new Coordinate(104.93, 11.56)));
+          ping.setLocationUpdatedAt(java.time.LocalDateTime.now());
+          mechanicRepository.save(ping);
+        });
+
+    Mechanic after = mechanicRepository.findById(id).orElseThrow();
+    assertThat(after.getCurrentLocation().getX()).isEqualTo(104.93);
+    assertThat(after.getAvailableStatus()).as("go offline survives the ping").isFalse();
+    assertThat(after.getFullName()).isEqualTo("Synced Name");
+    assertThat(after.getServiceRadiusKm()).isEqualTo(25);
   }
 }
