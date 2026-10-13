@@ -9,3 +9,7 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "monthly"
+    ignore:
+      # h3 4.x renamed geoToH3Address/kRing; stay on 3.x until the code is ported
+      - dependency-name: "com.uber:h3"
+        update-types: ["version-update:semver-major"]
