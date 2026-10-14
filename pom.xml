@@ -29,7 +29,7 @@
     <properties>
         <java.version>21</java.version>
         <mapstruct.version>1.6.3</mapstruct.version>
-        <awssdk.version>2.29.52</awssdk.version>
+        <awssdk.version>2.55.14</awssdk.version>
         <!-- Tests tagged "integration" need Docker (Testcontainers) and are skipped by default so a
              normal build and the PR check stay fast. Run them with: ./mvnw test -Pintegration -->
         <it.groups></it.groups>
