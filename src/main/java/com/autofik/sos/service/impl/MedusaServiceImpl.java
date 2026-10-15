@@ -1,13 +1,16 @@
 package com.autofik.sos.service.impl;
 
 import com.autofik.sos.config.MedusaConfig;
+import com.autofik.sos.config.TracingConfig;
 import com.autofik.sos.dto.external.MedusaServiceGroupResponse;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.service.MedusaService;
+import io.micrometer.observation.ObservationRegistry;
 import jakarta.persistence.EntityNotFoundException;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
@@ -24,13 +27,20 @@ public class MedusaServiceImpl implements MedusaService {
   /** Pre-configured, thread-safe HTTP client instance for executing requests to Medusa. */
   private final RestClient restClient;
 
+  /** Unobserved; for tests that build the client by hand. */
+  public MedusaServiceImpl(MedusaConfig config) {
+    this(config, ObservationRegistry.NOOP);
+  }
+
   /**
    * Constructs a new {@code MedusaServiceImpl} and initializes the underlying HTTP client wrapper
    * using the base configurations provided by {@link MedusaConfig}.
    *
    * @param config The injected configuration properties containing base URLs and API keys.
+   * @param observationRegistry records a client span per call and puts the trace context on it
    */
-  public MedusaServiceImpl(MedusaConfig config) {
+  @Autowired
+  public MedusaServiceImpl(MedusaConfig config, ObservationRegistry observationRegistry) {
     // Without timeouts a hung Medusa holds the caller's request thread, and SOS create waits on it.
     JdkClientHttpRequestFactory requestFactory =
         new JdkClientHttpRequestFactory(
@@ -43,6 +53,12 @@ public class MedusaServiceImpl implements MedusaService {
             .requestFactory(requestFactory)
             .baseUrl(config.getBaseUrl())
             .defaultHeader("x-publishable-api-key", config.getPublicKey())
+            // An http.client.requests span under the SOS create that waits on it, and traceparent
+            // on the request. The registry rather than Boot's RestClient.Builder, which this
+            // module does not have, so the JDK factory and timeouts above stay. No header is
+            // recorded (the publishable key stays off the span), and the URL loses its query.
+            .observationRegistry(observationRegistry)
+            .observationConvention(new TracingConfig.QuerylessClientRequestConvention())
             .build();
   }
 

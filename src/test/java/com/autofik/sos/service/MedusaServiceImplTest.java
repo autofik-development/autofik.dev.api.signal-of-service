@@ -4,9 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.autofik.sos.config.MedusaConfig;
+import com.autofik.sos.config.TestTracing;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.service.impl.MedusaServiceImpl;
 import com.sun.net.httpserver.HttpServer;
+import io.micrometer.observation.Observation;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.sdk.trace.data.SpanData;
 import jakarta.persistence.EntityNotFoundException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +25,7 @@ class MedusaServiceImplTest {
   private HttpServer server;
   private final AtomicReference<String> seenKey = new AtomicReference<>();
   private final AtomicReference<String> seenPath = new AtomicReference<>();
+  private final AtomicReference<String> seenTraceparent = new AtomicReference<>();
   private volatile int status = 200;
   private volatile String body = "";
 
@@ -32,6 +37,7 @@ class MedusaServiceImplTest {
         ex -> {
           seenKey.set(ex.getRequestHeaders().getFirst("x-publishable-api-key"));
           seenPath.set(ex.getRequestURI().getRawPath());
+          seenTraceparent.set(ex.getRequestHeaders().getFirst("traceparent"));
           byte[] out = body.getBytes(StandardCharsets.UTF_8);
           ex.getResponseHeaders().add("Content-Type", "application/json");
           ex.sendResponseHeaders(status, out.length == 0 ? -1 : out.length);
@@ -46,11 +52,55 @@ class MedusaServiceImplTest {
     server.stop(0);
   }
 
-  private MedusaServiceImpl service() {
+  private MedusaConfig config() {
     MedusaConfig cfg = new MedusaConfig();
     cfg.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
     cfg.setPublicKey("pk_unit");
-    return new MedusaServiceImpl(cfg);
+    return cfg;
+  }
+
+  private MedusaServiceImpl service() {
+    return new MedusaServiceImpl(config());
+  }
+
+  // Observed, the call is a client span under the request that made it, and Medusa gets that
+  // span's traceparent. The publishable key goes on the request, never on the span.
+  @Test
+  void observed_isAClientSpan_andSendsItsTraceparent() {
+    body = "{\"service_group\":{\"key\":\"tow\"}}";
+    try (TestTracing tracing = new TestTracing()) {
+      MedusaServiceImpl observed = new MedusaServiceImpl(config(), tracing.registry);
+
+      Observation request = Observation.start("request", tracing.registry);
+      try (Observation.Scope ignored = request.openScope()) {
+        observed.resolveServiceGroupKey("sg_1");
+      } finally {
+        request.stop();
+      }
+
+      SpanData client =
+          tracing.finished().stream()
+              .filter(s -> s.getKind() == SpanKind.CLIENT)
+              .findFirst()
+              .orElseThrow();
+      SpanData parent =
+          tracing.finished().stream()
+              .filter(s -> s.getName().equals("request"))
+              .findFirst()
+              .orElseThrow();
+      assertThat(client.getParentSpanId()).isEqualTo(parent.getSpanId());
+      assertThat(seenTraceparent.get())
+          .startsWith("00-" + client.getTraceId() + "-" + client.getSpanId() + "-");
+      assertThat(client.getAttributes().asMap().values())
+          .noneMatch(v -> v.toString().contains("pk_unit"));
+    }
+  }
+
+  @Test
+  void unobserved_sendsNoTraceparent() {
+    body = "{\"service_group\":{\"key\":\"tow\"}}";
+    service().resolveServiceGroupKey("sg_1");
+    assertThat(seenTraceparent.get()).isNull();
   }
 
   @Test

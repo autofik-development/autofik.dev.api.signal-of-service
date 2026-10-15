@@ -12,4 +12,5 @@ logging:
     root: WARN
     com.autofik: INFO
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{36} - %msg%n"
+    # [traceId,spanId] as in application.yaml, so a prod log line can be looked up in Jaeger.
+    console: "%d{yyyy-MM-dd HH:mm:ss} %-5level %notEmpty{[%X{traceId},%X{spanId}] }%logger{36} - %msg%n"

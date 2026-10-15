@@ -22,6 +22,7 @@ import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
@@ -94,7 +95,42 @@ public class KafkaConfig {
 
   @Bean
   public KafkaTemplate<String, Object> kafkaTemplate() {
-    return new KafkaTemplate<>(producerFactory());
+    return new ObservedKafkaTemplate<>(producerFactory());
+  }
+
+  /**
+   * A KafkaTemplate whose sends are observed: each record carries the trace context in its headers
+   * ({@code traceparent}, {@code tracestate}, {@code baggage}), and the listener that reads it
+   * continues the same trace. Boot's {@code spring.kafka.template.observation-enabled} only reaches
+   * the template Boot builds, not these. A consumer that does not trace, such as the gateway's
+   * WatchSos reader, ignores headers it does not know; the JSON value is unchanged.
+   *
+   * <p>The spans name the Kafka cluster. When the admin does not know that name yet (Kafka was down
+   * while this service started), Spring Kafka asks the broker for it on the next send, blocking the
+   * sending thread for up to the admin's 30 s operation timeout, and a send after commit runs on a
+   * request's thread. So only the name the admin already has is used; a span without it is fine.
+   */
+  static final class ObservedKafkaTemplate<K, V> extends KafkaTemplate<K, V> {
+
+    ObservedKafkaTemplate(ProducerFactory<K, V> producerFactory) {
+      super(producerFactory);
+      setObservationEnabled(true);
+    }
+
+    @Override
+    protected String clusterId() {
+      KafkaAdmin admin = getKafkaAdmin();
+      return admin == null ? null : admin.getClusterId();
+    }
+  }
+
+  // A listener's span continues the trace from the record's traceparent header, so what a consumer
+  // does (the push, the WebSocket relay) sits under the request that published the event. Boot's
+  // spring.kafka.listener.observation-enabled does not reach the factories defined here.
+  private static <K, V> ConcurrentKafkaListenerContainerFactory<K, V> observed(
+      ConcurrentKafkaListenerContainerFactory<K, V> factory) {
+    factory.getContainerProperties().setObservationEnabled(true);
+    return factory;
   }
 
   @Bean
@@ -183,11 +219,12 @@ public class KafkaConfig {
   }
 
   // Raw-bytes producer for the dead-letter topic: a record that failed to deserialize has no event
-  // object left to serialize, only the bytes that arrived.
+  // object left to serialize, only the bytes that arrived. Observed too, so a dead-lettered record
+  // shows in the trace of the listener that gave up on it.
   @Bean
   public KafkaTemplate<String, byte[]> deadLetterBytesTemplate() {
     Map<String, Object> props = kafkaProperties.buildProducerProperties();
-    return new KafkaTemplate<>(
+    return new ObservedKafkaTemplate<>(
         new DefaultKafkaProducerFactory<>(
             props, new StringSerializer(), new ByteArraySerializer()));
   }
@@ -227,7 +264,7 @@ public class KafkaConfig {
   @Bean
   public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory() {
     ConcurrentKafkaListenerContainerFactory<String, Object> factory =
-        new ConcurrentKafkaListenerContainerFactory<>();
+        observed(new ConcurrentKafkaListenerContainerFactory<>());
     factory.setConsumerFactory(consumerFactory());
     factory.setCommonErrorHandler(kafkaErrorHandler());
     return factory;
@@ -243,7 +280,7 @@ public class KafkaConfig {
         new JsonDeserializer<>(SosMediaUploadedEvent.class, kafkaObjectMapper());
     deserializer.addTrustedPackages("com.autofik.sos.*");
     ConcurrentKafkaListenerContainerFactory<String, SosMediaUploadedEvent> factory =
-        new ConcurrentKafkaListenerContainerFactory<>();
+        observed(new ConcurrentKafkaListenerContainerFactory<>());
     factory.setConsumerFactory(
         new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), failSafe(deserializer)));
     factory.setCommonErrorHandler(kafkaErrorHandler());
@@ -263,7 +300,7 @@ public class KafkaConfig {
         new JsonDeserializer<>(SosNotificationEvent.class, kafkaObjectMapper());
     deserializer.addTrustedPackages("com.autofik.sos.*");
     ConcurrentKafkaListenerContainerFactory<String, SosNotificationEvent> factory =
-        new ConcurrentKafkaListenerContainerFactory<>();
+        observed(new ConcurrentKafkaListenerContainerFactory<>());
     factory.setConsumerFactory(
         new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), failSafe(deserializer)));
     factory.setCommonErrorHandler(kafkaErrorHandler());
