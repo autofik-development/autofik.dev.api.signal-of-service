@@ -36,12 +36,23 @@ spring:
     redis:
       host: ${REDIS_HOST}
       port: ${REDIS_PORT}
+      # Blank (local Redis) means no AUTH; the cluster's Redis requires one.
       # Fail fast instead of Lettuce's 60s default — a slow/unresponsive (not fully down) Redis
       # should hit the Kafka fallback (see RedisLocationListenerConfig) quickly, not after a
       # minute-long stall per command.
       timeout: ${REDIS_TIMEOUT_MS:1000}ms
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    # PLAINTEXT for a Kafka without login (local, the master cluster's single broker). SASL_PLAINTEXT
+    # (or SASL_SSL) for one that requires it, such as the Strimzi cluster with its SCRAM users. Every
+    # producer, consumer and admin client here is built from these spring.kafka settings.
+    security:
+      protocol: ${KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
+    properties:
+      # Both are ignored unless the protocol is SASL_*. KAFKA_SASL_JAAS_CONFIG is the whole
+      # sasl.jaas.config line, as in the `sasl.jaas.config` key of the app's KafkaUser Secret.
+      sasl.mechanism: ${KAFKA_SASL_MECHANISM:SCRAM-SHA-512}
+      sasl.jaas.config: ${KAFKA_SASL_JAAS_CONFIG:}
     admin:
       fail-fast: false
     producer:
