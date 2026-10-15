@@ -17,6 +17,7 @@ import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.BidSosMapper;
 import com.autofik.sos.repository.BidSosRepository;
@@ -89,7 +90,7 @@ public class BidServiceImpl implements BidService {
     DistanceInfo info =
         route.from() == null ? null : googleMapsService.getDistanceInfo(route.from(), route.to());
     if (info != null && maxRoadEtaMinutes > 0 && info.durationSeconds() > maxRoadEtaMinutes * 60L) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           "Mechanic is too far from this SOS by road: " + info.durationText());
     }
 
@@ -116,12 +117,12 @@ public class BidServiceImpl implements BidService {
             .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
     // Bids can only be submitted if the ticket is still open and waiting (PENDING)
     if (sosRequest.getStatus() != SosStatus.PENDING) {
-      throw new IllegalStateException("Bids can only be placed on PENDING requests");
+      throw new ConflictException("Bids can only be placed on PENDING requests");
     }
     // ...and the timeline window to place bids has not expired
     if (sosRequest.getBiddingExpiresAt() != null
         && LocalDateTime.now().isAfter(sosRequest.getBiddingExpiresAt())) {
-      throw new IllegalStateException("Bidding window has closed for this SOS request");
+      throw new ConflictException("Bidding window has closed for this SOS request");
     }
     return sosRequest;
   }
@@ -132,7 +133,7 @@ public class BidServiceImpl implements BidService {
             .findById(mechanicId)
             .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
     if (!Boolean.TRUE.equals(mechanic.getAvailableStatus())) {
-      throw new IllegalStateException("Mechanic is not available: " + mechanicId);
+      throw new ConflictException("Mechanic is not available: " + mechanicId);
     }
     return mechanic;
   }
@@ -149,11 +150,11 @@ public class BidServiceImpl implements BidService {
             sosId, mechanicId);
     if (prior.isEmpty()) return prior;
     if (prior.get().getStatus() != BidStatus.CANCELLED) {
-      throw new IllegalStateException("Mechanic already submitted a bid on this SOS request");
+      throw new ConflictException("Mechanic already submitted a bid on this SOS request");
     }
     if (sosStatusHistoryRepository.existsBySosRequestSosIdAndProposedByMechanicIdAndToStatus(
         sosId, mechanicId, SosStatus.PENDING)) {
-      throw new IllegalStateException("Mechanic released this job and cannot bid on it again");
+      throw new ConflictException("Mechanic released this job and cannot bid on it again");
     }
     return prior;
   }
@@ -181,7 +182,7 @@ public class BidServiceImpl implements BidService {
     if (!SosStatus.PENDING
         .name()
         .equals(sosRequestRepository.lockStatus(request.sosId()).orElse(null))) {
-      throw new IllegalStateException("Bids can only be placed on PENDING requests");
+      throw new ConflictException("Bids can only be placed on PENDING requests");
     }
     // A mechanic who withdrew may bid again: the old, withdrawn row goes and a fresh one is saved,
     // so there is still one row per mechanic and ticket and the new bid has its own time.
@@ -332,7 +333,7 @@ public class BidServiceImpl implements BidService {
     }
 
     if (request.status() == BidStatus.ACCEPTED && !SosStatus.PENDING.name().equals(ticketStatus)) {
-      throw new IllegalStateException("This SOS request is no longer open for accepting bids");
+      throw new ConflictException("This SOS request is no longer open for accepting bids");
     }
 
     // A bid already responded to cannot be responded to again — without this, re-accepting an
@@ -352,7 +353,7 @@ public class BidServiceImpl implements BidService {
           .lockById(mechanicId)
           .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
       if (bidSosRepository.findActiveJob(mechanicId).isPresent()) {
-        throw new IllegalStateException("This mechanic has just been assigned to another job");
+        throw new ConflictException("This mechanic has just been assigned to another job");
       }
     }
 
@@ -559,7 +560,7 @@ public class BidServiceImpl implements BidService {
             .currentStatus(bid.getBidId())
             .orElseThrow(() -> new EntityNotFoundException("Bid not found: " + bid.getBidId()));
     if (stored != BidStatus.PENDING) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           "Only PENDING bids can be " + action + ", current status: " + stored);
     }
     bid.setStatus(stored);

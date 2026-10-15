@@ -53,6 +53,7 @@ class SosMediaServiceImplTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock S3Client s3Client;
   @Mock S3Presigner s3Presigner;
+  @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
   @InjectMocks SosMediaServiceImpl sosMediaService;
 
@@ -87,6 +88,14 @@ class SosMediaServiceImplTest {
     ReflectionTestUtils.setField(sosMediaService, "maxUploadMb", 10L);
     ReflectionTestUtils.setField(sosMediaService, "maxImageDimension", 1280);
     ReflectionTestUtils.setField(sosMediaService, "jpegQuality", 0.80);
+    // upload() runs its two database phases through the template; run the callback inline.
+    lenient()
+        .when(transactionTemplate.execute(any()))
+        .thenAnswer(
+            inv ->
+                ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null));
     // Participation is covered by SosServiceImplTest; here every caller is a legitimate party.
     lenient().when(sosService.canView(any(), any())).thenReturn(true);
 
@@ -116,6 +125,26 @@ class SosMediaServiceImplTest {
                     software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest
                         .class)))
         .thenReturn(presigned);
+  }
+
+  @Test
+  void upload_whenTheMetadataInsertFails_theStoredObjectIsRemoved() throws Exception {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+    when(sosMediaRepository.save(any(SosMedia.class))).thenThrow(new IllegalStateException("db"));
+
+    assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+        .isInstanceOf(IllegalStateException.class);
+
+    ArgumentCaptor<software.amazon.awssdk.services.s3.model.PutObjectRequest> put =
+        ArgumentCaptor.forClass(software.amazon.awssdk.services.s3.model.PutObjectRequest.class);
+    verify(s3Client)
+        .putObject(put.capture(), any(software.amazon.awssdk.core.sync.RequestBody.class));
+    ArgumentCaptor<software.amazon.awssdk.services.s3.model.DeleteObjectRequest> del =
+        ArgumentCaptor.forClass(software.amazon.awssdk.services.s3.model.DeleteObjectRequest.class);
+    verify(s3Client).deleteObject(del.capture());
+    assertThat(del.getValue().key()).isEqualTo(put.getValue().key());
+    verifyNoInteractions(sosEventProducer);
   }
 
   @Test

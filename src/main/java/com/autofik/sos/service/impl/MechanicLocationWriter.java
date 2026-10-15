@@ -3,6 +3,7 @@ package com.autofik.sos.service.impl;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
+import com.autofik.sos.util.Geo;
 import com.autofik.sos.util.GeoDistance;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
@@ -13,8 +14,6 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
-import org.locationtech.jts.geom.GeometryFactory;
-import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -37,8 +36,6 @@ public class MechanicLocationWriter {
   @Value("${sos.h3.resolution:7}")
   private int h3Resolution;
 
-  private static final GeometryFactory GEOMETRY_FACTORY =
-      new GeometryFactory(new PrecisionModel(), 4326);
   private static final H3Core H3;
 
   static {
@@ -127,7 +124,7 @@ public class MechanicLocationWriter {
               >= movedThresholdMeters) {
         mechanic.setLocationMovedAt(LocalDateTime.now());
       }
-      mechanic.setCurrentLocation(GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat)));
+      mechanic.setCurrentLocation(Geo.WGS84.createPoint(new Coordinate(lng, lat)));
       mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, h3Resolution));
       mechanic.setLocationUpdatedAt(LocalDateTime.now());
       mechanicRepository.save(mechanic);

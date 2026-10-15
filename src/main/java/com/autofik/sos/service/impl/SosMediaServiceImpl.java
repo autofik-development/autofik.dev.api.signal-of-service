@@ -30,14 +30,17 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import net.coobird.thumbnailator.Thumbnails;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -47,6 +50,7 @@ import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignReques
  * Implementation of {@link SosMediaService} handling secure media uploads, image normalization
  * (processing/compression), AWS S3 storage, and event streaming.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SosMediaServiceImpl implements SosMediaService {
@@ -84,6 +88,7 @@ public class SosMediaServiceImpl implements SosMediaService {
   private final SosEventProducer sosEventProducer;
   private final S3Client s3Client;
   private final S3Presigner s3Presigner;
+  private final TransactionTemplate transactionTemplate;
 
   @Value("${aws.s3.bucket}")
   private String bucket;
@@ -105,12 +110,13 @@ public class SosMediaServiceImpl implements SosMediaService {
    * @param userId The identity of the user uploader (null if uploaded by mechanic).
    * @param mechanicId The identity of the mechanic uploader (null if uploaded by user).
    * @return Formatted media response object including a short-lived S3 access URL.
-   * @throws IllegalStateException If neither or both actor contexts are passed.
-   * @throws IllegalArgumentException If file structural validation, size limits, or magic bytes
-   *     check fail.
+   * @throws IllegalArgumentException If neither or both actor contexts are passed, or file
+   *     structural validation, size limits, or magic bytes check fail.
    */
+  // Deliberately NOT @Transactional: the S3 PUT is a network call and would hold a Postgres
+  // connection for its whole duration. Only the two database phases run in a transaction, as in
+  // SosServiceImpl.create; the object is deleted again if the second one fails.
   @Override
-  @Transactional
   public SosMediaResponse upload(UUID sosId, MultipartFile file, UUID userId, UUID mechanicId) {
 
     // Enforce XOR logic: An upload must strictly be tied to either a User OR a Mechanic context
@@ -124,33 +130,11 @@ public class SosMediaServiceImpl implements SosMediaService {
       throw new IllegalArgumentException("File exceeds the " + maxUploadMb + " MB limit");
     }
 
-    // Phase 2: Domain Entity Verification
-    SosRequest sos =
-        sosRequestRepository
-            .findById(sosId)
-            .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
+    // Phase 2: Domain Entity Verification (short transaction)
+    Uploader uploader =
+        transactionTemplate.execute(status -> loadUploader(sosId, userId, mechanicId));
 
-    // Only the driver and the mechanics who bid may attach to a ticket — otherwise anyone
-    // holding a sosId can push images into someone else's incident.
-    if (!sosService.canView(sosId, userId != null ? userId : mechanicId)) {
-      throw new AccessDeniedException("You are not part of this SOS request");
-    }
-
-    User user = null;
-    Mechanic mechanic = null;
-    if (userId != null) {
-      user =
-          userRepository
-              .findById(userId)
-              .orElseThrow(() -> new EntityNotFoundException("User not found: " + userId));
-    } else {
-      mechanic =
-          mechanicRepository
-              .findById(mechanicId)
-              .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
-    }
-
-    // Phase 3: Secure media transformation
+    // Phase 3: Secure media transformation (no transaction)
     byte[] raw;
     try {
       raw = file.getBytes();
@@ -169,43 +153,89 @@ public class SosMediaServiceImpl implements SosMediaService {
       throw new IllegalArgumentException("File is not a readable image", e);
     }
 
-    // Phase 4: S3 Object Storage Persistence
+    // Phase 4: S3 Object Storage Persistence (no transaction)
     String objectKey = "sos/" + sosId + "/" + UUID.randomUUID() + ".jpg";
     s3Client.putObject(
         PutObjectRequest.builder().bucket(bucket).key(objectKey).contentType("image/jpeg").build(),
         RequestBody.fromBytes(compressed));
 
-    // Phase 5: RDBMS Metadata Persistence
+    // Phase 5: metadata insert and event (short transaction). A failure here would orphan the
+    // object, so it is removed before the error goes on.
+    try {
+      return transactionTemplate.execute(
+          status -> persistMedia(uploader, objectKey, compressed.length));
+    } catch (RuntimeException e) {
+      deleteQuietly(objectKey);
+      throw e;
+    }
+  }
+
+  private record Uploader(SosRequest sos, User user, Mechanic mechanic) {}
+
+  // Runs inside the transaction opened by upload().
+  private Uploader loadUploader(UUID sosId, UUID userId, UUID mechanicId) {
+    SosRequest sos =
+        sosRequestRepository
+            .findById(sosId)
+            .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
+
+    // Only the driver and the mechanics who bid may attach to a ticket — otherwise anyone
+    // holding a sosId can push images into someone else's incident.
+    if (!sosService.canView(sosId, userId != null ? userId : mechanicId)) {
+      throw new AccessDeniedException("You are not part of this SOS request");
+    }
+
+    if (userId != null) {
+      User user =
+          userRepository
+              .findById(userId)
+              .orElseThrow(() -> new EntityNotFoundException("User not found: " + userId));
+      return new Uploader(sos, user, null);
+    }
+    Mechanic mechanic =
+        mechanicRepository
+            .findById(mechanicId)
+            .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
+    return new Uploader(sos, null, mechanic);
+  }
+
+  // Runs inside the transaction opened by upload(). The entities were loaded by an earlier,
+  // already closed transaction; they are only referenced by id here, never modified.
+  private SosMediaResponse persistMedia(Uploader uploader, String objectKey, int sizeBytes) {
+    User user = uploader.user();
+    Mechanic mechanic = uploader.mechanic();
     SosMedia saved =
         sosMediaRepository.save(
             SosMedia.builder()
-                .sosRequest(sos)
+                .sosRequest(uploader.sos())
                 .mediaType(MediaType.PHOTO)
                 .contentType("image/jpeg")
-                .sizeBytes((long) compressed.length)
+                .sizeBytes((long) sizeBytes)
                 .objectKey(objectKey)
                 .uploadedByUser(user)
                 .uploadedByMechanic(mechanic)
                 .build());
 
-    // Phase 6: Event Notification Propagation (Kafka)
-    UUID uploadedById;
-    String uploadedByRole;
-    if (user != null) {
-      uploadedById = user.getUserId();
-      uploadedByRole = "USER";
-    } else {
-      if (mechanic == null) {
-        throw new IllegalStateException("Uploader context is invalid: mechanic is null");
-      }
-      uploadedById = mechanic.getMechanicId();
-      uploadedByRole = "MECHANIC";
-    }
+    // Event Notification Propagation (Kafka)
+    UUID uploadedById = user != null ? user.getUserId() : mechanic.getMechanicId();
+    String uploadedByRole = user != null ? "USER" : "MECHANIC";
     sosEventProducer.publishMediaUploaded(
         new SosMediaUploadedEvent(
-            sosId, saved.getMediaId(), uploadedByRole, uploadedById, saved.getUploadedAt()));
+            uploader.sos().getSosId(),
+            saved.getMediaId(),
+            uploadedByRole,
+            uploadedById,
+            saved.getUploadedAt()));
 
     return toResponseWithUrl(saved);
+  }
+
+  private void deleteQuietly(String objectKey) {
+    try {
+      s3Client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(objectKey).build());
+    } catch (RuntimeException e) {
+      log.warn("Could not remove orphaned media object {}: {}", objectKey, e.getMessage());
+    }
   }
 
   /**

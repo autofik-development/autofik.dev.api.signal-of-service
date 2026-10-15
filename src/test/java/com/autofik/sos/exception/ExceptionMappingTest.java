@@ -45,6 +45,17 @@ class ExceptionMappingTest {
   }
 
   @Test
+  void conflictException_is409_andPlainIllegalState_isNot() throws Exception {
+    assertThat(handler.handleConflict(new ConflictException("Bids closed")).status())
+        .isEqualTo(409);
+    // A JDK IllegalStateException is an internal fault: no handler but the catch-all takes it.
+    Method m =
+        new ExceptionHandlerMethodResolver(GlobalExceptionHandler.class)
+            .resolveMethodByThrowable(new IllegalStateException("boom"));
+    assertThat(m.getName()).isEqualTo("handleGeneral");
+  }
+
+  @Test
   void unexpectedException_is500_andDoesNotEchoTheCause() {
     ErrorResponse r =
         handler.handleGeneral(

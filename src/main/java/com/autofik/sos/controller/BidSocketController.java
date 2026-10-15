@@ -6,6 +6,7 @@ import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.security.GatewayIdentityFilter;
@@ -211,7 +212,7 @@ public class BidSocketController {
   private static int statusOf(Exception ex) {
     if (ex instanceof EntityNotFoundException) return 404;
     if (ex instanceof AccessDeniedException) return 403;
-    if (ex instanceof IllegalStateException) return 409;
+    if (ex instanceof ConflictException) return 409;
     if (ex instanceof IllegalArgumentException) return 400;
     // The rest mirror GlobalExceptionHandler, so a client sees the same status over either path.
     if (ex instanceof DataIntegrityViolationException) return 409;

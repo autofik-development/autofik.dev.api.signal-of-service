@@ -13,7 +13,12 @@ import org.hibernate.annotations.UuidGenerator;
  * Maps directly to the 'bid_sos' table in the database
  * */
 @Entity // tell JPA that this class is a database model/table
-@Table(name = "bid_sos") // Specifies the exact database table name
+@Table(
+    name = "bid_sos",
+    uniqueConstraints =
+        @UniqueConstraint(
+            name = "uk_bid_sos_sos_mechanic",
+            columnNames = {"sos_id", "mechanic_id"}))
 @Getter
 @Setter // Lombok: Automatically generates getter and setter for all fields
 @NoArgsConstructor

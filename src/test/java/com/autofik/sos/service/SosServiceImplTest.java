@@ -1317,13 +1317,15 @@ class SosServiceImplTest {
     Pageable pageable = PageRequest.of(0, 20);
     when(sosRequestRepository.findByUserUserId(userId, pageable))
         .thenReturn(new PageImpl<>(List.of(pendingSos)));
-    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
-        .thenReturn(Optional.empty());
+    when(bidSosRepository.findWithMechanicBySosIdsAndStatus(List.of(sosId), BidStatus.ACCEPTED))
+        .thenReturn(List.of());
     when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
     Page<SosRequestResponse> result = sosService.getByUser(userId, pageable);
 
     assertThat(result.getContent()).containsExactly(sosResponse);
+    // One batched lookup for the page, never one per row.
+    verify(bidSosRepository, never()).findFirstBySosRequestSosIdAndStatus(any(), any());
   }
 
   @Test
@@ -1331,8 +1333,8 @@ class SosServiceImplTest {
     Pageable pageable = PageRequest.of(0, 20);
     when(sosRequestRepository.findByUserUserIdAndStatus(userId, SosStatus.PENDING, pageable))
         .thenReturn(new PageImpl<>(List.of(pendingSos)));
-    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
-        .thenReturn(Optional.empty());
+    when(bidSosRepository.findWithMechanicBySosIdsAndStatus(List.of(sosId), BidStatus.ACCEPTED))
+        .thenReturn(List.of());
     when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
 
     Page<SosRequestResponse> result =
