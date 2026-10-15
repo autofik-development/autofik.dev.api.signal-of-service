@@ -22,7 +22,8 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
-      ddl-auto: update
+      # Flyway owns the schema (src/main/resources/db/migration); Hibernate only checks it.
+      ddl-auto: validate
     show-sql: false
     properties:
       hibernate:

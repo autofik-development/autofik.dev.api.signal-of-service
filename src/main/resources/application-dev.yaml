@@ -2,7 +2,12 @@ spring:
   jpa:
     show-sql: true
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
+  flyway:
+    # Local DBs were built by ddl-auto=update before Flyway existed: mark them as already at V1
+    # instead of re-running the baseline. Not set in prod, so a non-empty prod DB fails loudly.
+    baseline-on-migrate: true
+    baseline-version: 1
 
 logging:
   level:
