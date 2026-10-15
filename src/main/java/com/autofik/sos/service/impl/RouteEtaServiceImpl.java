@@ -8,6 +8,7 @@ import com.autofik.sos.dto.external.EtaSnapshot;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.service.GoogleMapsService;
 import com.autofik.sos.service.RouteEtaService;
+import com.autofik.sos.util.Geo;
 import com.autofik.sos.util.GeoDistance;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -19,9 +20,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
-import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
-import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -51,9 +50,6 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   // bounded so an abandoned job cannot pin the entry forever.
   @Value("${sos.eta.cache-ttl-minutes:15}")
   private int cacheTtlMinutes;
-
-  private static final GeometryFactory GEOMETRY_FACTORY =
-      new GeometryFactory(new PrecisionModel(), 4326);
 
   // The only two states that mean "a mechanic is currently driving toward the customer".
   private static final Set<SosStatus> EN_ROUTE =
@@ -148,7 +144,7 @@ public class RouteEtaServiceImpl implements RouteEtaService {
     }
 
     Point destination = sos.getLocation();
-    Point origin = GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat));
+    Point origin = Geo.WGS84.createPoint(new Coordinate(lng, lat));
     DistanceInfo info = googleMapsService.getDistanceInfo(origin, destination);
     // No key, quota exhausted, or no drivable route: show no ETA rather than a made-up one.
     if (info == null) return null;

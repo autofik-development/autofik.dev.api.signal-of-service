@@ -14,6 +14,7 @@ import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.MechanicSkillRepository;
 import com.autofik.sos.service.MechanicService;
 import com.autofik.sos.service.RouteEtaService;
+import com.autofik.sos.util.Geo;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
 import java.io.IOException;
@@ -125,7 +126,8 @@ public class MechanicServiceImpl implements MechanicService {
     boolean needsSkills = problemType != null && !problemType.isBlank();
 
     String centerCell = H3.geoToH3Address(lat, lng, h3Resolution);
-    List<String> searchCells = H3.kRing(centerCell, ringRadiusFor(radiusKm));
+    List<String> searchCells =
+        H3.kRing(centerCell, Geo.ringRadiusFor(radiusKm, h3CenterToCenterKm));
 
     List<Mechanic> stage1 = mechanicRepository.findByH3Cells(searchCells);
     if (stage1.isEmpty()) {
@@ -169,10 +171,6 @@ public class MechanicServiceImpl implements MechanicService {
     }
 
     return mechanicMapper.toResponseList(result);
-  }
-
-  private int ringRadiusFor(int radiusKm) {
-    return (int) Math.ceil(radiusKm / h3CenterToCenterKm) + 1;
   }
 
   // Convenience overload — delegates so both entry points share one broadcast decision.

@@ -58,6 +58,16 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
   Optional<BidSos> findFirstBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
 
   /**
+   * The bids in one status across many tickets, mechanic and its rating loaded: one query for a
+   * whole page.
+   */
+  @Query(
+      "select b from BidSos b join fetch b.mechanic m left join fetch m.rate"
+          + " where b.sosRequest.sosId in :sosIds and b.status = :status")
+  List<BidSos> findWithMechanicBySosIdsAndStatus(
+      @Param("sosIds") Collection<UUID> sosIds, @Param("status") BidStatus status);
+
+  /**
    * SOS statuses in which an ACCEPTED bid still means "this mechanic is on that job". A bid stays
    * ACCEPTED after the ticket is completed or cancelled, so the bid status alone says nothing about
    * whether the job is live.

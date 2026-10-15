@@ -69,6 +69,7 @@ class MediaUploadFuzzTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock S3Client s3Client;
   @Mock S3Presigner s3Presigner;
+  @Mock org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
   @InjectMocks SosMediaServiceImpl sosMediaService;
 
@@ -86,6 +87,14 @@ class MediaUploadFuzzTest {
     ReflectionTestUtils.setField(sosMediaService, "maxUploadMb", 10L);
     ReflectionTestUtils.setField(sosMediaService, "maxImageDimension", 1280);
     ReflectionTestUtils.setField(sosMediaService, "jpegQuality", 0.80);
+    // upload() runs its two database phases through the template; run the callback inline.
+    org.mockito.Mockito.lenient()
+        .when(transactionTemplate.execute(any()))
+        .thenAnswer(
+            inv ->
+                ((org.springframework.transaction.support.TransactionCallback<?>)
+                        inv.getArgument(0))
+                    .doInTransaction(null));
     when(sosService.canView(any(), any())).thenReturn(true);
     when(sosRequestRepository.findById(sosId))
         .thenReturn(Optional.of(SosRequest.builder().sosId(sosId).build()));

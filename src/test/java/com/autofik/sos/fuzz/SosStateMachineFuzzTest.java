@@ -234,7 +234,7 @@ class SosStateMachineFuzzTest {
       @ForAll @DoubleRange(min = 0, max = 360) double bearingDeg,
       @ForAll @DoubleRange(min = 0, max = 1) double fraction) {
     double[] p = destination(lat, lng, bearingDeg, radiusKm * 1000.0 * fraction);
-    int k = ReflectionTestUtils.invokeMethod(sosService, "ringRadiusFor", radiusKm);
+    int k = com.autofik.sos.util.Geo.ringRadiusFor(radiusKm, 2.114);
 
     List<String> ring = H3.kRing(H3.geoToH3Address(lat, lng, 7), k);
 

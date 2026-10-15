@@ -9,6 +9,7 @@ import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.CreateFeedbackRequest;
 import com.autofik.sos.dto.response.FeedbackResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.mapper.FeedbackMapper;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.FeedbackRepository;
@@ -65,13 +66,13 @@ public class FeedbackServiceImpl implements FeedbackService {
     // 2. BUSINESS RULE: Feedback cannot be left for pending, active, or canceled calls. The job
     // must be COMPLETED.
     if (sosRequest.getStatus() != SosStatus.COMPLETED) {
-      throw new IllegalStateException("Feedback can only be submitted for COMPLETED requests");
+      throw new ConflictException("Feedback can only be submitted for COMPLETED requests");
     }
 
     // 2b. BUSINESS RULE: One review per job. Checked here for a clear 409; the unique sos_id column
     // remains the backstop for two submissions racing past this check.
     if (feedbackRepository.existsBySosRequestSosId(request.sosId())) {
-      throw new IllegalStateException("Feedback has already been submitted for this SOS request");
+      throw new ConflictException("Feedback has already been submitted for this SOS request");
     }
 
     // 3. VALIDATION: Verify the author driver profile exists

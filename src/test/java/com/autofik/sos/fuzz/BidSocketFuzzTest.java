@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.autofik.sos.config.BidCommandExecutor;
 import com.autofik.sos.controller.BidSocketController;
 import com.autofik.sos.dto.request.CreateBidRequest;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.security.GatewayIdentityFilter;
 import com.autofik.sos.service.BidService;
 import jakarta.persistence.EntityNotFoundException;
@@ -221,7 +222,7 @@ class BidSocketFuzzTest {
   @Provide
   Arbitrary<RuntimeException> failure() {
     return Arbitraries.of(
-        new IllegalStateException("conflict"),
+        new ConflictException("conflict"),
         new IllegalArgumentException("bad"),
         new EntityNotFoundException("missing"),
         new AccessDeniedException("secret detail"),

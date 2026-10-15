@@ -10,6 +10,7 @@ import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.security.GatewayIdentityFilter;
 import com.autofik.sos.service.BidService;
 import jakarta.persistence.EntityNotFoundException;
@@ -196,7 +197,7 @@ class BidSocketControllerTest {
   @Test
   void serviceFailuresMapToTheRestStatus() {
     when(bidService.cancel(any(), any()))
-        .thenThrow(new IllegalStateException("Only PENDING bids can be cancelled"))
+        .thenThrow(new ConflictException("Only PENDING bids can be cancelled"))
         .thenThrow(new EntityNotFoundException("Bid not found"))
         .thenThrow(new AccessDeniedException("not yours"))
         .thenThrow(new RuntimeException("db password is hunter2"));
@@ -261,7 +262,7 @@ class BidSocketControllerTest {
   /** A failure inside the executor still reaches the client, with the REST status. */
   @Test
   void placeBid_failureInsideTheExecutor_isAnErrorFrame() {
-    when(bidService.create(any())).thenThrow(new IllegalStateException("window closed"));
+    when(bidService.create(any())).thenThrow(new ConflictException("window closed"));
 
     send(
         "/app/bids",

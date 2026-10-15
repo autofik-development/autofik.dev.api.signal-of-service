@@ -80,12 +80,13 @@ public class GlobalExceptionHandler {
   }
 
   /**
-   * Handles business logic conflict states (e.g., trying to modify an resource that isn't ready).
-   * Maps to HTTP 409 Conflict.
+   * Handles business logic conflict states (e.g., trying to modify a resource that isn't ready).
+   * Maps to HTTP 409 Conflict. A plain IllegalStateException is not mapped here: it is an internal
+   * fault and falls through to the 500 handler.
    */
-  @ExceptionHandler(IllegalStateException.class)
+  @ExceptionHandler(ConflictException.class)
   @ResponseStatus(HttpStatus.CONFLICT)
-  public ErrorResponse handleConflict(IllegalStateException ex) {
+  public ErrorResponse handleConflict(ConflictException ex) {
     return new ErrorResponse(
         HttpStatus.CONFLICT.value(),
         HttpStatus.CONFLICT.getReasonPhrase(),

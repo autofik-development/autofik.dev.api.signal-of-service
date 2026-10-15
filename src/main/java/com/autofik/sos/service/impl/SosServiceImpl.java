@@ -22,6 +22,7 @@ import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
@@ -40,6 +41,7 @@ import com.autofik.sos.service.RouteEtaService;
 import com.autofik.sos.service.SosMediaService;
 import com.autofik.sos.service.SosService;
 import com.autofik.sos.util.AfterCommit;
+import com.autofik.sos.util.Geo;
 import com.autofik.sos.util.GeoDistance;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
@@ -57,9 +59,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
-import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Point;
-import org.locationtech.jts.geom.PrecisionModel;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -95,10 +95,6 @@ public class SosServiceImpl implements SosService {
           SosStatus.ON_THE_WAY, Set.of(SosStatus.ARRIVED, SosStatus.CANCELLED),
           SosStatus.ARRIVED, Set.of(SosStatus.IN_PROGRESS, SosStatus.CANCELLED),
           SosStatus.IN_PROGRESS, Set.of(SosStatus.COMPLETED, SosStatus.CANCELLED));
-
-  // Standard SRID 4326 geometry factory for GPS tracking (WGS 84 latitude/longitude)
-  private static final GeometryFactory GEOMETRY_FACTORY =
-      new GeometryFactory(new PrecisionModel(), 4326);
 
   // Resolution 7 ≈ 5 km² per H3 cell — fixed by what is stored in current_h3_index on Mechanic.
   // Changing this would require a schema + data migration; kRing radius is the adaptive variable
@@ -468,7 +464,7 @@ public class SosServiceImpl implements SosService {
   public SosRequestResponse create(CreateSosRequest request) {
     // Enforce structural restriction: A user can only process one active distress event at a time
     if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
-      throw new IllegalStateException("You already have an active SOS request");
+      throw new ConflictException("You already have an active SOS request");
     }
 
     // Redis distributed lock prevents accidental double-tap double submissions
@@ -584,7 +580,7 @@ public class SosServiceImpl implements SosService {
     // fails below, as before.
     userRepository.lockById(request.userId());
     if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
-      throw new IllegalStateException("You already have an active SOS request");
+      throw new ConflictException("You already have an active SOS request");
     }
     // Both rows are projections of SSO. ponytail: no SSO round-trip for today's test (see
     // SsoProjection) — the vehicle lookup checks local ownership instead of SSO's per-user
@@ -602,8 +598,7 @@ public class SosServiceImpl implements SosService {
             .problemType(problemTypeKey)
             .description(request.description())
             .location(
-                GEOMETRY_FACTORY.createPoint(
-                    new Coordinate(request.longitude(), request.latitude())))
+                Geo.WGS84.createPoint(new Coordinate(request.longitude(), request.latitude())))
             .broadcastRadiusKm(startingRadiusKm)
             .biddingExpiresAt(LocalDateTime.now().plusSeconds(biddingWindowSeconds))
             .user(user)
@@ -713,7 +708,7 @@ public class SosServiceImpl implements SosService {
   private List<Mechanic> findMatchedMechanics(
       double lat, double lng, String problemType, int radiusKm) {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
-    List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
+    List<String> searchCells = H3.kRing(sosCell, Geo.ringRadiusFor(radiusKm, h3CenterToCenterKm));
     List<UUID> coarse =
         mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType, locationFreshSince());
     if (coarse.isEmpty()) {
@@ -764,7 +759,8 @@ public class SosServiceImpl implements SosService {
     int effectiveRadiusKm =
         sos.getBroadcastRadiusKm() != null ? sos.getBroadcastRadiusKm() : defaultBroadcastKm;
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
-    List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
+    List<String> searchCells =
+        H3.kRing(sosCell, Geo.ringRadiusFor(effectiveRadiusKm, h3CenterToCenterKm));
 
     List<UUID> coarse =
         mechanicRepository.findByH3CellsAndSkillTag(
@@ -1042,7 +1038,7 @@ public class SosServiceImpl implements SosService {
   // someone else since, the old request must not move the new mechanic's ticket.
   private void requireStillAssigned(SosRequest sos, SosStatusHistory history) {
     if (!stillAssigned(sos, history)) {
-      throw new IllegalStateException("This arrival request is no longer valid");
+      throw new ConflictException("This arrival request is no longer valid");
     }
   }
 
@@ -1165,7 +1161,7 @@ public class SosServiceImpl implements SosService {
     // REJECTED (or the reverse) is not — without this, the outcome could be flipped after the
     // fact, silently re-notifying the mechanic.
     if (current != ApprovedStatus.PENDING_APPROVAL) {
-      throw new IllegalStateException("This request was already " + current);
+      throw new ConflictException("This request was already " + current);
     }
 
     SosRequest sos = history.getSosRequest();
@@ -1237,7 +1233,7 @@ public class SosServiceImpl implements SosService {
     }
     SosStatus fromStatus = sos.getStatus();
     if (!VALID_TRANSITIONS.containsKey(fromStatus)) {
-      throw new IllegalStateException("Cannot cancel a request with status: " + fromStatus);
+      throw new ConflictException("Cannot cancel a request with status: " + fromStatus);
     }
     sos.setStatus(SosStatus.CANCELLED);
     sosRequestRepository.save(sos);
@@ -1301,14 +1297,14 @@ public class SosServiceImpl implements SosService {
   @Transactional
   public SosRequestResponse reportCustomerNoShow(UUID sosId, UUID mechanicId) {
     if (customerWaitMinutes <= 0) {
-      throw new IllegalStateException("Ending a job because the customer is not there is off");
+      throw new ConflictException("Ending a job because the customer is not there is off");
     }
     // Same ticket lock a cancel, the customer's answer and a release take.
     sosRequestRepository.lockStatus(sosId);
     SosRequest sos = findSosOrThrow(sosId);
     requireAssignedMechanic(sos, mechanicId);
     if (sos.getStatus() != SosStatus.ARRIVED) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           "A job can only be ended for a missing customer after ARRIVED, current status: "
               + sos.getStatus());
     }
@@ -1317,12 +1313,12 @@ public class SosServiceImpl implements SosService {
             .findFirstBySosRequestSosIdAndToStatusAndApprovedStatusOrderByChangeAtDesc(
                 sosId, SosStatus.ARRIVED, ApprovedStatus.ACCEPTED)
             .map(h -> h.getApproveAt() != null ? h.getApproveAt() : h.getChangeAt())
-            .orElseThrow(() -> new IllegalStateException("No arrival on record for this job"));
+            .orElseThrow(() -> new ConflictException("No arrival on record for this job"));
     LocalDateTime now = LocalDateTime.now();
     LocalDateTime readyAt = arrivedAt.plusMinutes(customerWaitMinutes);
     if (readyAt.isAfter(now)) {
       long minutesLeft = (Duration.between(now, readyAt).toSeconds() + 59) / 60;
-      throw new IllegalStateException(
+      throw new ConflictException(
           "The customer has " + minutesLeft + " more minute(s) to reach you");
     }
     Mechanic mechanic =
@@ -1374,13 +1370,13 @@ public class SosServiceImpl implements SosService {
   private void requireMechanicStillAtSos(Mechanic mechanic, SosRequest sos) {
     Point at = mechanic.getCurrentLocation();
     if (at == null) {
-      throw new IllegalStateException("No location on record for this mechanic");
+      throw new ConflictException("No location on record for this mechanic");
     }
     double meters =
         GeoDistance.haversineMeters(
             at.getY(), at.getX(), sos.getLocation().getY(), sos.getLocation().getX(), earthRadiusM);
     if (meters > arrivalMaxDistanceMeters) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           String.format(
               "You are %dm from the customer; stay within %dm to report a missing customer.",
               Math.round(meters), arrivalMaxDistanceMeters));
@@ -1498,12 +1494,16 @@ public class SosServiceImpl implements SosService {
   // SosRequest has no direct mechanic relation — the assigned mechanic is resolved
   // from the ACCEPTED bid on this SOS request (at most one can exist).
   private SosRequestResponse toResponseWithMechanic(SosRequest sos) {
-    SosRequestResponse base = sosMapper.toResponse(sos);
     MechanicResponse mechanic =
         bidSosRepository
             .findFirstBySosRequestSosIdAndStatus(sos.getSosId(), BidStatus.ACCEPTED)
             .map(bid -> mechanicMapper.toResponse(bid.getMechanic()))
             .orElse(null);
+    return withMechanic(sos, mechanic);
+  }
+
+  private SosRequestResponse withMechanic(SosRequest sos, MechanicResponse mechanic) {
+    SosRequestResponse base = sosMapper.toResponse(sos);
     return new SosRequestResponse(
         base.sosId(),
         base.problemType(),
@@ -1527,12 +1527,17 @@ public class SosServiceImpl implements SosService {
         null);
   }
 
-  private List<SosRequestResponse> toResponseListWithMechanic(List<SosRequest> sosList) {
-    return sosList.stream().map(this::toResponseWithMechanic).toList();
-  }
-
+  // One query for the whole page instead of one per row.
   private Page<SosRequestResponse> toPageWithMechanic(Page<SosRequest> page) {
-    return page.map(this::toResponseWithMechanic);
+    List<UUID> ids = page.getContent().stream().map(SosRequest::getSosId).toList();
+    Map<UUID, MechanicResponse> assigned = new HashMap<>();
+    if (!ids.isEmpty()) {
+      for (BidSos bid :
+          bidSosRepository.findWithMechanicBySosIdsAndStatus(ids, BidStatus.ACCEPTED)) {
+        assigned.put(bid.getSosRequest().getSosId(), mechanicMapper.toResponse(bid.getMechanic()));
+      }
+    }
+    return page.map(sos -> withMechanic(sos, assigned.get(sos.getSosId())));
   }
 
   // Advancing a job belongs to the mechanic whose bid was accepted, not to whoever knows the
@@ -1571,7 +1576,7 @@ public class SosServiceImpl implements SosService {
   private void requireMechanicAtSos(Mechanic mechanic, SosRequest sos) {
     Point mechanicLocation = mechanic.getCurrentLocation();
     if (mechanicLocation == null) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           "Cannot mark arrived: no location on record for this mechanic. "
               + "Enable location sharing and try again.");
     }
@@ -1600,7 +1605,7 @@ public class SosServiceImpl implements SosService {
     }
 
     if (distanceMeters > arrivalMaxDistanceMeters) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           String.format(
               "Cannot mark arrived: %dm from the customer, which exceeds the %dm limit.",
               Math.round(distanceMeters), arrivalMaxDistanceMeters));
@@ -1610,7 +1615,7 @@ public class SosServiceImpl implements SosService {
   private void validateTransition(SosStatus from, SosStatus to) {
     Set<SosStatus> allowed = VALID_TRANSITIONS.getOrDefault(from, Set.of());
     if (!allowed.contains(to)) {
-      throw new IllegalStateException("Invalid status transition: " + from + " → " + to);
+      throw new ConflictException("Invalid status transition: " + from + " → " + to);
     }
   }
 
@@ -1633,7 +1638,7 @@ public class SosServiceImpl implements SosService {
 
   private boolean hasNoCandidates(double lat, double lng, String problemType, int radiusKm) {
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
-    List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(radiusKm));
+    List<String> searchCells = H3.kRing(sosCell, Geo.ringRadiusFor(radiusKm, h3CenterToCenterKm));
     return mechanicRepository
         .findByH3CellsAndSkillTag(searchCells, problemType, locationFreshSince())
         .isEmpty();
@@ -1653,7 +1658,8 @@ public class SosServiceImpl implements SosService {
       Set<UUID> excludeMechanicIds) {
     int effectiveRadiusKm = broadcastRadiusKm != null ? broadcastRadiusKm : defaultBroadcastKm;
     String sosCell = H3.geoToH3Address(lat, lng, h3Resolution);
-    List<String> searchCells = H3.kRing(sosCell, ringRadiusFor(effectiveRadiusKm));
+    List<String> searchCells =
+        H3.kRing(sosCell, Geo.ringRadiusFor(effectiveRadiusKm, h3CenterToCenterKm));
 
     List<UUID> coarse =
         mechanicRepository.findByH3CellsAndSkillTag(searchCells, problemType, locationFreshSince());
@@ -1792,7 +1798,7 @@ public class SosServiceImpl implements SosService {
             .toList();
     if (nearest.isEmpty()) return estimates;
 
-    Point destination = GEOMETRY_FACTORY.createPoint(new Coordinate(lng, lat));
+    Point destination = Geo.WGS84.createPoint(new Coordinate(lng, lat));
     List<DistanceInfo> infos =
         googleMapsService.getDistanceInfos(
             nearest.stream().map(Mechanic::getCurrentLocation).toList(), destination);
@@ -1862,12 +1868,6 @@ public class SosServiceImpl implements SosService {
     } catch (Exception e) {
       log.warn("Could not store offer estimates {}: {}", key, e.getMessage());
     }
-  }
-
-  // Converts a km radius into the minimum kRing depth that fully covers it at resolution 7.
-  // +1 ring of buffer accounts for partial hex overlap at the boundary.
-  private int ringRadiusFor(int radiusKm) {
-    return (int) Math.ceil(radiusKm / h3CenterToCenterKm) + 1;
   }
 
   // Uses TaskScheduler (not @Scheduled) because each SOS has its own unique expiry time.
@@ -2024,7 +2024,7 @@ public class SosServiceImpl implements SosService {
 
     SosStatus fromStatus = sos.getStatus();
     if (fromStatus != SosStatus.ACCEPTED && fromStatus != SosStatus.ON_THE_WAY) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           "A job can only be released before ARRIVED, current status: " + fromStatus);
     }
 
@@ -2185,7 +2185,7 @@ public class SosServiceImpl implements SosService {
     SosRequest sos = findSosOrThrow(sosId);
     requireAssignedMechanic(sos, mechanicId);
     if (sos.getStatus() != SosStatus.ACCEPTED && sos.getStatus() != SosStatus.ON_THE_WAY) {
-      throw new IllegalStateException(
+      throw new ConflictException(
           "Only a job before ARRIVED can be confirmed, current status: " + sos.getStatus());
     }
     BidSos bid =
@@ -2215,7 +2215,7 @@ public class SosServiceImpl implements SosService {
       throw new AccessDeniedException("You can only rebroadcast your own SOS request");
     }
     if (sos.getStatus() != SosStatus.EXPIRED) {
-      throw new IllegalStateException("Only EXPIRED SOS requests can be rebroadcast");
+      throw new ConflictException("Only EXPIRED SOS requests can be rebroadcast");
     }
     if (sos.getRebroadcastCount() >= maxRebroadcast) {
       throw new TooManyRequestsException(
@@ -2224,7 +2224,7 @@ public class SosServiceImpl implements SosService {
     // Same rule as create: one live ticket per customer. This ticket is EXPIRED, so only another
     // one can match.
     if (sosRequestRepository.existsByUserUserIdAndStatusIn(userId, ACTIVE_STATUSES)) {
-      throw new IllegalStateException("You already have an active SOS request");
+      throw new ConflictException("You already have an active SOS request");
     }
 
     // A new round: the last one's bids were closed at expiry (or turned down by the customer) and
