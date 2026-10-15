@@ -287,8 +287,12 @@ The app starts on the port set by `SERVER_PORT` in `.env`.
 | `DB_USERNAME` | Database user |
 | `DB_PASSWORD` | Database password |
 | `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker address (default `localhost:9092`) |
+| `KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` (default, no login) or `SASL_PLAINTEXT` / `SASL_SSL` for a Kafka with users |
+| `KAFKA_SASL_MECHANISM` | SASL mechanism when the protocol is `SASL_*` (default `SCRAM-SHA-512`) |
+| `KAFKA_SASL_JAAS_CONFIG` | Full `sasl.jaas.config` line when the protocol is `SASL_*` (the `sasl.jaas.config` key of the app's KafkaUser Secret) |
 | `REDIS_HOST` | Redis host (default `localhost`) |
 | `REDIS_PORT` | Redis port (default `6379`) |
+| `REDIS_PASSWORD` | Redis password (blank = no AUTH, fine for a local Redis) |
 | `WEBSOCKET_ALLOWED_ORIGINS` | Allowed WebSocket origins (default `*` — restrict to your domain in production, e.g. `https://*.autofik.com`) |
 | `GOOGLE_MAPS_API_KEY` | Google Maps API key — see [Google Maps Setup](#google-maps-setup) below |
 | `ONESIGNAL_APP_ID` | OneSignal app ID — found in OneSignal Dashboard → Settings → Keys & IDs |
