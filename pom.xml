@@ -93,6 +93,43 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
+        <!-- Distributed tracing to Jaeger: Micrometer Observation -> OpenTelemetry SDK -> OTLP/HTTP.
+             The pieces of spring-boot-starter-opentelemetry this service wants, not the starter:
+             it also brings micrometer-registry-otlp, which pushes metrics to the same collector
+             every minute (Jaeger accepts traces only; metrics stay on Prometheus), and its OTLP
+             exporter's default OkHttp 5 sender, whose okhttp3 classes collide with the OkHttp 4
+             the Google Maps SDK depends on (different artifact ids, same package). The JDK
+             HttpClient sender needs nothing extra. Versions come from Boot's BOM. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.opentelemetry</groupId>
+                    <artifactId>opentelemetry-exporter-sender-okhttp</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-sender-jdk</artifactId>
+        </dependency>
+        <!-- JDBC spans (connection, query) under the request that ran them. The 2.x line is built
+             for Spring Boot 4; query parameter values are not recorded (see application.yaml). -->
+        <dependency>
+            <groupId>net.ttddyy.observation</groupId>
+            <artifactId>datasource-micrometer-spring-boot</artifactId>
+            <version>2.3.0</version>
+        </dependency>
+
         <!-- In-JVM L2 cache for the ETA refresh gate: keeps the Google Distance Matrix
              throttle working (per-instance) when Redis is unavailable. Version managed by
              spring-boot-starter-parent. -->
@@ -152,6 +189,18 @@
             <groupId>net.jqwik</groupId>
             <artifactId>jqwik</artifactId>
             <version>1.9.3</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Tracing tests: @AutoConfigureTracing / TestObservationRegistry, and an in-memory span
+             exporter so no test ever sends a span anywhere. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- Integration tests (-Pintegration): real Postgres/PostGIS, Redis and Kafka in Docker. -->

@@ -15,6 +15,8 @@ import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.repository.UserRepository;
 import com.autofik.sos.service.SosMediaService;
 import com.autofik.sos.service.SosService;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import jakarta.persistence.EntityNotFoundException;
 import java.awt.Dimension;
 import java.io.ByteArrayInputStream;
@@ -32,6 +34,7 @@ import javax.imageio.stream.ImageInputStream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.coobird.thumbnailator.Thumbnails;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -101,6 +104,15 @@ public class SosMediaServiceImpl implements SosMediaService {
   @Value("${sos.broadcast.max-photos:3}")
   private int maxBroadcastPhotos;
 
+  // Set by Spring; stays NOOP when the class is built by hand (tests), which records nothing.
+  @Autowired(required = false)
+  ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
+
+  // The S3 SDK has no tracing of its own, so each call is a span here. Name only: the bucket and
+  // the object key stay off the span.
+  static final String S3_PUT_OBJECT = "s3.put-object";
+  static final String S3_PRESIGN = "s3.presign-get-object";
+
   /**
    * Validates, processes, compresses, and uploads an SOS emergency media file. Inserts metadata
    * into the local DB and publishes an event notification to Kafka.
@@ -155,9 +167,16 @@ public class SosMediaServiceImpl implements SosMediaService {
 
     // Phase 4: S3 Object Storage Persistence (no transaction)
     String objectKey = "sos/" + sosId + "/" + UUID.randomUUID() + ".jpg";
-    s3Client.putObject(
-        PutObjectRequest.builder().bucket(bucket).key(objectKey).contentType("image/jpeg").build(),
-        RequestBody.fromBytes(compressed));
+    Observation.createNotStarted(S3_PUT_OBJECT, observationRegistry)
+        .observe(
+            () ->
+                s3Client.putObject(
+                    PutObjectRequest.builder()
+                        .bucket(bucket)
+                        .key(objectKey)
+                        .contentType("image/jpeg")
+                        .build(),
+                    RequestBody.fromBytes(compressed)));
 
     // Phase 5: metadata insert and event (short transaction). A failure here would orphan the
     // object, so it is removed before the error goes on.
@@ -386,6 +405,9 @@ public class SosMediaServiceImpl implements SosMediaService {
             .signatureDuration(Duration.ofMinutes(presignTtlMinutes))
             .getObjectRequest(GetObjectRequest.builder().bucket(bucket).key(objectKey).build())
             .build();
-    return s3Presigner.presignGetObject(presignRequest).url().toString();
+    // Signing is local with static keys, but resolving credentials would not be with an AWS
+    // provider chain; the span shows which it is.
+    return Observation.createNotStarted(S3_PRESIGN, observationRegistry)
+        .observe(() -> s3Presigner.presignGetObject(presignRequest).url().toString());
   }
 }

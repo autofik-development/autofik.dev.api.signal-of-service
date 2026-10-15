@@ -104,6 +104,42 @@ management:
     distribution:
       percentiles-histogram:
         http.server.requests: true
+  # Distributed tracing: OpenTelemetry spans to Jaeger over OTLP/HTTP. Export on/off, the endpoint,
+  # the sampling ratio and service.name come from the JAEGER_* variables the gateway and SSO read
+  # too (see .env.example); JaegerEnvironmentPostProcessor maps them, and setting those four
+  # properties here would override the variables. Not traced: /, /healthy, /actuator/** (TracingConfig).
+  tracing:
+    propagation:
+      # W3C traceparent/tracestate in and out, as the gateway and SSO send them. Boot would also
+      # accept B3 headers by default; nothing in this system sends them.
+      type: w3c
+    baggage:
+      # W3C baggage travels with the trace context. Nothing here adds any.
+      enabled: true
+  opentelemetry:
+    resource-attributes:
+      "[deployment.environment]": ${spring.profiles.active:default}
+      "[service.version]": "@project.version@"
+  observations:
+    enable:
+      # Spring Security adds 4-5 spans to every request (filter chain before and after, authorize,
+      # secured request) that repeat what the server span already says. Set true
+      # (MANAGEMENT_OBSERVATIONS_ENABLE_SPRING_SECURITY=true) to see them; their spring.security.*
+      # timers are off with them.
+      "[spring.security]": false
+      # The expiry, completion and no-show sweeps run every 15-30 s, and each run would be a trace
+      # of its own, nearly always empty. The Kafka events, Google calls and pushes a sweep does make
+      # still start traces. MANAGEMENT_OBSERVATIONS_ENABLE_TASKS_SCHEDULED_EXECUTION=true turns
+      # them back on, with their tasks.scheduled.execution timer.
+      "[tasks.scheduled.execution]": false
+
+# JDBC spans from datasource-micrometer: one per connection and per statement, under the request,
+# listener or push that ran them. Never the bound values (phone numbers, GPS coordinates), and no
+# span per ResultSet.
+jdbc:
+  includes: connection, query
+  datasource-proxy:
+    include-parameter-values: false
 
 websocket:
   # Restrict to your domain in production, e.g. https://*.autofik.com
@@ -236,5 +272,10 @@ logging:
     org.apache.tomcat: WARN
     org.springframework.boot.autoconfigure.security: ERROR
     org.springframework.boot.security.autoconfigure: ERROR
+    # A failed span export is reported once by TracingConfig, and again when export recovers. This
+    # exporter's own report is a SEVERE with a stack trace, five a minute and then one a minute for
+    # as long as Jaeger is unreachable.
+    io.opentelemetry.exporter.internal.http.HttpExporter: "OFF"
   pattern:
-    console: "%d{HH:mm:ss} %-5level [%thread] %logger{36} - %msg%n"
+    # [traceId,spanId] joins a line to its trace in Jaeger; left out when the line has no trace.
+    console: "%d{HH:mm:ss} %-5level [%thread] %notEmpty{[%X{traceId},%X{spanId}] }%logger{36} - %msg%n"

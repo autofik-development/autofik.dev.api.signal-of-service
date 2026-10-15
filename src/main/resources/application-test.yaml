@@ -11,6 +11,16 @@ logging:
     root: WARN
     com.autofik: INFO
 
+management:
+  tracing:
+    export:
+      # Tests never send a span anywhere, whatever JAEGER_ENABLED a developer's .env sets (it is
+      # imported for every profile). A test that looks at spans gives itself an in-memory exporter.
+      enabled: false
+    sampling:
+      # Every trace sampled, so such a test does not depend on the .env's JAEGER_SAMPLE_RATIO either.
+      probability: 1.0
+
 websocket:
   # application.yaml imports .env for every profile, and a developer's .env may enable the insecure
   # handshake for local work. Tests always run with the real handshake.

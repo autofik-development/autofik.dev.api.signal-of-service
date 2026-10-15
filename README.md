@@ -196,6 +196,7 @@ Postgres `current_location` is the source of truth for all availability searches
 | Security | Spring Security (stateless; identity comes from the gateway's `user-context` / `mechanic-context` headers, no JWT validation here) |
 | Maps / Geocoding | Google Maps Platform (Geocoding API + Distance Matrix API) |
 | Media storage | AWS S3-compatible (MinIO) |
+| Tracing | Micrometer Tracing → OpenTelemetry → Jaeger (OTLP/HTTP); see [Distributed Tracing](#distributed-tracing-jaeger) |
 
 ---
 
@@ -298,6 +299,43 @@ The app starts on the port set by `SERVER_PORT` in `.env`.
 | `S3_REGION` | Required by AWS SDK SigV4 signing — must be a non-empty string (e.g. `us-east-1`) even against MinIO |
 | `S3_BUCKET_NAME` | Bucket name where SOS media objects are stored |
 | `SERVER_PORT` | HTTP port the app listens on |
+| `JAEGER_ENABLED` | Span export to Jaeger (default `true`). Only the exact string `false` turns it off; the incoming `traceparent` is still passed on |
+| `JAEGER_SERVICE_NAME` | `service.name` in Jaeger (default `autofik-sos-service`) |
+| `JAEGER_EXPORTER_OTLP_ENDPOINT` | Jaeger's OTLP/HTTP receiver, full URL (default `http://localhost:4318/v1/traces`) |
+| `JAEGER_SAMPLE_RATIO` | 0–1, share of traces started here that are kept (default `1`; clamped). A gateway-sent `traceparent` decides for its own requests |
+
+### Distributed Tracing (Jaeger)
+
+Every request, Kafka listener run, Google/S3/OneSignal call and SQL statement is a span, exported over
+OTLP/HTTP to Jaeger. The internal gateway (`autofik-sos-gateway`) and SSO (`autofik-sso-service`)
+use the same four `JAEGER_*` variables and W3C `traceparent` propagation, so a request through the
+gateway is **one trace** across all three services, and an event SOS publishes carries its trace on
+to the listener that consumes it.
+
+```bash
+# Local Jaeger (v2: OTLP on 4317/4318, UI on 16686)
+docker run -d --name jaeger -p 16686:16686 -p 4317:4317 -p 4318:4318 jaegertracing/jaeger:2.21.0
+# then open http://localhost:16686 and pick service autofik-sos-service
+```
+
+| Spans | From |
+| :--- | :--- |
+| `http get /api/v1/sos/{sosId}` … | Every REST request, continuing the gateway's `traceparent`. `/`, `/healthy` and `/actuator/**` are not traced |
+| `sos.created send`, `sos.notification process` | Kafka: every `KafkaTemplate` (dead-letter too) and listener container factory in `KafkaConfig` is observed; the record's `traceparent` header links the listener to the request that published |
+| `http get` (Medusa) | The Medusa `RestClient`, which also sends `traceparent`; the URL is recorded without its query |
+| `google.maps.geocode`, `google.maps.distance-matrix`, `s3.put-object`, `s3.presign-get-object`, `onesignal.push` | Explicit observations around SDKs with no tracing of their own — names and counts only, never coordinates, addresses, object keys or player ids |
+| `connection`, `query` | JDBC via datasource-micrometer, without bound parameter values; a statement with nothing around it (a sweep, a location ping) is dropped |
+| `set`, `get`, … | Redis commands (Lettuce), under the request that ran them; parentless commands (STOMP location pings) are dropped at export |
+
+Off by default, because they would add noise rather than answers: Spring Security's per-request spans
+(`MANAGEMENT_OBSERVATIONS_ENABLE_SPRING_SECURITY=true` to see them) and the `@Scheduled` sweeps,
+which would be a trace every 15–30 s (`MANAGEMENT_OBSERVATIONS_ENABLE_TASKS_SCHEDULED_EXECUTION=true`).
+STOMP frames are not traced.
+
+Log lines inside a trace carry `[traceId,spanId]` after the thread name, so a line can be looked up
+in Jaeger. A Jaeger that is down costs no request anything: spans are queued and dropped when the
+queue is full, and the failure is logged once (and again when export recovers). Tests never export —
+`application-test.yaml` turns export off.
 
 ### Google Maps Setup
 

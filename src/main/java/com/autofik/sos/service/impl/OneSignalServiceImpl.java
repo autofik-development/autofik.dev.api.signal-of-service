@@ -7,6 +7,8 @@ import com.onesignal.client.ApiException;
 import com.onesignal.client.api.DefaultApi;
 import com.onesignal.client.model.LanguageStringMap;
 import com.onesignal.client.model.Notification;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -14,6 +16,7 @@ import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -30,6 +33,12 @@ public class OneSignalServiceImpl implements OneSignalService {
 
   // OneSignal accepts at most 2,000 aliases per notification request.
   private static final int MAX_ALIASES_PER_REQUEST = 2_000;
+
+  // Set by Spring; stays NOOP when the class is built by hand (tests), which records nothing.
+  @Autowired(required = false)
+  ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
+
+  static final String PUSH = "onesignal.push";
 
   /**
    * WORKFLOW: Sends a targeted real-time push notification alert directly to a specific user's
@@ -103,8 +112,11 @@ public class OneSignalServiceImpl implements OneSignalService {
       }
 
       // 6. SDK DELIVERY CALL: Dispatch the compiled request block synchronously over HTTP to
-      // OneSignal's cloud servers
-      oneSignalApi.createNotification(notification);
+      // OneSignal's cloud servers. A span of its own, under the listener that took the event: it
+      // carries how many recipients the request named, never who they are or what it said.
+      Observation.createNotStarted(PUSH, observationRegistry)
+          .highCardinalityKeyValue("onesignal.recipients", String.valueOf(recipients.size()))
+          .observeChecked(() -> oneSignalApi.createNotification(notification));
     } catch (ApiException e) {
       // SDK-Specific Failure: Catch explicit HTTP errors returned directly by OneSignal's edge
       // gateways (e.g., HTTP 400 Bad Request)

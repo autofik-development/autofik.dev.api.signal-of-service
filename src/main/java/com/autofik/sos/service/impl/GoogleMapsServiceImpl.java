@@ -13,11 +13,14 @@ import com.google.maps.model.DistanceMatrixRow;
 import com.google.maps.model.GeocodingResult;
 import com.google.maps.model.LatLng;
 import com.google.maps.model.TravelMode;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Point;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -34,10 +37,32 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
   @Value("${google.maps.api-key:}")
   private String apiKey;
 
+  // Set by Spring; stays NOOP when the class is built by hand (tests), which records nothing.
+  @Autowired(required = false)
+  ObservationRegistry observationRegistry = ObservationRegistry.NOOP;
+
+  static final String GEOCODE = "google.maps.geocode";
+  static final String DISTANCE_MATRIX = "google.maps.distance-matrix";
+
   // With no key every call is rejected by Google ("Invalid API key") after a real network round
   // trip, so skip the call: same null result, no outbound traffic, no latency on SOS create.
   private boolean disabled() {
     return apiKey != null && apiKey.isBlank();
+  }
+
+  /**
+   * Each Google call as a span of its own, under whatever request, socket ping or sweep made it: it
+   * is billed, and slow whenever Google is. The span carries its name and, for a batch, how many
+   * origins were priced; never the coordinates or the address. A failure is recorded on the span,
+   * then handled below as before (logged, null).
+   */
+  private <T> T observed(String name, int origins, Observation.CheckedCallable<T, Exception> call)
+      throws Exception {
+    Observation observation = Observation.createNotStarted(name, observationRegistry);
+    if (origins > 1) {
+      observation.highCardinalityKeyValue("google.maps.origins", String.valueOf(origins));
+    }
+    return observation.observeChecked(call);
   }
 
   /** WORKFLOW: Translates raw numeric GPS coordinates back into a text address. */
@@ -47,8 +72,12 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
     try {
       // 1. API HIT: Request address details from the Google Geocoding API endpoint
       GeocodingResult[] results =
-          GeocodingApi.reverseGeocode(geoApiContext, new LatLng(latitude, longitude))
-              .await(); // Synchronously waits for Google's servers to respond over the network
+          observed(
+              GEOCODE,
+              1,
+              () ->
+                  GeocodingApi.reverseGeocode(geoApiContext, new LatLng(latitude, longitude))
+                      .await()); // Synchronously waits for Google's servers to respond
 
       if (results.length == 0) return null;
 
@@ -80,13 +109,19 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
       // Note: In JTS Topology geometry, point coordinates map as: Point.getX() = Longitude,
       // Point.getY() = Latitude
       DistanceMatrix matrix =
-          DistanceMatrixApi.newRequest(geoApiContext)
-              .origins(new LatLng(origin.getY(), origin.getX())) // Mechanic starting coordinates
-              .destinations(
-                  new LatLng(
-                      destination.getY(), destination.getX())) // Stranded Driver target coordinates
-              .mode(TravelMode.DRIVING) // Forces calculation along car-navigable roads
-              .await(); // Executes the network call blocks until completion
+          observed(
+              DISTANCE_MATRIX,
+              1,
+              () ->
+                  DistanceMatrixApi.newRequest(geoApiContext)
+                      .origins(
+                          new LatLng(origin.getY(), origin.getX())) // Mechanic starting coordinates
+                      .destinations(
+                          new LatLng(
+                              destination.getY(),
+                              destination.getX())) // Stranded Driver target coordinates
+                      .mode(TravelMode.DRIVING) // Forces calculation along car-navigable roads
+                      .await()); // Executes the network call blocks until completion
 
       // 2. PARSING: Pull the first coordinate element block from the data matrix table grid
       DistanceMatrixElement element = matrix.rows[0].elements[0];
@@ -124,11 +159,15 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
       LatLng[] from =
           origins.stream().map(p -> new LatLng(p.getY(), p.getX())).toArray(LatLng[]::new);
       DistanceMatrix matrix =
-          DistanceMatrixApi.newRequest(geoApiContext)
-              .origins(from)
-              .destinations(new LatLng(destination.getY(), destination.getX()))
-              .mode(TravelMode.DRIVING)
-              .await();
+          observed(
+              DISTANCE_MATRIX,
+              from.length,
+              () ->
+                  DistanceMatrixApi.newRequest(geoApiContext)
+                      .origins(from)
+                      .destinations(new LatLng(destination.getY(), destination.getX()))
+                      .mode(TravelMode.DRIVING)
+                      .await());
 
       // One row per origin, each with a single element (the one destination).
       List<DistanceInfo> result = new ArrayList<>(origins.size());
