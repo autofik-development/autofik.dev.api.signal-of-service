@@ -125,7 +125,7 @@ class GatewaySecretFilterTest {
 
   // The load balancer carries no secret.
   @ParameterizedTest
-  @ValueSource(strings = {"/", "/healthy", "/error", "/actuator", "/actuator/health"})
+  @ValueSource(strings = {"/", "/healthy", "/health", "/error", "/actuator", "/actuator/health"})
   void healthChecks_stayOpen(String path) throws Exception {
     call(filter(SECRET), path, null);
 
@@ -134,7 +134,15 @@ class GatewaySecretFilterTest {
 
   // Only the exact health paths: a look-alike must not slip through.
   @ParameterizedTest
-  @ValueSource(strings = {"/healthy/../api/v1/sos", "/healthyx", "/actuatorx", "/ws", "/ws/info"})
+  @ValueSource(
+      strings = {
+        "/healthy/../api/v1/sos",
+        "/healthyx",
+        "/healthx",
+        "/actuatorx",
+        "/ws",
+        "/ws/info"
+      })
   void lookAlikesAndTheUpgrade_stillNeedTheSecret(String path) throws Exception {
     MockHttpServletResponse response = call(filter(SECRET), path, null);
 

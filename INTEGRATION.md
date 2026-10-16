@@ -124,7 +124,7 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 | `GET /sos/{sosId}/media` | same | |
 
 ### Health
-`GET /healthy`: 200, or 503 when the database is down. `GET /actuator/health`. Both are public.
+`GET /healthy` and `GET /health`: 200 (UP or DEGRADED), or 503 when the database is down. Reports `database`, `redis`, and `kafka` component statuses along with overall `status`. `GET /actuator/health`. All are public.
 
 ### Main response shapes
 - `SosRequestResponse`: `sosId, problemType, description, locationAddress, status, latitude, longitude, broadcastRadiusKm, createdAt, updatedAt, biddingExpiresAt, jobStartedAt, jobCompletedAt, durationSeconds, rebroadcastCount, user{userId,name,phone,status,refererCode}, vehicle{id,carBrand,carModel,carModelYear,fuelType}, mechanic{…}, pendingCompletionHistoryId`.

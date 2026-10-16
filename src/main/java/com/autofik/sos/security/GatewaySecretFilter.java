@@ -71,6 +71,7 @@ public class GatewaySecretFilter extends OncePerRequestFilter {
     String path = request.getRequestURI();
     return path.equals("/")
         || path.equals("/healthy")
+        || path.equals("/health")
         || path.equals("/error")
         || path.equals("/actuator")
         || path.startsWith("/actuator/");

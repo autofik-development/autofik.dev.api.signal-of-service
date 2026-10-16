@@ -50,7 +50,7 @@ class TracingConfigTest {
 
   @RestController
   static class Endpoints {
-    @GetMapping({"/api/v1/sos/{id}", "/", "/healthy", "/actuator/health"})
+    @GetMapping({"/api/v1/sos/{id}", "/", "/healthy", "/health", "/actuator/health"})
     String ok() {
       return "ok";
     }
@@ -83,7 +83,7 @@ class TracingConfigTest {
   @Test
   void probes_areNotTraced() throws Exception {
     MockMvc mvc = mvc();
-    for (String probe : List.of("/", "/healthy", "/actuator/health")) {
+    for (String probe : List.of("/", "/healthy", "/health", "/actuator/health")) {
       mvc.perform(get(probe).header("traceparent", TRACEPARENT)).andExpect(status().isOk());
     }
     assertThat(tracing.finished()).isEmpty();
@@ -93,10 +93,12 @@ class TracingConfigTest {
   void isProbe_coversOnlyTheProbePaths() {
     assertThat(TracingConfig.isProbe("/")).isTrue();
     assertThat(TracingConfig.isProbe("/healthy")).isTrue();
+    assertThat(TracingConfig.isProbe("/health")).isTrue();
     assertThat(TracingConfig.isProbe("/actuator")).isTrue();
     assertThat(TracingConfig.isProbe("/actuator/prometheus")).isTrue();
     assertThat(TracingConfig.isProbe("/api/v1/sos")).isFalse();
     assertThat(TracingConfig.isProbe("/healthyish")).isFalse();
+    assertThat(TracingConfig.isProbe("/healthish")).isFalse();
   }
 
   // A statement with no request, listener or push around it (a sweep, a location ping) is dropped;
