@@ -80,7 +80,8 @@ public class SecurityConfig {
         .authorizeHttpRequests(
             auth -> {
               // Health checks are read by the load balancer, which carries no identity.
-              auth.requestMatchers("/", "/healthy", "/actuator/**", "/error").permitAll();
+              auth.requestMatchers("/", "/healthy", "/health", "/actuator/**", "/error")
+                  .permitAll();
               // The upgrade carries the identity headers and is authorised in WebSocketConfig's
               // handshake interceptor, which rejects it there rather than here.
               auth.requestMatchers("/ws/**").permitAll();

@@ -49,6 +49,11 @@ class WebConfigWiringTest {
     mockMvc.perform(get("/healthy")).andExpect(status().isOk());
   }
 
+  @Test
+  void healthAliasEndpointStaysOpen() throws Exception {
+    mockMvc.perform(get("/health")).andExpect(status().isOk());
+  }
+
   // 401, not the bodiless 403 Spring Security answers with by default: the gateway named nobody,
   // which is a different thing from naming someone who is not allowed here.
   @Test

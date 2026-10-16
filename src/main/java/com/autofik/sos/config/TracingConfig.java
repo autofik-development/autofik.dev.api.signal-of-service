@@ -62,6 +62,7 @@ public class TracingConfig {
   static boolean isProbe(String path) {
     return path.equals("/")
         || path.equals("/healthy")
+        || path.equals("/health")
         || path.equals("/actuator")
         || path.startsWith("/actuator/");
   }
