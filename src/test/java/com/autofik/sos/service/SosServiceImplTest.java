@@ -2708,6 +2708,31 @@ class SosServiceImplTest {
     assertThat(bid.getStatus()).as("only asked, not released").isEqualTo(BidStatus.ACCEPTED);
   }
 
+  // Found on testing: a mechanic parked for an hour lost the job ~90 s after it was accepted.
+  @Test
+  void noShow_justAccepted_byAMechanicParkedForAnHour_isNeitherAskedNorReleased() {
+    BidSos bid = noShowJob(SosStatus.ACCEPTED, minutesAgo(60), null);
+    bid.setRespondedAt(minutesAgo(1));
+
+    sosService.checkNoShowJobs();
+
+    assertThat(bid.getNoShowPromptedAt()).isNull();
+    assertThat(bid.getStatus()).isEqualTo(BidStatus.ACCEPTED);
+    assertThat(bid.getSosRequest().getStatus()).isEqualTo(SosStatus.ACCEPTED);
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
+  @Test
+  void noShow_acceptedLongerAgoThanTheLimit_andNotMovedSince_isAsked() {
+    BidSos bid = noShowJob(SosStatus.ACCEPTED, minutesAgo(60), null);
+    bid.setRespondedAt(minutesAgo(10));
+
+    sosService.checkNoShowJobs();
+
+    assertThat(bid.getNoShowPromptedAt()).isNotNull();
+    assertThat(bid.getStatus()).as("only asked, not released").isEqualTo(BidStatus.ACCEPTED);
+  }
+
   @Test
   void noShow_aQuestionThatCouldNotBeSent_isNotRecorded_soItIsAskedAgain() {
     BidSos bid = noShowJob(SosStatus.ACCEPTED, minutesAgo(6), null);
