@@ -1131,6 +1131,11 @@ public class SosServiceImpl implements SosService {
   @Override
   @Transactional
   public SosRequestResponse approveStatusChange(ApproveStatusChangeRequest request) {
+    // PENDING_APPROVAL is a state, not an answer: decideCompletion would stamp approver and time on
+    // a row that stays pending, change nothing, and still answer 200.
+    if (request.approvedStatus() == ApprovedStatus.PENDING_APPROVAL) {
+      throw new IllegalArgumentException("approvedStatus must be ACCEPTED or REJECTED");
+    }
     SosStatusHistory history =
         sosStatusHistoryRepository
             .findById(request.historyId())

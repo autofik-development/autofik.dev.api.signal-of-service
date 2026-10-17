@@ -266,8 +266,10 @@ public class SosMediaServiceImpl implements SosMediaService {
   @Override
   @Transactional(readOnly = true)
   public List<SosMediaResponse> getBySosRequest(UUID sosId, UUID callerId) {
+    // Same answer as GET /sos/{id}: 404 whether the ticket is missing or not the caller's,
+    // so an outsider cannot tell a real id from a made-up one.
     if (!sosService.canView(sosId, callerId)) {
-      throw new AccessDeniedException("You are not part of this SOS request");
+      throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
     return sosMediaRepository.findBySosRequestSosId(sosId).stream()
         .map(this::toResponseWithUrl)

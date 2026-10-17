@@ -87,7 +87,7 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 | `POST /sos/{sosId}/arrival` | assigned mechanic | none | 201 `SosStatusHistoryResponse` (`id` is the `historyId` the customer answers). **Idempotent while a request is waiting.** The ticket stays `ON_THE_WAY` | 403, 404, 409 (not ON_THE_WAY, or over 50 m) |
 | `PATCH /sos/{sosId}/customer-no-show` | assigned mechanic | none | `SosRequestResponse` (now `CANCELLED`) | 403, 404, 409 (not ARRIVED, wait not over (the message says how many minutes are left), mechanic no longer within 50 m, or turned off) |
 | `POST /sos/{sosId}/completion` | assigned mechanic | `ProposeStatusChangeRequest` (`toStatus` must be `COMPLETED`) | 201 `SosStatusHistoryResponse` (`id` is the `historyId`). **Idempotent while a request is waiting:** a repeat returns the same row and sends no second push | 400, 404, 409 |
-| `PATCH /sos/completion` | customer | `ApproveStatusChangeRequest`; answers a waiting completion **or arrival** request by `historyId` (`ACCEPTED` or `REJECTED`) | `SosRequestResponse` | 404, 409 |
+| `PATCH /sos/completion` | customer | `ApproveStatusChangeRequest`; answers a waiting completion **or arrival** request by `historyId` (`ACCEPTED` or `REJECTED`) | `SosRequestResponse` | 400 (`approvedStatus` not `ACCEPTED`/`REJECTED`), 404, 409 |
 | `PATCH /sos/{sosId}/cancel` | owner | none | `SosRequestResponse` | 404, 409 |
 | `POST /sos/{sosId}/rebroadcast` | owner | none | `SosRequestResponse` | 404, 409, 429 |
 
@@ -121,7 +121,7 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 | `GET /feedback/sos/{sosId}` | participants | |
 | `GET /feedback/mechanic/{mechanicId}` | any caller | paging |
 | `POST /sos/{sosId}/media` | owner, assigned mechanic or eligible mechanic | multipart field `file`; **JPEG or PNG only** (HEIC is rejected), 10 MB, 8000 px; returns a 15-minute presigned URL |
-| `GET /sos/{sosId}/media` | same | |
+| `GET /sos/{sosId}/media` | same | 404 when the SOS does not exist **or** the caller may not see it (same as `GET /sos/{sosId}`) |
 
 ### Health
 `GET /healthy` and `GET /health`: 200 (UP or DEGRADED), or 503 when the database is down. Reports `database`, `redis`, and `kafka` component statuses along with overall `status`. `GET /actuator/health`. All are public.
