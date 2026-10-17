@@ -2153,6 +2153,13 @@ public class SosServiceImpl implements SosService {
 
     LocalDateTime now = LocalDateTime.now();
     LocalDateTime moved = bid.getMechanic().getLocationMovedAt();
+    // The stall clock starts at acceptance, not at the mechanic's last move before it: someone
+    // parked at a garage for an hour who accepts a job gets the full stalled-minutes to set off,
+    // not a "still coming?" within one sweep and a release a minute later. respondedAt is when the
+    // customer accepted this bid. No recorded move at all still counts as moving.
+    if (moved != null && bid.getRespondedAt() != null && bid.getRespondedAt().isAfter(moved)) {
+      moved = bid.getRespondedAt();
+    }
     boolean stalled = moved != null && moved.isBefore(now.minusMinutes(noShowStalledMinutes));
     if (!stalled) {
       if (bid.getNoShowPromptedAt() != null) {
