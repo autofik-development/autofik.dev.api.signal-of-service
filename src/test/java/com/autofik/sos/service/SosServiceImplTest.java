@@ -1732,6 +1732,18 @@ class SosServiceImplTest {
   }
 
   @Test
+  void approveStatusChange_pendingApprovalIsNotAnAnswer_rejectedBeforeAnyLookup() {
+    ApproveStatusChangeRequest request =
+        new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.PENDING_APPROVAL);
+
+    assertThatThrownBy(() -> sosService.approveStatusChange(request))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("ACCEPTED or REJECTED");
+
+    verifyNoInteractions(sosStatusHistoryRepository, sosRequestRepository);
+  }
+
+  @Test
   void approveStatusChange_rejected_doesNotUpdateSosStatus() {
     SosRequest acceptedSos =
         SosRequest.builder()
