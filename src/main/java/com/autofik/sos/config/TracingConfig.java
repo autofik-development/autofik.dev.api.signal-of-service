@@ -69,9 +69,7 @@ public class TracingConfig {
         || path.startsWith("/actuator/");
   }
 
-  /**
-   * Operations excluded from Jaeger export (e.g. noisy or frequent Redis maintenance commands).
-   */
+  /** Operations excluded from Jaeger export (e.g. noisy or frequent Redis maintenance commands). */
   static final Set<String> IGNORED_OPERATIONS = Set.of("DEL", "HMSET");
 
   /**

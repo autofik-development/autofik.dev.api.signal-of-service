@@ -244,18 +244,24 @@ class TracingConfigTest {
     when(hmsetSpan.getName()).thenReturn("hmset");
     when(hmsetSpan.getTags()).thenReturn(Map.of("db.system", "redis", "db.operation", "HMSET"));
     when(hmsetSpan.getParentId()).thenReturn("00f067aa0ba902b7");
-    assertThat(predicate.isExportable(hmsetSpan)).as("HMSET command should not be exported").isFalse();
+    assertThat(predicate.isExportable(hmsetSpan))
+        .as("HMSET command should not be exported")
+        .isFalse();
 
     FinishedSpan getSpan = mock(FinishedSpan.class);
     when(getSpan.getName()).thenReturn("get");
     when(getSpan.getTags()).thenReturn(Map.of("db.system", "redis", "db.operation", "GET"));
     when(getSpan.getParentId()).thenReturn("00f067aa0ba902b7");
-    assertThat(predicate.isExportable(getSpan)).as("Normal Redis command with parent is exported").isTrue();
+    assertThat(predicate.isExportable(getSpan))
+        .as("Normal Redis command with parent is exported")
+        .isTrue();
 
     FinishedSpan orphanGet = mock(FinishedSpan.class);
     when(orphanGet.getName()).thenReturn("get");
     when(orphanGet.getTags()).thenReturn(Map.of("db.system", "redis", "db.operation", "GET"));
     when(orphanGet.getParentId()).thenReturn(null);
-    assertThat(predicate.isExportable(orphanGet)).as("Orphan Redis command is not exported").isFalse();
+    assertThat(predicate.isExportable(orphanGet))
+        .as("Orphan Redis command is not exported")
+        .isFalse();
   }
 }
