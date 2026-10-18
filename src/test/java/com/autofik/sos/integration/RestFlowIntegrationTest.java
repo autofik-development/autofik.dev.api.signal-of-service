@@ -224,7 +224,8 @@ class RestFlowIntegrationTest extends FlowTestSupport {
   void health_isPublic_andReportsTheDatabase() throws Exception {
     HttpResponse<String> r = send(req("/healthy"));
     assertThat(r.statusCode()).isEqualTo(200);
-    assertThat(parse(r.body()).get("database").asString()).isEqualTo("UP");
+    assertThat(parse(r.body()).get("status").asString()).isEqualTo("success");
+    assertThat(parse(r.body()).get("data").get("database").asString()).isEqualTo("connected");
   }
 
   @Test
