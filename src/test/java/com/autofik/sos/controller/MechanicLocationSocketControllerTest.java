@@ -1,5 +1,6 @@
 package com.autofik.sos.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -9,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.support.StaticApplicationContext;
@@ -25,6 +27,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.util.MimeTypeUtils;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Routes real STOMP frames through the real annotation handler rather than calling the controller
@@ -34,8 +38,11 @@ import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
  */
 class MechanicLocationSocketControllerTest {
 
+  private static final JsonMapper JSON = JsonMapper.builder().build();
+
   private final MechanicService mechanicService = mock(MechanicService.class);
   private SimpAnnotationMethodMessageHandler handler;
+  private final List<Message<?>> replies = new CopyOnWriteArrayList<>();
 
   private final UUID mechanicId = UUID.randomUUID();
 
@@ -49,6 +56,7 @@ class MechanicLocationSocketControllerTest {
             new MechanicLocationSocketController(mechanicService));
 
     ExecutorSubscribableChannel channel = new ExecutorSubscribableChannel();
+    channel.subscribe(replies::add);
     handler =
         new SimpAnnotationMethodMessageHandler(
             channel, channel, new SimpMessagingTemplate(channel));
@@ -86,14 +94,23 @@ class MechanicLocationSocketControllerTest {
     send(auth(GatewayIdentityFilter.ROLE_USER), "{\"latitude\":11.55,\"longitude\":104.92}");
 
     verify(mechanicService, never()).updateLocation(any(), anyDouble(), anyDouble(), any());
+    JsonNode error = onlyError();
+    assertThat(error.get("status").asInt()).isEqualTo(403);
+    assertThat(error.get("error").asString()).isEqualTo("You are not allowed to perform this action");
   }
 
-  /** Outside the Cambodia bounding box — @Valid must stop it before it reaches the service. */
+  /**
+   * Outside the Cambodia bounding box — @Valid must stop it before it reaches the service, and the
+   * reply must not echo the validation exception (it names the controller method and package).
+   */
   @Test
   void outOfRangeCoordinatesAreRejected() {
     send(auth(GatewayIdentityFilter.ROLE_MECHANIC), "{\"latitude\":48.85,\"longitude\":2.35}");
 
     verify(mechanicService, never()).updateLocation(any(), anyDouble(), anyDouble(), any());
+    JsonNode error = onlyError();
+    assertThat(error.get("status").asInt()).isEqualTo(400);
+    assertThat(error.get("error").asString()).isEqualTo("Invalid message");
   }
 
   @Test
@@ -101,6 +118,13 @@ class MechanicLocationSocketControllerTest {
     send(auth(GatewayIdentityFilter.ROLE_MECHANIC), "{\"longitude\":104.92}");
 
     verify(mechanicService, never()).updateLocation(any(), anyDouble(), anyDouble(), any());
+  }
+
+  private JsonNode onlyError() {
+    assertThat(replies).hasSize(1);
+    assertThat(StompHeaderAccessor.wrap(replies.get(0)).getDestination()).endsWith("/queue/errors");
+    // The bare template used here does not convert the reply; the real broker channel does.
+    return JSON.valueToTree(replies.get(0).getPayload());
   }
 
   private Authentication auth(String role) {
