@@ -9,7 +9,6 @@ import jakarta.validation.constraints.NotNull;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.MessageExceptionHandler;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
@@ -30,7 +29,6 @@ import org.springframework.stereotype.Controller;
  */
 @Controller
 @RequiredArgsConstructor
-@Slf4j
 public class MechanicLocationSocketController {
 
   private final MechanicService mechanicService;
@@ -62,12 +60,14 @@ public class MechanicLocationSocketController {
 
   /**
    * Without this a rejected frame closes the socket, and the client reconnect-loops through a
-   * failure it cannot see. One error frame on the caller's own queue instead.
+   * failure it cannot see. One error frame on the caller's own queue instead, in the same shape and
+   * with the same sanitised text as the bid socket: never the raw exception message, which for a
+   * bad payload is a Java method signature.
    */
   @MessageExceptionHandler
   @SendToUser(destinations = "/queue/errors", broadcast = false)
-  public Map<String, String> handle(Exception ex) {
-    log.warn("Rejected socket message: {}", ex.getMessage());
-    return Map.of("error", ex.getMessage() == null ? "Rejected" : ex.getMessage());
+  public Map<String, Object> handle(Exception ex) {
+    // Location pings carry no clientMessageId, so the reply has none either.
+    return BidSocketController.errorFrame(ex, null);
   }
 }

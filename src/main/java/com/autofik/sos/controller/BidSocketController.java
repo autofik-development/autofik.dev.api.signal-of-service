@@ -177,7 +177,8 @@ public class BidSocketController {
     return errorFrame(ex, clientMessageId(message));
   }
 
-  private static Map<String, Object> errorFrame(Exception ex, String clientMessageId) {
+  // Package-private: MechanicLocationSocketController answers its rejections the same way.
+  static Map<String, Object> errorFrame(Exception ex, String clientMessageId) {
     int status = statusOf(ex);
     if (status >= 500 && status != 503) {
       log.error("Socket bid message failed", ex);

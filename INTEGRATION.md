@@ -137,7 +137,7 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 
 - Endpoint `/ws`. The handshake needs `user-context` or `mechanic-context` (same rules as §1); without it the upgrade is refused with 403. Identity is checked at connect only.
 - Heartbeat 10 s / 10 s. App destination prefix `/app`. User queues are `/user/queue/...`.
-- **Send:** `/app/mechanic/location` with `{latitude, longitude, sosId?}` (mechanic only). Errors come back on `/user/queue/errors` as `{error}`.
+- **Send:** `/app/mechanic/location` with `{latitude, longitude, sosId?}` (mechanic only). Errors come back on `/user/queue/errors` as `{error, status, clientMessageId}`, with the REST status for the same failure (400 bad coordinates, 403 not a mechanic) and a fixed message; `clientMessageId` is null for location pings.
 - **Subscribe** to per-SOS topics only for an SOS you may see (owner, bidder, or an eligible mechanic while bidding is open); wildcards are refused.
 
 | Destination | Receiver | Payload |
