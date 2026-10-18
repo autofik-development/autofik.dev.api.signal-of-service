@@ -1,6 +1,6 @@
 services:
   sos-api:
-    image: autofikbyslaap/dev.api.sos:internal
+    image: autofikbyslaap/dev.api.sos:master
     ports:
       - "8083:28080"
     env_file:

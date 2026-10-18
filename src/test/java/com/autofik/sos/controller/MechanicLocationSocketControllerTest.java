@@ -96,7 +96,8 @@ class MechanicLocationSocketControllerTest {
     verify(mechanicService, never()).updateLocation(any(), anyDouble(), anyDouble(), any());
     JsonNode error = onlyError();
     assertThat(error.get("status").asInt()).isEqualTo(403);
-    assertThat(error.get("error").asString()).isEqualTo("You are not allowed to perform this action");
+    assertThat(error.get("error").asString())
+        .isEqualTo("You are not allowed to perform this action");
   }
 
   /**
