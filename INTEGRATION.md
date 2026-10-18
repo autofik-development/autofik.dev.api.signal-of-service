@@ -124,7 +124,22 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 | `GET /sos/{sosId}/media` | same | 404 when the SOS does not exist **or** the caller may not see it (same as `GET /sos/{sosId}`) |
 
 ### Health
-`GET /healthy` and `GET /health`: 200 (UP or DEGRADED), or 503 when the database is down. Reports `database`, `redis`, and `kafka` component statuses along with overall `status`. `GET /actuator/health`. All are public.
+`GET /healthy` and `GET /health` answer in SSO's `/health` envelope, so one monitor reads both services. Public through the gateway as `https://api.testing.autofik.com/sos-service/healthy`.
+
+| HTTP | `status` | `code` | `message` | Payload |
+|---|---|---|---|---|
+| 200 | `success` | `HEALTH_CHECK_SUCCESS` | `ok` | `data` |
+| 200 | `success` | `HEALTH_DEGRADED` | `degraded` | `data` — Redis or Kafka is down; SOS falls back and keeps serving |
+| 503 | `error` | `HEALTH_DOWN` | `Service unavailable` | `details` — the database is down |
+
+```json
+{"status": "success", "message": "ok", "code": "HEALTH_CHECK_SUCCESS",
+ "data": {"status": "ok", "database": "connected", "databaseLatencyMs": 3,
+          "redis": "connected", "redisLatencyMs": 2, "kafka": "connected", "kafkaLatencyMs": 9,
+          "timestamp": "2026-10-18T18:12:37.479Z"}}
+```
+
+`data` / `details`: `status` is `ok`, `degraded` or `down`; each of `database`, `redis`, `kafka` is `connected`, `disconnected`, or `unknown` (no client configured), with `<component>LatencyMs` only when connected; `timestamp` is ISO-8601 UTC. No error text: it can name internal hosts. `GET /actuator/health` is Spring's own. All are public.
 
 ### Main response shapes
 - `SosRequestResponse`: `sosId, problemType, description, locationAddress, status, latitude, longitude, broadcastRadiusKm, createdAt, updatedAt, biddingExpiresAt, jobStartedAt, jobCompletedAt, durationSeconds, rebroadcastCount, user{userId,name,phone,status,refererCode}, vehicle{id,carBrand,carModel,carModelYear,fuelType}, mechanic{…}, pendingCompletionHistoryId`.

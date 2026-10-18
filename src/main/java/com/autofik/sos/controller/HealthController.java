@@ -2,12 +2,15 @@ package com.autofik.sos.controller;
 
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -31,6 +34,10 @@ public class HealthController implements AutoCloseable {
 
   private static final DateTimeFormatter FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+  // ISO-8601 in UTC with milliseconds, as SSO's /health writes it (JavaScript's toISOString).
+  // Not Instant.toString(), which drops a zero fraction and prints micros when it has them.
+  private static final DateTimeFormatter ISO_UTC_MILLIS =
+      DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
   private static final long KAFKA_TIMEOUT_MS = 1000;
 
   private final JdbcTemplate jdbcTemplate;
@@ -85,32 +92,69 @@ public class HealthController implements AutoCloseable {
     return response;
   }
 
-  // 503 when the database is down so a probe that only reads the status code stops routing here.
-  // Redis and Kafka degradations report DEGRADED with 200, as SOS falls back gracefully.
+  // The envelope SSO's GET /health answers with (ApiResponse in the SSO repo), so a monitor reads
+  // both services one way: {"status":"success","message":"ok","code":"HEALTH_CHECK_SUCCESS",
+  // "data":{...}} while serving, {"status":"error",...,"details":{...}} when not.
+  //
+  // The status code keeps SOS's own rule: 503 only when the database is down, so a probe that only
+  // reads the status code stops routing here. Redis and Kafka degradations are "degraded" with 200,
+  // as SOS falls back gracefully. A check's exception text never reaches the body: it can name
+  // internal hosts, and this endpoint is public.
   @GetMapping({"/healthy", "/health"})
   public ResponseEntity<Map<String, Object>> healthy() {
-    String dbStatus = checkDatabase();
-    String redisStatus = checkRedis();
-    String kafkaStatus = checkKafka();
+    Check database = Check.run(this::checkDatabase);
+    Check redis = Check.run(this::checkRedis);
+    Check kafka = Check.run(this::checkKafka);
+    boolean serving = database.up();
+    boolean degraded = redis.down() || kafka.down();
 
-    String overallStatus;
-    if (!"UP".equals(dbStatus)) {
-      overallStatus = "DOWN";
-    } else if ("DOWN".equals(redisStatus) || "DOWN".equals(kafkaStatus)) {
-      overallStatus = "DEGRADED";
-    } else {
-      overallStatus = "UP";
-    }
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("status", !serving ? "down" : degraded ? "degraded" : "ok");
+    database.report(data, "database");
+    redis.report(data, "redis");
+    kafka.report(data, "kafka");
+    data.put("timestamp", ISO_UTC_MILLIS.format(Instant.now()));
 
     Map<String, Object> response = new LinkedHashMap<>();
-    response.put("status", overallStatus);
-    response.put("database", dbStatus);
-    response.put("redis", redisStatus);
-    response.put("kafka", kafkaStatus);
-    response.put("timestamp", LocalDateTime.now().format(FORMATTER));
+    if (!serving) {
+      response.put("status", "error");
+      response.put("message", "Service unavailable");
+      response.put("code", "HEALTH_DOWN");
+      response.put("details", data);
+      return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
+    }
+    response.put("status", "success");
+    response.put("message", degraded ? "degraded" : "ok");
+    response.put("code", degraded ? "HEALTH_DEGRADED" : "HEALTH_CHECK_SUCCESS");
+    response.put("data", data);
+    return ResponseEntity.ok(response);
+  }
 
-    HttpStatus httpStatus = "UP".equals(dbStatus) ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
-    return ResponseEntity.status(httpStatus).body(response);
+  /** One component's check and how long it took. {@code status} is UP, DOWN or UNKNOWN. */
+  private record Check(String status, long latencyMs) {
+
+    static Check run(Supplier<String> check) {
+      long start = System.nanoTime();
+      String status = check.get();
+      return new Check(status, (System.nanoTime() - start) / 1_000_000);
+    }
+
+    boolean up() {
+      return "UP".equals(status);
+    }
+
+    boolean down() {
+      return "DOWN".equals(status);
+    }
+
+    // SSO's words: "connected" or "disconnected", plus "unknown" for a component this instance has
+    // no client for. The latency only when the component answered, as SSO reports its Redis ping.
+    void report(Map<String, Object> data, String name) {
+      data.put(name, up() ? "connected" : down() ? "disconnected" : "unknown");
+      if (up()) {
+        data.put(name + "LatencyMs", latencyMs);
+      }
+    }
   }
 
   String checkDatabase() {
