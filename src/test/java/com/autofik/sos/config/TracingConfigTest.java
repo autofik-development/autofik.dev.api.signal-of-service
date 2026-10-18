@@ -4,11 +4,15 @@ import static com.autofik.sos.config.TestTracing.PARENT_SPAN_ID;
 import static com.autofik.sos.config.TestTracing.TRACEPARENT;
 import static com.autofik.sos.config.TestTracing.TRACE_ID;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
+import io.micrometer.tracing.exporter.FinishedSpan;
+import io.micrometer.tracing.exporter.SpanExportingPredicate;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.trace.data.SpanData;
@@ -17,6 +21,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -223,5 +228,34 @@ class TracingConfigTest {
             TracingConfig.QuietSpanExporter.reason(
                 new RuntimeException("wrap", new java.io.IOException("refused"))))
         .isEqualTo("IOException: refused");
+  }
+
+  @Test
+  void redisDelAndHmset_areFilteredFromExport() {
+    SpanExportingPredicate predicate = new TracingConfig().noOrphanRedisCommands();
+
+    FinishedSpan delSpan = mock(FinishedSpan.class);
+    when(delSpan.getName()).thenReturn("del");
+    when(delSpan.getTags()).thenReturn(Map.of("db.system", "redis", "db.operation", "DEL"));
+    when(delSpan.getParentId()).thenReturn("00f067aa0ba902b7");
+    assertThat(predicate.isExportable(delSpan)).as("DEL command should not be exported").isFalse();
+
+    FinishedSpan hmsetSpan = mock(FinishedSpan.class);
+    when(hmsetSpan.getName()).thenReturn("hmset");
+    when(hmsetSpan.getTags()).thenReturn(Map.of("db.system", "redis", "db.operation", "HMSET"));
+    when(hmsetSpan.getParentId()).thenReturn("00f067aa0ba902b7");
+    assertThat(predicate.isExportable(hmsetSpan)).as("HMSET command should not be exported").isFalse();
+
+    FinishedSpan getSpan = mock(FinishedSpan.class);
+    when(getSpan.getName()).thenReturn("get");
+    when(getSpan.getTags()).thenReturn(Map.of("db.system", "redis", "db.operation", "GET"));
+    when(getSpan.getParentId()).thenReturn("00f067aa0ba902b7");
+    assertThat(predicate.isExportable(getSpan)).as("Normal Redis command with parent is exported").isTrue();
+
+    FinishedSpan orphanGet = mock(FinishedSpan.class);
+    when(orphanGet.getName()).thenReturn("get");
+    when(orphanGet.getTags()).thenReturn(Map.of("db.system", "redis", "db.operation", "GET"));
+    when(orphanGet.getParentId()).thenReturn(null);
+    assertThat(predicate.isExportable(orphanGet)).as("Orphan Redis command is not exported").isFalse();
   }
 }
