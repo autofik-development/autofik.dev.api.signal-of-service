@@ -10,6 +10,8 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Collection;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -67,9 +69,13 @@ public class TracingConfig {
         || path.startsWith("/actuator/");
   }
 
+  /** Operations excluded from Jaeger export (e.g. noisy or frequent Redis maintenance commands). */
+  static final Set<String> IGNORED_OPERATIONS = Set.of("DEL", "HMSET");
+
   /**
-   * Drops a Redis command span that has no parent: a location ping over STOMP (throttle key,
-   * pub/sub relay) or a health check, several a second across the fleet.
+   * Drops noisy Redis operations (like DEL and HMSET) as well as Redis command spans that have no
+   * parent: a location ping over STOMP (throttle key, pub/sub relay) or a health check, several a
+   * second across the fleet.
    *
    * <p>Done at export, not with the predicate above, because Lettuce creates the observation on its
    * I/O thread and attaches the parent afterwards, so a predicate would see no parent for any
@@ -78,7 +84,23 @@ public class TracingConfig {
    */
   @Bean
   SpanExportingPredicate noOrphanRedisCommands() {
-    return span -> !(isRoot(span) && "redis".equals(span.getTags().get("db.system")));
+    return span -> {
+      if (isIgnoredOperation(span)) {
+        return false;
+      }
+      return !(isRoot(span) && "redis".equals(span.getTags().get("db.system")));
+    };
+  }
+
+  static boolean isIgnoredOperation(FinishedSpan span) {
+    if (span.getTags() != null) {
+      String op = span.getTags().get("db.operation");
+      if (op != null && IGNORED_OPERATIONS.contains(op.toUpperCase(Locale.ROOT))) {
+        return true;
+      }
+    }
+    String name = span.getName();
+    return name != null && IGNORED_OPERATIONS.contains(name.toUpperCase(Locale.ROOT));
   }
 
   private static boolean isRoot(FinishedSpan span) {
