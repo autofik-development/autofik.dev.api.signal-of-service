@@ -7,6 +7,7 @@ import com.autofik.sos.domain.entity.User;
 import com.autofik.sos.domain.enums.MediaType;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.response.SosMediaResponse;
+import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.SosMediaMapper;
 import com.autofik.sos.repository.MechanicRepository;
@@ -41,6 +42,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
+import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
@@ -167,16 +169,23 @@ public class SosMediaServiceImpl implements SosMediaService {
 
     // Phase 4: S3 Object Storage Persistence (no transaction)
     String objectKey = "sos/" + sosId + "/" + UUID.randomUUID() + ".jpg";
-    Observation.createNotStarted(S3_PUT_OBJECT, observationRegistry)
-        .observe(
-            () ->
-                s3Client.putObject(
-                    PutObjectRequest.builder()
-                        .bucket(bucket)
-                        .key(objectKey)
-                        .contentType("image/jpeg")
-                        .build(),
-                    RequestBody.fromBytes(compressed)));
+    try {
+      Observation.createNotStarted(S3_PUT_OBJECT, observationRegistry)
+          .observe(
+              () ->
+                  s3Client.putObject(
+                      PutObjectRequest.builder()
+                          .bucket(bucket)
+                          .key(objectKey)
+                          .contentType("image/jpeg")
+                          .build(),
+                      RequestBody.fromBytes(compressed)));
+    } catch (SdkException e) {
+      // Storage down, slow or refusing us: the client's photo is fine, so say "try again" (503)
+      // rather than answer 500.
+      log.error("S3 upload failed for SOS {}: {}", sosId, e.getMessage());
+      throw new ServiceUnavailableException("Photo storage is temporarily unavailable");
+    }
 
     // Phase 5: metadata insert and event (short transaction). A failure here would orphan the
     // object, so it is removed before the error goes on.

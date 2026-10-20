@@ -247,6 +247,61 @@ class BidSocketIntegrationTest extends FlowTestSupport {
     mechanic.session().disconnect();
   }
 
+  /**
+   * The app calls sync after every reconnect, so a double call (two reconnects close together, a
+   * retry) and a call from a fresh socket after the old one dropped must both be harmless: each
+   * call is answered, the same open offer is re-sent, and nothing is re-sent once the mechanic has
+   * bid.
+   */
+  @Test
+  void syncingTwice_andAfterTheSocketDropped_resendsTheOpenOfferEachTime_untilTheMechanicBids()
+      throws Exception {
+    Mechanic m = skilledMechanic(11.5564, 104.9282, "TOW");
+    UUID sosId = createSosOk(newDriver());
+
+    Party first = mechanicSocket(m);
+    Tap firstOffers = subscribe(first.session(), OFFERS);
+    awaitSubscriptions(OFFERS, 1);
+    first.session().send("/app/sos/open", msg("clientMessageId", "dup-1"));
+    first.session().send("/app/sos/open", msg("clientMessageId", "dup-2"));
+    List<String> acked = new java.util.ArrayList<>();
+    for (int i = 0; i < 2; i++) {
+      JsonNode ack = parse(first.results().next(WAIT));
+      assertThat(ack.get("type").asString()).isEqualTo("OPEN_SOS_SYNCED");
+      acked.add(ack.get("clientMessageId").asString());
+    }
+    assertThat(acked).as("one ack per call").containsExactlyInAnyOrder("dup-1", "dup-2");
+    assertThat(offersFor(firstOffers, sosId)).as("the offer, once per call").isEqualTo(2);
+    first.session().disconnect();
+
+    // The socket dropped and the app reconnects on a new one.
+    Party second = mechanicSocket(m);
+    Tap secondOffers = subscribe(second.session(), OFFERS);
+    awaitSubscriptions(OFFERS, 1);
+    second.session().send("/app/sos/open", msg("clientMessageId", "dup-3"));
+    assertThat(parse(second.results().next(WAIT)).get("clientMessageId").asString())
+        .isEqualTo("dup-3");
+    assertThat(offersFor(secondOffers, sosId)).as("re-sent on the new socket").isEqualTo(1);
+
+    placeBidOk(m, sosId);
+    second.session().send("/app/sos/open", msg("clientMessageId", "dup-4"));
+    assertThat(parse(second.results().next(WAIT)).get("clientMessageId").asString())
+        .isEqualTo("dup-4");
+    assertThat(offersFor(secondOffers, sosId)).as("not re-sent after the bid").isZero();
+    second.session().disconnect();
+  }
+
+  /** How many frames on this tap offer this ticket, reading until the tap has been quiet. */
+  private static int offersFor(Tap offers, UUID sosId) throws Exception {
+    int count = 0;
+    for (String frame = offers.next(Duration.ofMillis(700));
+        frame != null;
+        frame = offers.next(Duration.ofMillis(700))) {
+      if (sosId.toString().equals(parse(frame).get("sosId").asString())) count++;
+    }
+    return count;
+  }
+
   @Test
   void theSync_leavesOutTicketsTheMechanicCouldNotBidOn() throws Exception {
     Mechanic wrongSkill = skilledMechanic(11.5564, 104.9282, "BATTERY");

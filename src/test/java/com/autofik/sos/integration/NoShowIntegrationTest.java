@@ -35,11 +35,18 @@ class NoShowIntegrationTest extends FlowTestSupport {
   @Autowired private BidSosRepository bidSosRepository;
   @Autowired private SosRequestRepository sosRequestRepository;
 
-  /** The mechanic has not moved for ten minutes. */
-  private void standStill(Mechanic m) {
+  /**
+   * The mechanic has not moved for ten minutes, including since the customer accepted: the sweep
+   * starts the stall clock at the bid's respondedAt when that is later than the last move.
+   */
+  private void standStill(Mechanic m, UUID sosId) {
+    LocalDateTime tenMinutesAgo = LocalDateTime.now().minusMinutes(10);
     Mechanic fresh = mechanicRepository.findById(m.getMechanicId()).orElseThrow();
-    fresh.setLocationMovedAt(LocalDateTime.now().minusMinutes(10));
+    fresh.setLocationMovedAt(tenMinutesAgo);
     mechanicRepository.save(fresh);
+    BidSos bid = acceptedBid(sosId);
+    bid.setRespondedAt(tenMinutesAgo);
+    bidSosRepository.save(bid);
   }
 
   private BidSos acceptedBid(UUID sosId) {
@@ -85,7 +92,7 @@ class NoShowIntegrationTest extends FlowTestSupport {
     Mechanic other = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
     UUID sosId = createSosOk(d);
     assignMechanic(d, stuck, sosId);
-    standStill(stuck);
+    standStill(stuck, sosId);
 
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
     StompSession stuckSession =
@@ -132,7 +139,7 @@ class NoShowIntegrationTest extends FlowTestSupport {
     Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
     UUID sosId = createSosOk(d);
     assignMechanic(d, m, sosId);
-    standStill(m);
+    standStill(m, sosId);
     sosService.checkNoShowJobs();
     assertThat(acceptedBid(sosId).getNoShowPromptedAt()).isNotNull();
 
@@ -181,7 +188,7 @@ class NoShowIntegrationTest extends FlowTestSupport {
                     .method("PATCH", HttpRequest.BodyPublishers.noBody()))
                 .statusCode())
         .isEqualTo(200);
-    standStill(m);
+    standStill(m, sosId);
     sosService.checkNoShowJobs(); // asks
     expireTheQuestion(sosId);
     UUID arrivalId = proposeArrivalOk(m, sosId);

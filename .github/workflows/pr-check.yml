@@ -36,6 +36,14 @@ jobs:
         env:
           SPRING_PROFILES_ACTIVE: test
 
+      # The integration tests (Testcontainers: Postgres, Redis, Kafka) are excluded from the plain
+      # run above and were never run in CI, so a stale one went unnoticed. Docker is available on
+      # this runner. SosApplicationTests needs a configured database and stays out.
+      - name: Run integration tests
+        run: ./mvnw -B test -Pintegration -Dtest='!SosApplicationTests'
+        env:
+          SPRING_PROFILES_ACTIVE: test
+
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4

@@ -147,6 +147,21 @@ class SosMediaServiceImplTest {
   }
 
   @Test
+  void upload_whenStorageFails_answers503_andWritesNoMetadata() throws Exception {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+    when(s3Client.putObject(
+            any(software.amazon.awssdk.services.s3.model.PutObjectRequest.class),
+            any(software.amazon.awssdk.core.sync.RequestBody.class)))
+        .thenThrow(software.amazon.awssdk.core.exception.SdkClientException.create("unreachable"));
+
+    assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+        .isInstanceOf(com.autofik.sos.exception.ServiceUnavailableException.class);
+
+    verifyNoInteractions(sosMediaRepository, sosEventProducer);
+  }
+
+  @Test
   void upload_jpeg_compressedAndStoredAsJpeg() throws Exception {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
     when(userRepository.findById(userId)).thenReturn(Optional.of(user));
