@@ -1,6 +1,7 @@
 package com.autofik.sos.config;
 
 import java.net.URI;
+import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,6 +45,11 @@ public class S3Config {
         // forcePathStyle required for MinIO/LocalStack — real AWS uses virtual-hosted style by
         // default
         .forcePathStyle(true)
+        // A hung storage endpoint must not hold an upload thread for the SDK's default minutes.
+        .overrideConfiguration(
+            c ->
+                c.apiCallTimeout(Duration.ofSeconds(15))
+                    .apiCallAttemptTimeout(Duration.ofSeconds(7)))
         .build();
   }
 

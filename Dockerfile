@@ -24,6 +24,11 @@ WORKDIR /app
 
 COPY --from=build /app/target/*.jar app.jar
 
-EXPOSE 8083
+# Not root: a compromised process gets no write access beyond /app.
+RUN addgroup -S app && adduser -S app -G app && chown app:app /app
+USER app
+
+# The port is whatever SERVER_PORT says (8080 in .env.example); compose maps it to the host.
+EXPOSE 8080
 
 ENTRYPOINT ["java","-jar","app.jar"]
