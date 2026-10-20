@@ -447,6 +447,44 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     assertThat(sosStatus(d, sosId)).isEqualTo("IN_PROGRESS");
   }
 
+  // Same request as scripts/e2e.py "approve with status PENDING_APPROVAL" (#168): the old build
+  // answered 200 and decided nothing.
+  @Test
+  void pendingApprovalAsTheAnswer_is400_andTheCompletionStaysOpen() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = inProgressSos(d, m);
+    UUID historyId = proposeCompletionOk(m, sosId);
+
+    HttpResponse<String> r = approveCompletion(d, historyId, ApprovedStatus.PENDING_APPROVAL);
+
+    assertThat(r.statusCode()).as(r.body()).isEqualTo(400);
+    assertThat(r.body()).contains("ACCEPTED or REJECTED");
+    assertThat(sosStatus(d, sosId)).isEqualTo("IN_PROGRESS");
+    // Still answerable: the refused call stamped nothing on the history row.
+    assertThat(approveCompletion(d, historyId, ApprovedStatus.ACCEPTED).statusCode())
+        .isEqualTo(200);
+  }
+
+  // Same request as scripts/e2e.py "list media of unknown SOS" (#168): the old build answered 403,
+  // which told an outsider the id exists.
+  @Test
+  void mediaOfAnUnknownSos_andOfSomeoneElsesSos_isBoth404() throws Exception {
+    Driver owner = newDriver();
+    Driver stranger = newDriver();
+    UUID sosId = createSosOk(owner);
+
+    for (UUID id : List.of(UUID.randomUUID(), sosId)) {
+      HttpResponse<String> r =
+          send(
+              req("/api/v1/sos/" + id + "/media")
+                  .header("user-context", userContext(stranger.user().getUserId()))
+                  .GET());
+      assertThat(r.statusCode()).as("%s: %s", id, r.body()).isEqualTo(404);
+      assertThat(r.body()).contains("SOS request not found");
+    }
+  }
+
   @Test
   void anotherDriver_cannotApproveSomeoneElsesCompletion() throws Exception {
     Driver owner = newDriver();

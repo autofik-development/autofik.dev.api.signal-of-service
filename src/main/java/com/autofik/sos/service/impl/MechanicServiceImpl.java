@@ -18,7 +18,6 @@ import com.autofik.sos.util.Geo;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
 import java.io.IOException;
-import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
@@ -242,7 +241,8 @@ public class MechanicServiceImpl implements MechanicService {
     if (location == null) {
       throw new EntityNotFoundException("No location available for mechanic: " + mechanicId);
     }
-    return new MechanicLocationResponse(location.getY(), location.getX(), Instant.now());
+    return new MechanicLocationResponse(
+        location.getY(), location.getX(), OffsetDateTime.now(CAMBODIA));
   }
 
   // "Active job" is the ACCEPTED bid: it is what assigns a mechanic to a driver, and it ends
