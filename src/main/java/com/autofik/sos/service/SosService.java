@@ -4,7 +4,7 @@ import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
-import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
@@ -53,10 +53,10 @@ public interface SosService {
    * reconstruct those themselves or worry about the radius having grown past whatever they
    * originally picked.
    *
-   * @throws jakarta.persistence.EntityNotFoundException when the caller may not see it, same rule
-   *     as {@link #getById}
+   * @throws jakarta.persistence.EntityNotFoundException when the caller is not the SOS owner — the
+   *     mechanics who can read the ticket are competitors of everyone on this list
    */
-  List<MechanicResponse> getNearbyMechanics(UUID sosId, UUID callerId);
+  List<MechanicSummaryResponse> getNearbyMechanics(UUID sosId, UUID callerId);
 
   /**
    * Use case: View history sos

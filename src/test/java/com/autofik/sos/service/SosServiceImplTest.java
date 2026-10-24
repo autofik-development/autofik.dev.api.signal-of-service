@@ -18,6 +18,7 @@ import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
@@ -1409,32 +1410,20 @@ class SosServiceImplTest {
   void getNearbyMechanics_owner_usesTicketsCurrentRadiusAndReturnsMappedList() {
     pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
     pendingSos.setBroadcastRadiusKm(25); // already auto-expanded past the default 15
-    MechanicResponse mechanicResponse =
-        new MechanicResponse(
-            mechanicId,
-            "Bob",
-            "081",
-            "bob@fix.com",
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            true,
-            null,
-            null);
+    MechanicSummaryResponse summary =
+        new MechanicSummaryResponse(mechanicId, "Bob", null, null, null, true, 11.56, 104.93);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(25_000.0)))
         .thenReturn(ids(mechanic));
-    when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
+    when(mechanicMapper.toSummary(mechanic)).thenReturn(summary);
 
-    List<MechanicResponse> result = sosService.getNearbyMechanics(sosId, userId);
+    List<MechanicSummaryResponse> result = sosService.getNearbyMechanics(sosId, userId);
 
-    assertThat(result).containsExactly(mechanicResponse);
+    assertThat(result).containsExactly(summary);
+    verify(mechanicMapper, never()).toResponse(any());
   }
 
   @Test
@@ -1447,24 +1436,11 @@ class SosServiceImplTest {
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(15_000.0))) // sos.broadcast.default-km
         .thenReturn(ids(mechanic));
-    when(mechanicMapper.toResponse(mechanic))
+    when(mechanicMapper.toSummary(mechanic))
         .thenReturn(
-            new MechanicResponse(
-                mechanicId,
-                "Bob",
-                "081",
-                "bob@fix.com",
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                true,
-                null,
-                null));
+            new MechanicSummaryResponse(mechanicId, "Bob", null, null, null, true, null, null));
 
-    List<MechanicResponse> result = sosService.getNearbyMechanics(sosId, userId);
+    List<MechanicSummaryResponse> result = sosService.getNearbyMechanics(sosId, userId);
 
     assertThat(result).hasSize(1);
   }
@@ -1473,12 +1449,25 @@ class SosServiceImplTest {
   void getNearbyMechanics_foreignCaller_throwsEntityNotFoundException() {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     UUID stranger = UUID.randomUUID();
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, stranger))
-        .thenReturn(false);
 
     assertThatThrownBy(() -> sosService.getNearbyMechanics(sosId, stranger))
         .isInstanceOf(EntityNotFoundException.class);
     verifyNoInteractions(mechanicMapper);
+  }
+
+  // A mechanic who bid can read the ticket, but the list is of their competitors.
+  @Test
+  void getNearbyMechanics_mechanicWhoBidOnIt_throwsEntityNotFoundException() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    lenient()
+        .when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+        .thenReturn(true);
+
+    assertThatThrownBy(() -> sosService.getNearbyMechanics(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+    verifyNoInteractions(mechanicMapper);
+    verify(mechanicRepository, never()).findByH3CellsAndSkillTag(anyList(), any(), any());
   }
 
   // ── proposeStatusChange ───────────────────────────────────────────────────

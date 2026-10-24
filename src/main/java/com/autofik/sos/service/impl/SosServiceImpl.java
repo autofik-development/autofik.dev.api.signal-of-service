@@ -19,6 +19,7 @@ import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
@@ -687,9 +688,11 @@ public class SosServiceImpl implements SosService {
   // ticket's radius has auto-expanded past it.
   @Override
   @Transactional(readOnly = true)
-  public List<MechanicResponse> getNearbyMechanics(UUID sosId, UUID callerId) {
+  public List<MechanicSummaryResponse> getNearbyMechanics(UUID sosId, UUID callerId) {
     SosRequest sos = findSosOrThrow(sosId);
-    if (!isVisibleTo(sos, callerId)) {
+    // Owner only. Bidders and eligible mechanics can read the ticket itself, but everyone on this
+    // list is their competitor. 404 rather than 403, as for any SOS the caller may not see.
+    if (!sos.getUser().getUserId().equals(callerId)) {
       throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
 
@@ -698,7 +701,7 @@ public class SosServiceImpl implements SosService {
         sos.getBroadcastRadiusKm() != null ? sos.getBroadcastRadiusKm() : defaultBroadcastKm;
     return findMatchedMechanics(location.getY(), location.getX(), sos.getProblemType(), radiusKm)
         .stream()
-        .map(mechanicMapper::toResponse)
+        .map(mechanicMapper::toSummary)
         .toList();
   }
 

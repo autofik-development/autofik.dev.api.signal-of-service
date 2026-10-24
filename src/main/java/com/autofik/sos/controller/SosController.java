@@ -4,7 +4,7 @@ import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
-import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
@@ -84,9 +84,9 @@ public class SosController {
   }
 
   // GET /api/v1/sos/{sosId}/nearby-mechanics — Live list of mechanics eligible for this ticket
-  // right now, for the "waiting for a bid" screen. Same visibility rule as reading the SOS itself.
+  // right now, for the "waiting for a bid" screen. SOS owner only; positions are snapped to ~1 km.
   @GetMapping("/{sosId}/nearby-mechanics")
-  public List<MechanicResponse> getNearbyMechanics(
+  public List<MechanicSummaryResponse> getNearbyMechanics(
       @PathVariable UUID sosId, @AuthUser CurrentUser caller) {
     return sosService.getNearbyMechanics(sosId, caller.id());
   }

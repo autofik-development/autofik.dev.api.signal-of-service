@@ -6,6 +6,7 @@ import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.MechanicSkillResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.mapper.MechanicSkillMapper;
@@ -107,8 +108,8 @@ public class MechanicServiceImpl implements MechanicService {
 
   @Override
   @Transactional(readOnly = true)
-  public MechanicResponse getById(UUID mechanicId) {
-    return mechanicMapper.toResponse(
+  public MechanicSummaryResponse getById(UUID mechanicId) {
+    return mechanicMapper.toSummaryWithoutPosition(
         mechanicRepository
             .findById(mechanicId)
             .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId)));
@@ -120,7 +121,7 @@ public class MechanicServiceImpl implements MechanicService {
   // Stage 3 (in-memory): skill tag filter, only when problemType is provided.
   @Override
   @Transactional(readOnly = true)
-  public List<MechanicResponse> findAvailable(
+  public List<MechanicSummaryResponse> findAvailable(
       double lat, double lng, String problemType, int radiusKm) {
     boolean needsSkills = problemType != null && !problemType.isBlank();
 
@@ -169,7 +170,7 @@ public class MechanicServiceImpl implements MechanicService {
       }
     }
 
-    return mechanicMapper.toResponseList(result);
+    return mechanicMapper.toSummaryList(result);
   }
 
   // Convenience overload — delegates so both entry points share one broadcast decision.
