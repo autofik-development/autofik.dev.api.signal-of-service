@@ -1370,10 +1370,7 @@ class SosServiceImplTest {
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
             sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
-        .thenReturn(ids(mechanic));
-    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble()))
-        .thenReturn(ids(mechanic));
+    mechanicEligibility(true);
     when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
     SosRequestResponse result = sosService.getById(sosId, mechanicId);
     assertThat(result).isEqualTo(sosResponse);
@@ -1388,12 +1385,25 @@ class SosServiceImplTest {
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
             sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
-        .thenReturn(ids(mechanic));
-    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble())).thenReturn(ids());
+    mechanicEligibility(false);
 
     assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
         .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  /**
+   * What the one-mechanic eligibility query answers; its SQL is checked in MechanicRepositoryTest.
+   */
+  private void mechanicEligibility(boolean eligible) {
+    when(mechanicRepository.isEligible(
+            eq(mechanicId),
+            anyList(),
+            eq(resolvedKey),
+            any(),
+            anyDouble(),
+            anyDouble(),
+            anyDouble()))
+        .thenReturn(eligible);
   }
 
   @Test
@@ -3017,10 +3027,7 @@ class SosServiceImplTest {
         .thenReturn(List.of(second, sosId)); // newest first
     when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a, b));
     // Both pass the real rule: the mechanic is in the H3 ring and inside the radius.
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
-        .thenReturn(List.of(mechanicId));
-    when(mechanicRepository.filterByRadius(any(), anyDouble(), anyDouble()))
-        .thenReturn(List.of(mechanicId));
+    mechanicEligibility(true);
     when(sosMediaServiceBean.photoUrls(any())).thenReturn(List.of("https://x/p.jpg"));
 
     List<SosNotificationEvent> offers = sosService.openOffersFor(mechanicId);
@@ -3040,8 +3047,8 @@ class SosServiceImplTest {
     when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
         .thenReturn(List.of(sosId));
     when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a));
-    // Not in the mechanic's reach by the H3 + skill rule (busy, stale, or the ring misses them).
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any())).thenReturn(List.of());
+    // Not in the mechanic's reach by the real rule (busy, stale, or the ring misses them).
+    mechanicEligibility(false);
 
     assertThat(sosService.openOffersFor(mechanicId)).isEmpty();
   }
@@ -3053,10 +3060,7 @@ class SosServiceImplTest {
     when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
         .thenReturn(List.of(sosId));
     when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a));
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
-        .thenReturn(List.of(mechanicId));
-    when(mechanicRepository.filterByRadius(any(), anyDouble(), anyDouble()))
-        .thenReturn(List.of(mechanicId));
+    mechanicEligibility(true);
     when(redisTemplate.opsForHash()).thenReturn(hashOps);
     when(hashOps.entries(anyString()))
         .thenReturn(

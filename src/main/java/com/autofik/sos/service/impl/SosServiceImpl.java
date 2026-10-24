@@ -200,6 +200,9 @@ public class SosServiceImpl implements SosService {
 
   // A bid lets its mechanic read the ticket only while it is live: waiting for the customer, or
   // accepted. A rejected, withdrawn or released bid is over, and with it the access.
+  // Radius meant as "no cap" for the eligibility query: LEAST() then leaves the mechanic's own.
+  private static final double NO_BROADCAST_CAP_M = 1e12;
+
   private static final List<BidStatus> LIVE_BID_STATUSES =
       List.of(BidStatus.PENDING, BidStatus.ACCEPTED);
 
@@ -792,20 +795,15 @@ public class SosServiceImpl implements SosService {
     List<String> searchCells =
         H3.kRing(sosCell, Geo.ringRadiusFor(effectiveRadiusKm, h3CenterToCenterKm));
 
-    List<UUID> coarse =
-        mechanicRepository.findByH3CellsAndSkillTag(
-            searchCells, sos.getProblemType(), locationFreshSince());
-
-    if (!coarse.contains(callerId)) {
-      return false;
-    }
-
-    List<UUID> matched =
+    // One mechanic, asked about by id: the same predicates as the area matcher, at a cost that does
+    // not grow with the mechanics around the ticket. No broadcast radius: only the mechanic's own
+    // radius limits them (what filterByRadius did).
+    double radiusM =
         sos.getBroadcastRadiusKm() != null
-            ? mechanicRepository.filterByRadiusAndBroadcast(
-                coarse, lat, lng, sos.getBroadcastRadiusKm() * 1000.0)
-            : mechanicRepository.filterByRadius(coarse, lat, lng);
-    return matched.contains(callerId);
+            ? sos.getBroadcastRadiusKm() * 1000.0
+            : NO_BROADCAST_CAP_M;
+    return mechanicRepository.isEligible(
+        callerId, searchCells, sos.getProblemType(), locationFreshSince(), lat, lng, radiusM);
   }
 
   @Override

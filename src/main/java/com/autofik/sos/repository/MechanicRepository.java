@@ -188,6 +188,50 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
       @Param("movedM") double movedM,
       @Param("now") LocalDateTime now);
 
+  /**
+   * Is this one mechanic offered this ticket? The predicates of findByH3CellsAndSkillTag (cell,
+   * availability, freshness, not on a live job, skill) and of the radius filters (the smaller of
+   * the mechanic's own radius and {@code radiusM}), asked about one id, so the cost no longer grows
+   * with the mechanics around the ticket. Callers with no broadcast radius pass a huge {@code
+   * radiusM}, which leaves the mechanic's own radius as the limit, as filterByRadius does.
+   */
+  @Query(
+      value =
+          """
+            SELECT EXISTS (
+              SELECT 1 FROM mechanic m
+              JOIN mechanic_skill ms ON ms.mechanic_profile_id = m.id
+              WHERE m.id = :mechanicId
+                AND m.current_h3_index IN :cellIds
+                AND m.available_status = true
+                AND (m.location_updated_at IS NULL OR m.location_updated_at >= :seenSince)
+                AND NOT EXISTS (
+                    SELECT 1 FROM bid_sos b
+                    JOIN sos_request s ON s.sos_id = b.sos_id
+                    WHERE b.mechanic_id = m.id
+                      AND b.status = 'ACCEPTED'
+                      AND s.status IN ('ACCEPTED', 'ON_THE_WAY', 'ARRIVED', 'IN_PROGRESS')
+                )
+                AND EXISTS (
+                    SELECT 1 FROM unnest(ms.skill_tags) tag WHERE UPPER(tag) = :problemType
+                )
+                AND ST_DWithin(
+                      m.current_location,
+                      ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
+                      LEAST(m.service_radius_km * 1000, :radiusM)
+                    )
+            )
+            """,
+      nativeQuery = true)
+  boolean isEligible(
+      @Param("mechanicId") UUID mechanicId,
+      @Param("cellIds") List<String> cellIds,
+      @Param("problemType") String problemType,
+      @Param("seenSince") LocalDateTime seenSince,
+      @Param("lat") double lat,
+      @Param("lng") double lng,
+      @Param("radiusM") double radiusM);
+
   /** Mechanics by id with their rating joined in, so mapping them costs one query, not N + 1. */
   @EntityGraph(attributePaths = "rate")
   @Query("SELECT m FROM Mechanic m WHERE m.mechanicId IN :ids")

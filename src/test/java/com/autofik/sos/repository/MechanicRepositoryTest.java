@@ -83,6 +83,115 @@ class MechanicRepositoryTest extends RepositoryTestBase {
         .containsExactly(finished.getMechanicId());
   }
 
+  // ── isEligible: one mechanic, same answer as the area matcher ────────────
+
+  /**
+   * What isEligibleMechanic did before: the area matcher, then the radius filter, then contains.
+   */
+  private boolean viaTheAreaMatcher(Mechanic m, List<String> cells, Double broadcastKm) {
+    LocalDateTime seen = LocalDateTime.now().minusMinutes(5);
+    List<UUID> coarse = mechanicRepository.findByH3CellsAndSkillTag(cells, "TOW", seen);
+    if (!coarse.contains(m.getMechanicId())) return false;
+    List<UUID> matched =
+        broadcastKm != null
+            ? mechanicRepository.filterByRadiusAndBroadcast(coarse, LAT, LNG, broadcastKm * 1000)
+            : mechanicRepository.filterByRadius(coarse, LAT, LNG);
+    return matched.contains(m.getMechanicId());
+  }
+
+  private boolean viaTheSingleQuery(Mechanic m, List<String> cells, Double broadcastKm) {
+    double radiusM = broadcastKm != null ? broadcastKm * 1000 : 1e12;
+    return mechanicRepository.isEligible(
+        m.getMechanicId(), cells, "TOW", LocalDateTime.now().minusMinutes(5), LAT, LNG, radiusM);
+  }
+
+  @Test
+  void isEligible_agreesWithTheAreaMatcher_forEveryPredicate() {
+    Mechanic eligible = mechanic(LAT, LNG, CELL, "tow");
+    Mechanic wrongCell = mechanic(LAT, LNG, OTHER_CELL, "TOW");
+    Mechanic wrongSkill = mechanic(LAT, LNG, CELL, "BATTERY");
+    Mechanic unavailable = mechanic(LAT, LNG, CELL, "TOW");
+    unavailable.setAvailableStatus(false);
+    Mechanic stale = mechanic(LAT, LNG, CELL, "TOW");
+    stale.setLocationUpdatedAt(LocalDateTime.now().minusHours(1));
+    Mechanic neverPinged = mechanic(LAT, LNG, CELL, "TOW"); // no ping time on record: kept
+    Mechanic fresh = mechanic(LAT, LNG, CELL, "TOW");
+    fresh.setLocationUpdatedAt(LocalDateTime.now());
+    Mechanic onLiveJob = mechanic(LAT, LNG, CELL, "TOW");
+    bid(sos(user(), SosStatus.ON_THE_WAY, "TOW", LAT, LNG), onLiveJob, BidStatus.ACCEPTED);
+    Mechanic jobDone = mechanic(LAT, LNG, CELL, "TOW");
+    bid(sos(user(), SosStatus.COMPLETED, "TOW", LAT, LNG), jobDone, BidStatus.ACCEPTED);
+    Mechanic outsideOwnRadius = mechanic(LAT + 0.5, LNG, CELL, "TOW"); // ~55 km, own radius 10 km
+    Mechanic wideRadiusFar = mechanic(LAT + 0.5, LNG, CELL, "TOW");
+    wideRadiusFar.setServiceRadiusKm(100);
+    Mechanic inCellOutsideBroadcast = mechanic(LAT + 0.05, LNG, CELL, "TOW"); // ~5.5 km
+    Mechanic noLocation = mechanic(LAT, LNG, CELL, "TOW");
+    noLocation.setCurrentLocation(null);
+    em.flush();
+
+    List<Mechanic> all =
+        List.of(
+            eligible,
+            wrongCell,
+            wrongSkill,
+            unavailable,
+            stale,
+            neverPinged,
+            fresh,
+            onLiveJob,
+            jobDone,
+            outsideOwnRadius,
+            wideRadiusFar,
+            inCellOutsideBroadcast,
+            noLocation);
+    for (Double broadcastKm : new Double[] {10.0, 3.0, null}) {
+      for (Mechanic m : all) {
+        assertThat(viaTheSingleQuery(m, List.of(CELL), broadcastKm))
+            .as("mechanic %s, broadcast %s km", m.getFullName(), broadcastKm)
+            .isEqualTo(viaTheAreaMatcher(m, List.of(CELL), broadcastKm));
+      }
+    }
+
+    // The answers are not all the same, so the comparison means something.
+    assertThat(viaTheSingleQuery(eligible, List.of(CELL), 10.0)).isTrue();
+    assertThat(viaTheSingleQuery(onLiveJob, List.of(CELL), 10.0)).isFalse();
+    assertThat(viaTheSingleQuery(jobDone, List.of(CELL), 10.0)).isTrue();
+    assertThat(viaTheSingleQuery(neverPinged, List.of(CELL), 10.0)).isTrue();
+    assertThat(viaTheSingleQuery(stale, List.of(CELL), 10.0)).isFalse();
+    assertThat(viaTheSingleQuery(inCellOutsideBroadcast, List.of(CELL), 3.0)).isFalse();
+    assertThat(viaTheSingleQuery(inCellOutsideBroadcast, List.of(CELL), 10.0)).isTrue();
+    // No broadcast radius: only the mechanic's own radius limits them.
+    assertThat(viaTheSingleQuery(wideRadiusFar, List.of(CELL), null)).isTrue();
+    assertThat(viaTheSingleQuery(outsideOwnRadius, List.of(CELL), null)).isFalse();
+  }
+
+  // The ring computed from the default radius still limits a mechanic with a huge own radius, as in
+  // the area matcher: the cell list is part of the question.
+  @Test
+  void isEligible_aCellOutsideTheRing_isNotEligible_whateverTheRadius() {
+    Mechanic m = mechanic(LAT, LNG, OTHER_CELL, "TOW");
+    m.setServiceRadiusKm(100);
+    em.flush();
+
+    assertThat(viaTheSingleQuery(m, List.of(CELL), null)).isFalse();
+    assertThat(viaTheSingleQuery(m, List.of(CELL, OTHER_CELL), null)).isTrue();
+    assertThat(viaTheAreaMatcher(m, List.of(CELL), null)).isFalse();
+  }
+
+  @Test
+  void isEligible_anUnknownMechanic_isFalse() {
+    assertThat(
+            mechanicRepository.isEligible(
+                UUID.randomUUID(),
+                List.of(CELL),
+                "TOW",
+                LocalDateTime.now().minusMinutes(5),
+                LAT,
+                LNG,
+                10_000))
+        .isFalse();
+  }
+
   @Test
   void lockById_findsAnExistingMechanicOnly() {
     Mechanic m = mechanic(LAT, LNG, null);
