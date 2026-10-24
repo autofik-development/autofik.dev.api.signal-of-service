@@ -1,12 +1,14 @@
 package com.autofik.sos.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.SosStatus;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -87,6 +89,86 @@ class MechanicRepositoryTest extends RepositoryTestBase {
 
     assertThat(mechanicRepository.lockById(m.getMechanicId())).contains(m.getMechanicId());
     assertThat(mechanicRepository.lockById(UUID.randomUUID())).isEmpty();
+  }
+
+  // ── updateLocation: one statement per persisted ping ─────────────────────
+
+  private static final LocalDateTime LONG_AGO = LocalDateTime.of(2026, 1, 1, 0, 0);
+
+  /** The statement bypasses the persistence context, so read the row afresh. */
+  private Mechanic reload(Mechanic m) {
+    em.flush();
+    em.clear();
+    return em.find(Mechanic.class, m.getMechanicId());
+  }
+
+  private Mechanic parkedSince(LocalDateTime movedAt) {
+    Mechanic m = mechanic(LAT, LNG, null);
+    m.setLocationMovedAt(movedAt);
+    em.flush();
+    return m;
+  }
+
+  @Test
+  void updateLocation_setsPositionCellAndTimestamp() {
+    Mechanic m = parkedSince(LONG_AGO);
+    LocalDateTime now = LocalDateTime.now();
+
+    int rows =
+        mechanicRepository.updateLocation(m.getMechanicId(), LAT + 0.01, LNG + 0.02, CELL, 20, now);
+    Mechanic after = reload(m);
+
+    assertThat(rows).isEqualTo(1);
+    assertThat(after.getCurrentLocation().getY()).isCloseTo(LAT + 0.01, within(1e-9));
+    assertThat(after.getCurrentLocation().getX()).isCloseTo(LNG + 0.02, within(1e-9));
+    assertThat(after.getCurrentH3Index()).isEqualTo(CELL);
+    assertThat(after.getLocationUpdatedAt()).isCloseTo(now, within(1, ChronoUnit.MILLIS));
+  }
+
+  // The no-show sweep tells a parked mechanic from a moving one by location_moved_at, which
+  // location_updated_at cannot do: it is stamped on every ping.
+  @Test
+  void updateLocation_aFarEnoughPing_recordsThatTheMechanicMoved() {
+    Mechanic m = parkedSince(LONG_AGO);
+    LocalDateTime now = LocalDateTime.now();
+
+    // About 28 m north.
+    mechanicRepository.updateLocation(m.getMechanicId(), LAT + 0.00025, LNG, CELL, 20, now);
+
+    assertThat(reload(m).getLocationMovedAt()).isCloseTo(now, within(1, ChronoUnit.MILLIS));
+  }
+
+  @Test
+  void updateLocation_aPingNearThePreviousOne_doesNotRecordMovement() {
+    Mechanic m = parkedSince(LONG_AGO);
+
+    // About 5 m north: GPS wobble, not movement.
+    mechanicRepository.updateLocation(
+        m.getMechanicId(), LAT + 0.000045, LNG, CELL, 20, LocalDateTime.now());
+    Mechanic after = reload(m);
+
+    assertThat(after.getLocationMovedAt()).isEqualTo(LONG_AGO);
+    assertThat(after.getLocationUpdatedAt()).isAfter(LONG_AGO); // still stamped as seen
+  }
+
+  @Test
+  void updateLocation_theFirstEverLocation_countsAsMoved() {
+    Mechanic m = parkedSince(LONG_AGO);
+    m.setCurrentLocation(null);
+    em.flush();
+    LocalDateTime now = LocalDateTime.now();
+
+    mechanicRepository.updateLocation(m.getMechanicId(), LAT, LNG, CELL, 20, now);
+
+    assertThat(reload(m).getLocationMovedAt()).isCloseTo(now, within(1, ChronoUnit.MILLIS));
+  }
+
+  @Test
+  void updateLocation_anUnknownMechanic_changesNothing() {
+    assertThat(
+            mechanicRepository.updateLocation(
+                UUID.randomUUID(), LAT, LNG, CELL, 20, LocalDateTime.now()))
+        .isZero();
   }
 
   @Test
