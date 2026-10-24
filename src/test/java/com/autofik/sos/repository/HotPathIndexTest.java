@@ -27,7 +27,8 @@ class HotPathIndexTest extends RepositoryTestBase {
             "idx_sos_status_history_sos_change",
             "idx_sos_status_history_pending",
             "idx_bid_sos_mechanic_status",
-            "idx_mechanic_skill_mechanic");
+            "idx_mechanic_skill_mechanic",
+            "idx_sos_media_sos");
   }
 
   @Test
