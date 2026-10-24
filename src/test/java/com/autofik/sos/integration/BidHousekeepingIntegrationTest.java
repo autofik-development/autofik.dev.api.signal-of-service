@@ -294,4 +294,37 @@ class BidHousekeepingIntegrationTest extends FlowTestSupport {
     assertThat(statusOf(bidId)).isEqualTo(BidStatus.REJECTED);
     session.disconnect();
   }
+
+  private HttpResponse<String> mechanicGetSos(Mechanic m, UUID sosId) throws Exception {
+    return send(
+        req("/api/v1/sos/" + sosId)
+            .header("mechanic-context", mechanicContext(m.getMechanicId()))
+            .GET());
+  }
+
+  // ADR-003: a bidder sees the job but not the customer; once the bid loses, the ticket (and the
+  // winner's live position on it) is gone for them; the winner sees the customer to call them.
+  @Test
+  void aLosingBidder_losesTheTicket_andOnlyTheWinnerSeesTheCustomer() throws Exception {
+    Driver d = newDriver();
+    Mechanic winner = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    Mechanic loser = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    UUID winningBid = placeBidOk(winner, sosId);
+    placeBidOk(loser, sosId);
+
+    HttpResponse<String> beforeAccept = mechanicGetSos(loser, sosId);
+    assertThat(beforeAccept.statusCode()).as(beforeAccept.body()).isEqualTo(200);
+    assertThat(parse(beforeAccept.body()).get("user").isNull()).isTrue();
+
+    acceptBidOk(d, winningBid);
+
+    HttpResponse<String> lost = mechanicGetSos(loser, sosId);
+    assertThat(lost.statusCode()).as(lost.body()).isEqualTo(404);
+
+    HttpResponse<String> won = mechanicGetSos(winner, sosId);
+    assertThat(won.statusCode()).as(won.body()).isEqualTo(200);
+    assertThat(parse(won.body()).get("user").get("phone").asString())
+        .isEqualTo(d.user().getPhone());
+  }
 }

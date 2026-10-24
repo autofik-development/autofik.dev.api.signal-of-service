@@ -148,6 +148,10 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
    */
   boolean existsBySosRequestSosId(UUID sosId);
 
+  /** True when the mechanic has a bid on this SOS in one of the given statuses. */
+  boolean existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+      UUID sosId, UUID mechanicId, Collection<BidStatus> statuses);
+
   /** Drops every bid on the SOS in the given status; the caller must be in a transaction. */
   void deleteBySosRequestSosIdAndStatus(UUID sosId, BidStatus status);
 }

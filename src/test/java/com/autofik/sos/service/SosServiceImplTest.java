@@ -22,6 +22,7 @@ import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import com.autofik.sos.dto.response.UserResponse;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
@@ -94,6 +95,7 @@ class SosServiceImplTest {
   private final UUID historyId = UUID.randomUUID();
   private final String serviceGroupId = "sg_01ABC123";
   private final String resolvedKey = "flat_tire";
+  private static final List<BidStatus> LIVE_BIDS = List.of(BidStatus.PENDING, BidStatus.ACCEPTED);
 
   private User user;
   private Vehicle vehicle;
@@ -1259,7 +1261,8 @@ class SosServiceImplTest {
     UUID assignedMechanic = UUID.randomUUID();
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
     when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, assignedMechanic))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, assignedMechanic, LIVE_BIDS))
         .thenReturn(true);
 
     assertThat(sosService.getById(sosId, assignedMechanic).pendingCompletionHistoryId()).isNull();
@@ -1350,7 +1353,8 @@ class SosServiceImplTest {
   void getById_foreignSos_hidesItAsNotFound() {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     UUID stranger = UUID.randomUUID();
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, stranger))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, stranger, LIVE_BIDS))
         .thenReturn(false);
 
     assertThatThrownBy(() -> sosService.getById(sosId, stranger))
@@ -1363,7 +1367,8 @@ class SosServiceImplTest {
     pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
 
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
@@ -1380,7 +1385,8 @@ class SosServiceImplTest {
     pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
 
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
@@ -1396,12 +1402,99 @@ class SosServiceImplTest {
     pendingSos.setBiddingExpiresAt(LocalDateTime.now().minusMinutes(1));
 
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
     assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
         .isInstanceOf(EntityNotFoundException.class);
 
     verifyNoInteractions(mechanicRepository);
+  }
+
+  // A rejected or withdrawn bid is not a live one, and accept leaves biddingExpiresAt in the
+  // future:
+  // neither may keep the ticket (and the winner on it) open to a mechanic who lost.
+  @Test
+  void getById_afterAccept_aMechanicWithoutALiveBid_cannotView_evenInsideTheWindow() {
+    pendingSos.setStatus(SosStatus.ACCEPTED);
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
+        .thenReturn(false);
+
+    assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+    verifyNoInteractions(mechanicRepository);
+  }
+
+  @Test
+  void getById_pendingBidder_seesTheJob_butNotTheCustomer() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
+        .thenReturn(true);
+    when(sosMapper.toResponse(pendingSos)).thenReturn(responseWithCustomer());
+
+    SosRequestResponse result = sosService.getById(sosId, mechanicId);
+
+    assertThat(result.user()).isNull();
+    assertThat(result.mechanic()).isNull();
+    assertThat(result.sosId()).isEqualTo(sosId);
+    assertThat(result.latitude()).isEqualTo(13.7);
+  }
+
+  @Test
+  void getById_assignedMechanic_keepsTheCustomer() {
+    pendingSos.setStatus(SosStatus.ACCEPTED);
+    BidSos acceptedBid =
+        BidSos.builder()
+            .bidId(UUID.randomUUID())
+            .status(BidStatus.ACCEPTED)
+            .sosRequest(pendingSos)
+            .mechanic(mechanic)
+            .build();
+    MechanicResponse assigned =
+        new MechanicResponse(
+            mechanicId, "Bob", "081", null, null, null, null, null, null, null, true, null, null);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
+        .thenReturn(true);
+    when(sosMapper.toResponse(pendingSos)).thenReturn(responseWithCustomer());
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(acceptedBid));
+    when(mechanicMapper.toResponse(mechanic)).thenReturn(assigned);
+
+    SosRequestResponse result = sosService.getById(sosId, mechanicId);
+
+    assertThat(result.user().phone()).isEqualTo("012");
+    assertThat(result.mechanic()).isEqualTo(assigned);
+  }
+
+  private SosRequestResponse responseWithCustomer() {
+    return new SosRequestResponse(
+        sosId,
+        resolvedKey,
+        null,
+        null,
+        SosStatus.PENDING,
+        13.7,
+        100.5,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        0,
+        new UserResponse(userId, "Alice", "012", null, null),
+        null,
+        null,
+        null,
+        null);
   }
 
   // ── isOwner ──────────────────────────────────────────────────────────────
@@ -1486,7 +1579,9 @@ class SosServiceImplTest {
     pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     lenient()
-        .when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+        .when(
+            bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+                sosId, mechanicId, LIVE_BIDS))
         .thenReturn(true);
 
     assertThatThrownBy(() -> sosService.getNearbyMechanics(sosId, mechanicId))
