@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -23,7 +24,12 @@ public interface BidSosRepository extends JpaRepository<BidSos, UUID> {
   /**
    * Finds all bids made for a specific emergency SOS request. SQL Equivalent behind the scenes:
    * SELECT * FROM bid_sos WHERE sos_id = ?
+   *
+   * <p>The bid response carries the bidder, rating included. Without this graph every bid cost one
+   * more SELECT to load its mechanic (and the rating with it): twelve statements for ten bids, on
+   * the screen the customer refreshes during the bidding window. The graph makes it one join.
    */
+  @EntityGraph(attributePaths = {"mechanic", "mechanic.rate"})
   List<BidSos> findBySosRequestSosId(UUID sosId);
 
   /**
