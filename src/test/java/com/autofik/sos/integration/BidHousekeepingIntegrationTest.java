@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.enums.BidStatus;
+import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.SosRequestRepository;
 import com.autofik.sos.service.impl.SosServiceImpl;
@@ -149,6 +150,92 @@ class BidHousekeepingIntegrationTest extends FlowTestSupport {
     UUID newBid = placeBidOk(m, sosId);
     assertThat(newBid).isNotEqualTo(oldBid);
     assertThat(bidsOn(sosId)).as("one row per mechanic and ticket").hasSize(1);
+  }
+
+  // Zero bids at expiry: the system widens and offers again on its own (SOS_AUTO_REBROADCAST),
+  // and a mechanic answering that offer must get in.
+  @Test
+  void anAutoRebroadcast_acceptsABidOnTheWidenedRound() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    expire(sosId);
+
+    var sos = sosRequestRepository.findById(sosId).orElseThrow();
+    assertThat(sos.getStatus()).as("auto-widened, not expired").isEqualTo(SosStatus.PENDING);
+    assertThat(sos.getRebroadcastCount()).isEqualTo(1);
+    assertThat(sos.getBiddingExpiresAt()).as("new window").isAfter(LocalDateTime.now());
+
+    HttpResponse<String> bid = placeBid(m, sosId);
+    assertThat(bid.statusCode()).as(bid.body()).isEqualTo(201);
+  }
+
+  // The customer asks for 5 km and nobody bids: each closed window widens the search by
+  // sos.auto-expand.step-km and offers again, until sos.bidding.max-rebroadcast rounds are used;
+  // then the ticket expires and the retry button has nothing left.
+  @Test
+  void aFiveKmRequestNobodyBidsOn_widensEveryRound_thenExpires_andCannotBeRetried()
+      throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
+    StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
+    StompSession mechanic =
+        stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));
+    Tap updates = subscribe(customer, UPDATES);
+    Tap offers = subscribe(mechanic, "/user/queue/sos-new-request");
+    Thread.sleep(500);
+
+    HttpResponse<String> created =
+        send(
+            req("/api/v1/sos")
+                .header("user-context", userContext(d.user().getUserId()))
+                .header("Content-Type", "application/json")
+                .POST(
+                    HttpRequest.BodyPublishers.ofString(
+                        createBody(d)
+                            .replace("\"broadcastRadiusKm\":10", "\"broadcastRadiusKm\":5"))));
+    assertThat(created.statusCode()).as(created.body()).isEqualTo(201);
+    UUID sosId = UUID.fromString(parse(created.body()).get("sosId").asString());
+    assertThat(awaitFrame(offers, sosId, "SOS_CREATED")).as("round 0 offer").isNotNull();
+    assertThat(sosRequestRepository.findById(sosId).orElseThrow().getBroadcastRadiusKm())
+        .as("starts at the customer's 5 km: a mechanic is in range, so no pre-widening")
+        .isEqualTo(5);
+
+    for (int round = 1; round <= 3; round++) {
+      expire(sosId);
+      var sos = sosRequestRepository.findById(sosId).orElseThrow();
+      assertThat(sos.getStatus()).as("round %d still open", round).isEqualTo(SosStatus.PENDING);
+      assertThat(sos.getRebroadcastCount()).isEqualTo(round);
+      assertThat(sos.getBroadcastRadiusKm()).as("round %d radius", round).isEqualTo(5 + 5 * round);
+      assertThat(sos.getBiddingExpiresAt()).isAfter(LocalDateTime.now());
+
+      JsonNode widened = awaitFrame(updates, sosId, "SOS_AUTO_REBROADCAST");
+      assertThat(widened.get("newRadiusKm").asInt()).isEqualTo(5 + 5 * round);
+      assertThat(widened.get("attemptsLeft").asInt()).isEqualTo(3 - round);
+      assertThat(awaitFrame(offers, sosId, "SOS_CREATED"))
+          .as("round %d offered to the same mechanic again", round)
+          .isNotNull();
+    }
+
+    expire(sosId);
+    assertThat(sosRequestRepository.findById(sosId).orElseThrow().getStatus())
+        .as("attempts used up")
+        .isEqualTo(SosStatus.EXPIRED);
+    JsonNode expired = awaitFrame(updates, sosId, "BIDDING_EXPIRED");
+    assertThat(expired.get("retriesLeft").asBoolean()).isFalse();
+    assertThat(expired.get("attemptsLeft").asInt()).isZero();
+
+    HttpResponse<String> retry =
+        send(
+            req("/api/v1/sos/" + sosId + "/rebroadcast")
+                .header("user-context", userContext(d.user().getUserId()))
+                .POST(HttpRequest.BodyPublishers.noBody()));
+    assertThat(retry.statusCode()).as(retry.body()).isEqualTo(429);
+
+    HttpResponse<String> lateBid = placeBid(m, sosId);
+    assertThat(lateBid.statusCode()).as(lateBid.body()).isEqualTo(409);
+    customer.disconnect();
+    mechanic.disconnect();
   }
 
   @Test
