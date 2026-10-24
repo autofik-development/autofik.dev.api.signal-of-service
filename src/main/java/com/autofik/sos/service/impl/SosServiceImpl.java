@@ -731,6 +731,15 @@ public class SosServiceImpl implements SosService {
         .orElse(false);
   }
 
+  @Override
+  @Transactional(readOnly = true)
+  public boolean isOwner(UUID sosId, UUID callerId) {
+    return sosRequestRepository
+        .findById(sosId)
+        .map(sos -> sos.getUser().getUserId().equals(callerId))
+        .orElse(false);
+  }
+
   // The driver who raised it, an existing bidder, or an eligible mechanic during the bidding
   // window.
   // Eligibility matched the broadcast fan-out criteria so a mechanic can inspect an SOS before

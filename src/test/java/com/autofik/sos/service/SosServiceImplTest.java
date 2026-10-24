@@ -1404,6 +1404,31 @@ class SosServiceImplTest {
     verifyNoInteractions(mechanicRepository);
   }
 
+  // ── isOwner ──────────────────────────────────────────────────────────────
+
+  @Test
+  void isOwner_trueForTheDriverWhoRaisedIt() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+
+    assertThat(sosService.isOwner(sosId, userId)).isTrue();
+  }
+
+  // Unlike canView, a bid does not count: isOwner never even asks.
+  @Test
+  void isOwner_falseForAMechanicWhoBid() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+
+    assertThat(sosService.isOwner(sosId, mechanicId)).isFalse();
+    verifyNoInteractions(bidSosRepository);
+  }
+
+  @Test
+  void isOwner_falseForAnUnknownSos() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+
+    assertThat(sosService.isOwner(sosId, userId)).isFalse();
+  }
+
   // ── getNearbyMechanics ───────────────────────────────────────────────────
 
   @Test

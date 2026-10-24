@@ -41,10 +41,16 @@ public interface SosService {
 
   /**
    * May this identity see this SOS? True for the driver who raised it and for any mechanic who bid
-   * on it. Shared by the REST reads and by the WebSocket SUBSCRIBE check, which guards the same
-   * data on /topic/sos/{sosId}/**.
+   * on it. Shared by the REST reads and by the WebSocket SUBSCRIBE check for
+   * /topic/sos/{sosId}/media.
    */
   boolean canView(UUID sosId, UUID callerId);
+
+  /**
+   * True when the caller raised this SOS; false for anyone else and for an unknown sosId. Guards
+   * /topic/sos/{sosId}/location, which carries the assigned mechanic's live position.
+   */
+  boolean isOwner(UUID sosId, UUID callerId);
 
   /**
    * Use Case: while waiting for a bid, the customer's screen shows who's actually nearby right now
