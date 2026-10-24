@@ -16,6 +16,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Point;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.messaging.simp.stomp.StompSession;
 import tools.jackson.databind.JsonNode;
 
@@ -34,6 +35,7 @@ class DispatchEligibilityIntegrationTest extends FlowTestSupport {
   private static final Duration WAIT = Duration.ofSeconds(10);
 
   @Autowired private BidSosRepository bidSosRepository;
+  @Autowired private JdbcTemplate jdbc;
 
   private StompSession connect(Mechanic m) throws Exception {
     return stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));
@@ -149,6 +151,10 @@ class DispatchEligibilityIntegrationTest extends FlowTestSupport {
 
   @Test
   void aMechanicAFarDriveAway_isNotOffered_andCannotBid_whileANearOneIs() throws Exception {
+    // Only the nearest offer-max-mechanics get a road estimate, and the cap is only applied where
+    // one exists. Mechanics left parked on this point by earlier tests would push the far one out
+    // of that set and it would be offered unestimated, so take them all out of matching first.
+    jdbc.update("update mechanic set current_h3_index = null");
     // Both are well inside the radius by straight line; only the road estimate tells them apart.
     Mechanic near = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
     Mechanic far = skilledMechanic(SOS_LAT, SOS_LNG + 0.0001, PROBLEM_TYPE);
