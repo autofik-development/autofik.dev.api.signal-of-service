@@ -5,9 +5,16 @@ spring:
       ddl-auto: validate
   flyway:
     # Local DBs were built by ddl-auto=update before Flyway existed: mark them as already at V1
-    # instead of re-running the baseline. Not set in prod, so a non-empty prod DB fails loudly.
-    baseline-on-migrate: true
-    baseline-version: 1
+    # instead of re-running the baseline. Prod still defines no flyway block, so a non-empty prod
+    # DB fails loudly until the deploy sets the env explicitly (relaxed binding reaches prod even
+    # though this block sits in the dev profile). A pre-Flyway DB baselines ONCE with:
+    #   SPRING_FLYWAY_BASELINE_ON_MIGRATE=true
+    # and SPRING_FLYWAY_BASELINE_VERSION = the highest version its schema already has. For a
+    # Hibernate-era DB that already has uk_bid_sos_sos_mechanic that is 2 (V2 fails with
+    # "constraint already exists" otherwise); V3/V4 are IF NOT EXISTS, so 2 is always safe.
+    # Remove both variables after the first healthy boot.
+    baseline-on-migrate: ${SPRING_FLYWAY_BASELINE_ON_MIGRATE}
+    baseline-version: ${SPRING_FLYWAY_BASELINE_VERSION}
 
 logging:
   level:

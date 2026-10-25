@@ -34,6 +34,7 @@ import org.locationtech.jts.geom.PrecisionModel;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
@@ -56,6 +57,11 @@ class MechanicServiceImplTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock RouteEtaService routeEtaService;
   @Mock StringRedisTemplate redisTemplate;
+
+  @Spy
+  com.autofik.sos.service.impl.RedisHealthGate redisGate =
+      new com.autofik.sos.service.impl.RedisHealthGate();
+
   @Mock ObjectMapper objectMapper;
 
   @InjectMocks MechanicServiceImpl mechanicService;
@@ -316,6 +322,7 @@ class MechanicServiceImplTest {
   @Test
   void getCurrentLocation_returnsLocationFromPostgres() {
     mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(LNG, LAT)));
+    mechanic.setLocationUpdatedAt(java.time.LocalDateTime.now());
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
 
     MechanicLocationResponse result = mechanicService.getCurrentLocation(mechanicId, mechanicId);
@@ -323,6 +330,31 @@ class MechanicServiceImplTest {
     assertThat(result.latitude()).isEqualTo(LAT);
     assertThat(result.longitude()).isEqualTo(LNG);
     assertThat(result.asOf()).isNotNull();
+  }
+
+  // asOf is when the position was stored, not when it was read: a client must not see a stale fix
+  // as live.
+  @Test
+  void getCurrentLocation_asOfIsTheTimeOfTheStoredFix() {
+    java.time.LocalDateTime fixedAt = java.time.LocalDateTime.now().minusMinutes(5);
+    mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(LNG, LAT)));
+    mechanic.setLocationUpdatedAt(fixedAt);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+
+    MechanicLocationResponse result = mechanicService.getCurrentLocation(mechanicId, mechanicId);
+
+    assertThat(result.asOf().toInstant())
+        .isEqualTo(fixedAt.atZone(java.time.ZoneId.systemDefault()).toInstant());
+    assertThat(result.asOf().getOffset().getTotalSeconds()).isEqualTo(7 * 3600);
+  }
+
+  @Test
+  void getCurrentLocation_positionWithoutAStamp_hasNoAsOf() {
+    mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(LNG, LAT)));
+    mechanic.setLocationUpdatedAt(null);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+
+    assertThat(mechanicService.getCurrentLocation(mechanicId, mechanicId).asOf()).isNull();
   }
 
   @Test

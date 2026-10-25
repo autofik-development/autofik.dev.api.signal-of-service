@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
@@ -38,6 +39,10 @@ class MechanicLocationWriterTest {
   @Mock MechanicRepository mechanicRepository;
   @Mock BidSosRepository bidSosRepository;
   @Mock StringRedisTemplate redisTemplate;
+
+  @Spy
+  com.autofik.sos.service.impl.RedisHealthGate redisGate =
+      new com.autofik.sos.service.impl.RedisHealthGate();
 
   @InjectMocks MechanicLocationWriter writer;
 
@@ -100,15 +105,21 @@ class MechanicLocationWriterTest {
     verifyNoMoreInteractions(mechanicRepository);
   }
 
+  // One failure trips the gate: the first ping persists, later pings in the window are throttled
+  // in-process, and none of them waits on Redis again.
   @Test
-  void redisUnavailable_writesToPostgresOnEveryPing() {
+  void redisUnavailable_throttlesInProcess_andStopsCallingRedis() {
     when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("Redis down"));
     when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
 
     writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
 
-    verify(mechanicRepository)
+    verify(mechanicRepository, times(1))
         .updateLocation(eq(mechanicId), anyDouble(), anyDouble(), anyString(), anyDouble(), any());
+    verify(redisTemplate, times(1)).opsForValue();
+    assertThat(redisGate.isDown()).isTrue();
   }
 
   // An unknown mechanic fails on every ping: the throttle key it just claimed is released, so it is

@@ -672,6 +672,37 @@ class BidServiceImplTest {
     assertThat(message.values()).doesNotContain((Object) bid.getPrice());
   }
 
+  // The runner-ups the accept closes are told "no" at this moment; leaving respondedAt empty made
+  // them the only rejected bids without a response time.
+  @Test
+  void updateStatus_accepted_stampsRespondedAtOnTheRunnerUpsItRejects() {
+    BidSos otherBid =
+        BidSos.builder()
+            .bidId(UUID.randomUUID())
+            .price(BigDecimal.valueOf(400))
+            .sosRequest(pendingSos)
+            .mechanic(
+                Mechanic.builder()
+                    .mechanicId(UUID.randomUUID())
+                    .fullName("Runner-up")
+                    .phoneNumber("0899")
+                    .availableStatus(true)
+                    .build())
+            .build();
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.save(bid)).thenReturn(bid);
+    when(bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING))
+        .thenReturn(List.of(otherBid));
+    when(bidSosRepository.saveAll(anyList())).thenReturn(List.of(otherBid));
+    when(sosRequestRepository.save(pendingSos)).thenReturn(pendingSos);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    bidService.updateStatus(bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED));
+
+    assertThat(otherBid.getStatus()).isEqualTo(BidStatus.REJECTED);
+    assertThat(otherBid.getRespondedAt()).isNotNull();
+  }
+
   // A bid the driver can still tap but the mechanic has withdrawn wastes the one thing nobody
   // has during a breakdown.
   @Test

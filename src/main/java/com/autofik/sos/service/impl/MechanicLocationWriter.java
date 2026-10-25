@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -53,6 +54,12 @@ public class MechanicLocationWriter {
   private final MechanicRepository mechanicRepository;
   private final BidSosRepository bidSosRepository;
   private final StringRedisTemplate redisTemplate;
+  private final RedisHealthGate redisGate;
+
+  // Per-instance throttle used only while Redis is down, so an outage still writes Postgres once
+  // per window per mechanic instead of on every ping. ponytail: one entry per mechanic that
+  // pinged during an outage, never evicted; the fleet size bounds it.
+  private final ConcurrentHashMap<UUID, Long> localLastPersist = new ConcurrentHashMap<>();
 
   /**
    * Persists the ping (subject to the throttle) and works out which SOS, if any, this position
@@ -81,25 +88,33 @@ public class MechanicLocationWriter {
   }
 
   // Postgres is the durable store. Redis throttle key limits writes to once per pgSyncSeconds.
-  // When Redis is down the throttle key is unavailable, so every ping falls through to Postgres —
-  // keeping the snapshot current during an outage.
+  // When Redis is down the throttle key is unavailable, so the same once-per-window throttle is
+  // kept in-process (RedisHealthGate skips Redis after a failure instead of waiting out its
+  // timeout on every ping).
   // Returns true when this ping actually wrote to Postgres, letting callers hang other
   // per-interval work off the same throttle.
   private boolean writeLocation(UUID mechanicId, double lat, double lng) {
     String key = PG_SYNC_KEY_PREFIX + mechanicId;
     boolean claimed = false;
     boolean shouldPersist;
-    try {
-      claimed =
-          Boolean.TRUE.equals(
-              redisTemplate.opsForValue().setIfAbsent(key, "1", Duration.ofSeconds(pgSyncSeconds)));
-      shouldPersist = claimed;
-    } catch (Exception e) {
-      log.warn(
-          "Redis unavailable for mechanic {}, writing to Postgres on every ping: {}",
-          mechanicId,
-          e.getMessage());
-      shouldPersist = true;
+    if (redisGate.isDown()) {
+      shouldPersist = claimLocally(mechanicId);
+    } else {
+      try {
+        claimed =
+            Boolean.TRUE.equals(
+                redisTemplate
+                    .opsForValue()
+                    .setIfAbsent(key, "1", Duration.ofSeconds(pgSyncSeconds)));
+        shouldPersist = claimed;
+      } catch (Exception e) {
+        redisGate.markDown();
+        log.warn(
+            "Redis unavailable for mechanic {}, throttling in-process: {}",
+            mechanicId,
+            e.getMessage());
+        shouldPersist = claimLocally(mechanicId);
+      }
     }
 
     // Inside the window the last persisted ping stands. Only a ping that was persisted can have
@@ -116,16 +131,33 @@ public class MechanicLocationWriter {
             LocalDateTime.now());
     if (updated == 0) {
       // An unknown mechanic must not be throttled into a 204: the next ping tries again.
+      localLastPersist.remove(mechanicId);
       if (claimed) releaseThrottle(key);
       throw new EntityNotFoundException("Mechanic not found: " + mechanicId);
     }
     return true;
   }
 
+  private boolean claimLocally(UUID mechanicId) {
+    long now = System.nanoTime();
+    long windowNanos = Duration.ofSeconds(pgSyncSeconds).toNanos();
+    boolean[] won = {false};
+    localLastPersist.compute(
+        mechanicId,
+        (id, last) -> {
+          if (last != null && now - last < windowNanos) return last;
+          won[0] = true;
+          return now;
+        });
+    return won[0];
+  }
+
   private void releaseThrottle(String key) {
+    if (redisGate.isDown()) return;
     try {
       redisTemplate.delete(key);
     } catch (Exception e) {
+      redisGate.markDown();
       log.warn("Could not release {}: {}", key, e.getMessage());
     }
   }

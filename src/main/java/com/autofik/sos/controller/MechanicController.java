@@ -81,7 +81,8 @@ public class MechanicController {
   }
 
   // GET /api/mechanics/{mechanicId}/location — On-demand read of a mechanic's current position
-  // Reads Redis first (fresh every ping), falls back to the last Postgres snapshot.
+  // Reads the last Postgres snapshot; asOf is the time of that fix (at most one write-throttle
+  // window behind the latest ping), null if the row has no stamp.
   // Continuous updates during an active job still arrive via WebSocket — use this only for
   // initial screen load or reconnect, not for polling.
   // Readable by that mechanic, and by a driver they are currently on a job for.

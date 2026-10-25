@@ -10,6 +10,10 @@ import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -63,7 +67,7 @@ public class GlobalExceptionHandler {
   }
 
   /**
-   * Handles a caller acting on something that is not theirs — another driver's SOS, another
+   * Handles a caller acting on something that is not theirs â€” another driver's SOS, another
    * mechanic's location, a vehicle they do not own. Maps to HTTP 403 Forbidden.
    *
    * <p>Deliberately vague: the message must not reveal whether the target exists.
@@ -113,7 +117,7 @@ public class GlobalExceptionHandler {
   }
 
   /**
-   * Handles Bean Validation failures on controller method parameters — @RequestParam
+   * Handles Bean Validation failures on controller method parameters â€” @RequestParam
    * and @PathVariable constraints enforced by @Validated. This is the counterpart to
    * MethodArgumentNotValidException above, which only covers @Valid request bodies. Without this
    * the violation reaches the Exception fallback and a client mistake is reported as a 500 with no
@@ -126,7 +130,8 @@ public class GlobalExceptionHandler {
         ex.getConstraintViolations().stream()
             .collect(
                 Collectors.toMap(
-                    // Property path arrives as "updateLocation.lng" — keep only the parameter name
+                    // Property path arrives as "updateLocation.lng" â€” keep only the parameter
+                    // name
                     v -> {
                       String path = v.getPropertyPath().toString();
                       int lastDot = path.lastIndexOf('.');
@@ -139,9 +144,9 @@ public class GlobalExceptionHandler {
   }
 
   /**
-   * A database constraint rejected the write — typically a unique constraint hit by a duplicate (a
-   * second feedback on the same SOS) or by two requests racing. The caller's request conflicts with
-   * existing state, so it is a 409 rather than a server fault. Maps to HTTP 409 Conflict.
+   * A database constraint rejected the write â€” typically a unique constraint hit by a duplicate
+   * (a second feedback on the same SOS) or by two requests racing. The caller's request conflicts
+   * with existing state, so it is a 409 rather than a server fault. Maps to HTTP 409 Conflict.
    *
    * <p>The message is fixed: the driver's message names the constraint, table and column.
    */
@@ -242,6 +247,23 @@ public class GlobalExceptionHandler {
   }
 
   /**
+   * An unknown {@code sort=} property. Spring Data raises it while building the query, usually
+   * wrapped in InvalidDataAccessApiUsageException. The library text names the entity class, so the
+   * client gets a fixed message instead.
+   */
+  @ExceptionHandler({PropertyReferenceException.class, InvalidDataAccessApiUsageException.class})
+  public ResponseEntity<ErrorResponse> handleBadSort(Exception ex) {
+    boolean badSort =
+        ex instanceof PropertyReferenceException
+            || ex.getCause() instanceof PropertyReferenceException;
+    if (!badSort) {
+      return ResponseEntity.internalServerError().body(handleGeneral(ex));
+    }
+    return ResponseEntity.badRequest()
+        .body(new ErrorResponse(400, "Bad Request", "Unknown sort property", LocalDateTime.now()));
+  }
+
+  /**
    * Handles custom downtime or external integration failures. Maps to HTTP 503 Service Unavailable.
    */
   @ExceptionHandler(ServiceUnavailableException.class)
@@ -262,10 +284,16 @@ public class GlobalExceptionHandler {
    * off and retry, where the catch-all's 500 told them nothing. Logged as one WARN line, not a
    * stack trace: under load this fires in bursts, and the cause is in the pool metrics, not the
    * stack.
+   *
+   * <p>The same answer for a wait that ran out of lock_timeout or a statement that ran out of
+   * statement_timeout (see spring.datasource.hikari.connection-init-sql): a ticket held by a stuck
+   * transaction, or a deadlock victim, is a retry for the caller, not a server fault.
    */
   @ExceptionHandler({
     CannotCreateTransactionException.class,
-    DataAccessResourceFailureException.class
+    DataAccessResourceFailureException.class,
+    PessimisticLockingFailureException.class,
+    QueryTimeoutException.class
   })
   public ResponseEntity<ErrorResponse> handleDatabaseUnavailable(Exception ex) {
     log.warn("Database unavailable, answering 503: {}", ex.getMessage());

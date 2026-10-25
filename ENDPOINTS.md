@@ -11,7 +11,7 @@ Base path `/api/v1`.
 | Method | Path | Who | Params / body | Success |
 |---|---|---|---|---|
 | POST | `/sos` | customer | `CreateSosRequest` | 201 |
-| GET | `/sos` | any | `?status=&page=&size=&sort=` | 200 page |
+| GET | `/sos` | any | `?status=&page=&size=&sort=` (`size` max 100; an unknown `sort` property is a 400) | 200 page |
 | GET | `/sos/{sosId}` | any (owner, bidder, eligible mechanic) | | 200 |
 | GET | `/sos/{sosId}/history` | any (owner, assigned mechanic) | | 200 |
 | GET | `/sos/{sosId}/nearby-mechanics` | customer (SOS owner only; anyone else 404) | | 200 `MechanicSummaryResponse[]`, positions snapped to ~1 km |
@@ -28,7 +28,7 @@ Base path `/api/v1`.
 ### Media
 | Method | Path | Who | Params / body | Success |
 |---|---|---|---|---|
-| POST | `/sos/{sosId}/media` | any (owner, assigned or eligible mechanic) | multipart field `file` | 201 |
+| POST | `/sos/{sosId}/media` | any (the owner, a mechanic with a PENDING or ACCEPTED bid, or an eligible mechanic while the ticket is PENDING in its bidding window) | multipart field `file` | 201 |
 | GET | `/sos/{sosId}/media` | any (same) | | 200 |
 
 ### Bids
@@ -47,7 +47,7 @@ Base path `/api/v1`.
 | GET | `/mechanics/available` | customer | `?lat=&lng=&problemType=&radiusKm=` (radius 5–20, default 15) | 200 `MechanicSummaryResponse[]`, positions snapped to ~1 km |
 | GET | `/mechanics/{mechanicId}/skills` | any | | 200 |
 | PATCH | `/mechanics/{mechanicId}/location` | mechanic (own id only) | `?lat=&lng=&sosId=` (`sosId` optional) | 204 |
-| GET | `/mechanics/{mechanicId}/location` | any (the mechanic, or the customer on an active job with them) | | 200 |
+| GET | `/mechanics/{mechanicId}/location` | any (the mechanic, or the customer on an active job with them) | | 200 `{latitude, longitude, asOf}`: `asOf` is the stored fix time (+07:00), `null` if the row has no timestamp |
 | PATCH | `/mechanics/{mechanicId}/availability` | mechanic (own id only) | `?available=true\|false` | 200 |
 
 ### Health (no `/api/v1` prefix, no auth on the service itself; not routed by the testing gateway `api.testing.autofik.com`, so reach them on the service directly)
