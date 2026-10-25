@@ -48,7 +48,7 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 | 405 / 406 / 415 | method, accept header, media type |
 | 409 | invalid state (wrong transition, active SOS exists, duplicate bid or feedback) |
 | 429 | SOS create cooldown (default 60 s) or rebroadcast limit (3). No `Retry-After` |
-| 503 | Medusa unreachable, database pool exhausted (sends `Retry-After: 5`) |
+| 503 | Medusa unreachable, database pool exhausted, a ticket row lock held longer than 5 s, or a statement over 15 s (the last three send `Retry-After: 5`; retry) |
 | 500 | unexpected |
 
 - **Timestamps:** every REST and WebSocket timestamp is shown in Cambodian time (+07:00) whatever zone the server runs in. REST fields keep the `MMM d yyyy, h:mm:ss a` format with no zone suffix; WebSocket frames use ISO local date-time (no offset) at +07:00; the location event and `asOf` on `GET /mechanics/{id}/location` are ISO offset date-times at `+07:00`. Kafka payloads are not converted (§7). `asOf` is the time of the read, not of the GPS fix.
@@ -79,7 +79,7 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 | Method and path | Who | Request | Response | Errors |
 |---|---|---|---|---|
 | `POST /sos` | customer | `CreateSosRequest` | 201 `SosRequestResponse` | 400, 404 (user, vehicle or service group), 409 active SOS, 429 cooldown, 503 Medusa |
-| `GET /sos?status=&page=&size=&sort=` | any | none | `Page<SosRequestResponse>` of the caller's own SOS | 400 |
+| `GET /sos?status=&page=&size=&sort=` | any | none | `Page<SosRequestResponse>` of the caller's own SOS; `size` is capped at 100 | 400, including an unknown `sort=` property (`"Unknown sort property"`) |
 | `GET /sos/{sosId}` | owner, a bidder, or an eligible mechanic while bidding is open | none | `SosRequestResponse`. For the owner, while a request is waiting (a completion request while the SOS is `IN_PROGRESS`, an arrival request while it is still `ON_THE_WAY`), `pendingCompletionHistoryId` holds the `historyId` to answer and `pendingCompletionApproveBy` is the time it will be approved automatically (use it for the countdown); both are null otherwise and never shown to mechanics | 404 |
 | `GET /sos/{sosId}/history` | the ticket's owner, or the mechanic whose bid is ACCEPTED on it (a mechanic who bid but was not chosen, or who released the job, gets 404) | none | list of `{fromStatus, toStatus, at, decision}`, oldest first. `at` is when the step took effect (the decision time; the proposal time while it waits); `decision` is `ACCEPTED`, `REJECTED` or `PENDING_APPROVAL`. No mechanic or customer details. **It holds the steps a mechanic drives or proposes, the bid accept, and every customer cancel** (rebuilt from the ticket, from the last confirmed status, so also `PENDING → CANCELLED`); **not an expiry or a rebroadcast**, so read the final state from the ticket's `status` | 404 |
 | `GET /sos/{sosId}/nearby-mechanics` | same visibility | none | `MechanicResponse[]` | 404 |
@@ -91,7 +91,7 @@ Rules (`MicroserviceTokenSdk`, `CallerRole`):
 | `PATCH /sos/{sosId}/cancel` | owner | none | `SosRequestResponse` | 404, 409 |
 | `POST /sos/{sosId}/rebroadcast` | owner | none | `SosRequestResponse` | 404, 409, 429 |
 
-`CreateSosRequest`: `userId`, `serviceGroupId` (Medusa id; the service derives `problemType` from it), `description` (optional), `latitude`, `longitude`, `vehicleId` (SSO's vehicle id, **a string up to 64 characters, not a UUID**, for example `"648123456789135"`), `broadcastRadiusKm` (optional, 5–20, default 15). **The customer's user and vehicle rows are created from the driver profile in `user-context`** (see §1); a driver the gateway has not yet sent a profile for gets 404.
+`CreateSosRequest`: `userId`, `serviceGroupId` (Medusa id; the service derives `problemType` from it), `description` (optional, at most 1000 characters; longer is a 400), `latitude`, `longitude`, `vehicleId` (SSO's vehicle id, **a string up to 64 characters, not a UUID**, for example `"648123456789135"`), `broadcastRadiusKm` (optional, 5–20, default 15). **The customer's user and vehicle rows are created from the driver profile in `user-context`** (see §1); a driver the gateway has not yet sent a profile for gets 404.
 
 ### Bids
 | Method and path | Who | Request | Response |
@@ -111,7 +111,7 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 | `GET /mechanics/available?lat=&lng=&problemType=&radiusKm=` | customer | radius 5–20, default 15 |
 | `GET /mechanics/{id}/skills` | any caller | the skill entries; empty means the mechanic is not dispatchable. There is no write endpoint: skill tags come from the SSO profile in `mechanic-context` (`skillService.skillTag`). **Skill tags are upper-cased and must equal the Medusa service-group `key`, or the mechanic is never dispatched** |
 | `PATCH /mechanics/{id}/location?lat=&lng=&sosId=` | the mechanic | 204. `sosId` is optional and is only used if this mechanic is assigned to that active SOS |
-| `GET /mechanics/{id}/location` | the mechanic, or the customer on an active job with them | `{latitude, longitude, asOf}`; 403 otherwise |
+| `GET /mechanics/{id}/location` | the mechanic, or the customer on an active job with them | `{latitude, longitude, asOf}`; `asOf` is the time of the stored position fix (not of this request), in +07:00, and is `null` for a position that has no timestamp; 403 otherwise |
 | `PATCH /mechanics/{id}/availability?available=` | the mechanic | |
 
 ### Feedback and media
@@ -120,7 +120,7 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 | `POST /feedback` | the SOS owner, only on a COMPLETED SOS | `{userId, mechanicId, sosId, rating 1.0–5.0, comment}`; the mechanic must be the assigned one; 409 on duplicate |
 | `GET /feedback/sos/{sosId}` | participants | |
 | `GET /feedback/mechanic/{mechanicId}` | any caller | paging |
-| `POST /sos/{sosId}/media` | owner, assigned mechanic or eligible mechanic | multipart field `file`; **JPEG or PNG only** (HEIC is rejected), 10 MB, 8000 px; returns a 15-minute presigned URL |
+| `POST /sos/{sosId}/media` | the owner, a mechanic whose bid is `PENDING` or `ACCEPTED`, or an eligible mechanic while the ticket is still `PENDING` inside its bidding window | multipart field `file`; **JPEG or PNG only** (HEIC is rejected), 10 MB, 8000 px; returns a 15-minute presigned URL |
 | `GET /sos/{sosId}/media` | same | 404 when the SOS does not exist **or** the caller may not see it (same as `GET /sos/{sosId}`) |
 
 ### Health
@@ -176,7 +176,7 @@ Accepting a bid moves the SOS to ACCEPTED, rejects every other pending bid, and 
 | 404 | unknown SOS or bid | e.g. `"SOS request not found: <id>"` |
 | 409 | duplicate bid, bidding closed, bid no longer PENDING, deciding a bid already decided | the service's message |
 | 429 | rate limit | the service's message |
-| 503 | the server is busy (bid queue full, database unavailable) | e.g. `"Too many bids in progress, retry shortly"`; retry after a short wait |
+| 503 | the server is busy (bid queue full, database unavailable or the ticket is locked by another request for over 5 s) | e.g. `"Too many bids in progress, retry shortly"`; retry after a short wait |
 | 500 | unexpected | `"Internal server error"` |
 
 `clientMessageId` is null when the frame did not carry one (location pings never do).
