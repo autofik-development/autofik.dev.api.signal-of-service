@@ -11,6 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -282,10 +284,16 @@ public class GlobalExceptionHandler {
    * off and retry, where the catch-all's 500 told them nothing. Logged as one WARN line, not a
    * stack trace: under load this fires in bursts, and the cause is in the pool metrics, not the
    * stack.
+   *
+   * <p>The same answer for a wait that ran out of lock_timeout or a statement that ran out of
+   * statement_timeout (see spring.datasource.hikari.connection-init-sql): a ticket held by a stuck
+   * transaction, or a deadlock victim, is a retry for the caller, not a server fault.
    */
   @ExceptionHandler({
     CannotCreateTransactionException.class,
-    DataAccessResourceFailureException.class
+    DataAccessResourceFailureException.class,
+    PessimisticLockingFailureException.class,
+    QueryTimeoutException.class
   })
   public ResponseEntity<ErrorResponse> handleDatabaseUnavailable(Exception ex) {
     log.warn("Database unavailable, answering 503: {}", ex.getMessage());

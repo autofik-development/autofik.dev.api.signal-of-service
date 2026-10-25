@@ -10,14 +10,14 @@ import com.autofik.sos.domain.enums.SosStatus;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataIntegrityViolationException;
 
 /**
  * F-07's two backstops exist after the migrations run, and they actually catch the violation the
  * row-lock discipline is meant to prevent. The services enforce both invariants under the ticket
- * lock; these indexes are for the code path (or the manual SQL) that skips it. Flushing through the
- * repository translates the PostgreSQL unique violation to {@link DataIntegrityViolationException},
- * which {@code GlobalExceptionHandler} already answers with 409.
+ * lock; these indexes are for the code path (or the manual SQL) that skips it. Flushing the
+ * EntityManager directly raises Hibernate's ConstraintViolationException (only a Spring repository
+ * call translates it to DataIntegrityViolationException, which {@code GlobalExceptionHandler}
+ * answers with 409), so the tests assert the name of the index that refused the row.
  *
  * <p>The violation tests deliberately corrupt history (flip a bid to ACCEPTED without the lock, or
  * stack a second live ticket) because that is exactly what a broken path would do. Every test
@@ -58,7 +58,7 @@ class InvariantIndexTest extends RepositoryTestBase {
               em.persist(second);
               em.flush();
             })
-        .isInstanceOf(DataIntegrityViolationException.class);
+        .hasMessageContaining("uq_sos_one_active_per_user");
   }
 
   @Test
@@ -79,7 +79,7 @@ class InvariantIndexTest extends RepositoryTestBase {
     // constraint doing the work here.
     var sneaky = bid(ticket, mechanic(LAT, LNG, null), BidStatus.PENDING);
     sneaky.setStatus(BidStatus.ACCEPTED);
-    assertThatThrownBy(() -> em.flush()).isInstanceOf(DataIntegrityViolationException.class);
+    assertThatThrownBy(() -> em.flush()).hasMessageContaining("uq_bid_one_accepted_per_sos");
   }
 
   @Test

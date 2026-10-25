@@ -19,6 +19,12 @@ spring:
       # Fail fast instead of the 30s default — a stuck pool should surface as an
       # error quickly, not hang every caller behind it.
       connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:5000}
+      # Without these a SELECT ... FOR UPDATE on a ticket waits forever behind a stuck transaction,
+      # and every caller of that ticket queues on a pool connection until the pool is dry.
+      # lock_timeout ends a wait for a row lock (answered 503, see GlobalExceptionHandler);
+      # statement_timeout ends a runaway statement. Flyway is kept off this pool (spring.flyway.url
+      # below): a CREATE INDEX on a big table must not be killed by statement_timeout.
+      connection-init-sql: SET lock_timeout = ${DB_LOCK_TIMEOUT_MS:5000}; SET statement_timeout = ${DB_STATEMENT_TIMEOUT_MS:15000}
   jpa:
     open-in-view: false
     hibernate:
@@ -27,6 +33,15 @@ spring:
     show-sql: false
     properties:
       hibernate:
+        # The k-ring lookup binds up to ~1,000 cell ids in lists of varying size; padding the list
+        # to the next power of two leaves a handful of statement shapes instead of one per size.
+        query:
+          in_clause_parameter_padding: true
+  # Own connection, not the app pool: the pool's init SQL sets statement_timeout (see hikari above).
+  flyway:
+    url: ${spring.datasource.url}
+    user: ${spring.datasource.username}
+    password: ${spring.datasource.password}
   servlet:
     multipart:
       # Same env var as sos.media.max-upload-mb so the two limits can't drift.
