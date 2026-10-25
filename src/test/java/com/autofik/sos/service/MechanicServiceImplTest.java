@@ -11,6 +11,7 @@ import com.autofik.sos.dto.event.MechanicLocationEvent;
 import com.autofik.sos.dto.external.EtaInfo;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
 import com.autofik.sos.mapper.MechanicSkillMapper;
@@ -65,6 +66,7 @@ class MechanicServiceImplTest {
   private final UUID sosId = UUID.randomUUID();
   private Mechanic mechanic;
   private MechanicResponse mechanicResponse;
+  private MechanicSummaryResponse mechanicSummary;
 
   @BeforeEach
   void setUp() {
@@ -101,16 +103,19 @@ class MechanicServiceImplTest {
             true,
             null,
             null);
+    mechanicSummary =
+        new MechanicSummaryResponse(mechanicId, "Bob", null, 10, BigDecimal.ZERO, true, null, null);
   }
 
   // ── getById ───────────────────────────────────────────────────────────────
 
   @Test
-  void getById_found_returnsResponse() {
+  void getById_found_returnsThePublicViewWithoutPosition() {
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
+    when(mechanicMapper.toSummaryWithoutPosition(mechanic)).thenReturn(mechanicSummary);
 
-    assertThat(mechanicService.getById(mechanicId)).isEqualTo(mechanicResponse);
+    assertThat(mechanicService.getById(mechanicId)).isEqualTo(mechanicSummary);
+    verify(mechanicMapper, never()).toResponse(any());
   }
 
   @Test
@@ -144,30 +149,18 @@ class MechanicServiceImplTest {
   void findAvailable_stage2HasCandidates_returnsMappedList() {
     when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(mechanic));
     when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(ids(mechanic));
-    when(mechanicMapper.toResponseList(List.of(mechanic))).thenReturn(List.of(mechanicResponse));
+    when(mechanicMapper.toSummaryList(List.of(mechanic))).thenReturn(List.of(mechanicSummary));
 
-    assertThat(mechanicService.findAvailable(LAT, LNG, null, 15)).containsExactly(mechanicResponse);
+    assertThat(mechanicService.findAvailable(LAT, LNG, null, 15)).containsExactly(mechanicSummary);
   }
 
   @Test
   void findAvailable_withProblemType_filtersToMatchingSkillOnly() {
     Mechanic flatTireMechanic = buildMechanicWithSkill("Flat Tire");
     Mechanic engineMechanic = buildMechanicWithSkill("Engine");
-    MechanicResponse flatTireResponse =
-        new MechanicResponse(
-            flatTireMechanic.getMechanicId(),
-            "Bob",
-            "081",
-            "b@fix.com",
-            null,
-            null,
-            null,
-            10,
-            BigDecimal.ZERO,
-            0,
-            true,
-            null,
-            null);
+    MechanicSummaryResponse flatTireResponse =
+        new MechanicSummaryResponse(
+            flatTireMechanic.getMechanicId(), "Bob", null, 10, BigDecimal.ZERO, true, null, null);
 
     when(mechanicRepository.findByH3Cells(anyList()))
         .thenReturn(List.of(flatTireMechanic, engineMechanic));
@@ -175,10 +168,10 @@ class MechanicServiceImplTest {
         .thenReturn(ids(flatTireMechanic, engineMechanic));
     when(mechanicRepository.findByIdsWithSkills(anyList()))
         .thenReturn(List.of(flatTireMechanic, engineMechanic));
-    when(mechanicMapper.toResponseList(List.of(flatTireMechanic)))
+    when(mechanicMapper.toSummaryList(List.of(flatTireMechanic)))
         .thenReturn(List.of(flatTireResponse));
 
-    List<MechanicResponse> result = mechanicService.findAvailable(LAT, LNG, "Flat Tire", 15);
+    List<MechanicSummaryResponse> result = mechanicService.findAvailable(LAT, LNG, "Flat Tire", 15);
 
     assertThat(result).containsExactly(flatTireResponse);
   }
@@ -190,7 +183,7 @@ class MechanicServiceImplTest {
     when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG)))
         .thenReturn(ids(engineMechanic));
     when(mechanicRepository.findByIdsWithSkills(anyList())).thenReturn(List.of(engineMechanic));
-    when(mechanicMapper.toResponseList(List.of())).thenReturn(List.of());
+    when(mechanicMapper.toSummaryList(List.of())).thenReturn(List.of());
 
     assertThat(mechanicService.findAvailable(LAT, LNG, "Flat Tire", 15)).isEmpty();
   }

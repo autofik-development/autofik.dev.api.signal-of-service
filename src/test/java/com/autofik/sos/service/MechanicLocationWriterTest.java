@@ -6,13 +6,13 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.autofik.sos.domain.entity.BidSos;
-import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.service.impl.MechanicLocationWriter;
 import jakarta.persistence.EntityNotFoundException;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +24,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
+/**
+ * The movement rule (location_moved_at) now lives in the UPDATE statement itself, so it is tested
+ * against real PostGIS in MechanicRepositoryTest; here is what the writer decides around it.
+ */
 @ExtendWith(MockitoExtension.class)
 @SuppressWarnings("unchecked")
 class MechanicLocationWriterTest {
@@ -41,7 +45,7 @@ class MechanicLocationWriterTest {
 
   private final UUID mechanicId = UUID.randomUUID();
   private final UUID sosId = UUID.randomUUID();
-  private Mechanic mechanic;
+  private final String throttleKey = "mechanic:pg-sync:" + mechanicId;
 
   @BeforeEach
   void setUp() {
@@ -50,153 +54,88 @@ class MechanicLocationWriterTest {
     org.springframework.test.util.ReflectionTestUtils.setField(writer, "pgSyncSeconds", 10);
     org.springframework.test.util.ReflectionTestUtils.setField(writer, "h3Resolution", 7);
     org.springframework.test.util.ReflectionTestUtils.setField(writer, "movedThresholdMeters", 20);
-    org.springframework.test.util.ReflectionTestUtils.setField(writer, "earthRadiusM", 6_371_000d);
     // Default: throttle allows Postgres write on every ping
     lenient()
         .when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class)))
         .thenReturn(true);
-
-    mechanic =
-        Mechanic.builder()
-            .mechanicId(mechanicId)
-            .fullName("Bob")
-            .phoneNumber("081")
-            .email("bob@fix.com")
-            .availableStatus(true)
-            .build();
+    // Default: the mechanic exists, so the single UPDATE changes one row.
+    lenient()
+        .when(
+            mechanicRepository.updateLocation(
+                eq(mechanicId),
+                anyDouble(),
+                anyDouble(),
+                anyString(),
+                anyDouble(),
+                any(LocalDateTime.class)))
+        .thenReturn(1);
   }
 
+  // A ping inside the window costs no database work at all: no write, no existence check, no
+  // active-job lookup.
   @Test
-  void throttled_skipsPostgresWrite() {
+  void throttled_touchesNoTable() {
     when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
-    when(mechanicRepository.existsById(mechanicId)).thenReturn(true);
-
-    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
-
-    verify(mechanicRepository, never()).findById(any());
-    verify(mechanicRepository, never()).save(any());
-  }
-
-  // The active-job lookup shares the Postgres write throttle, so a throttled ping must not
-  // spend a query discovering that an idle mechanic has no job.
-  @Test
-  void throttled_skipsActiveBidLookup() {
-    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
-    when(mechanicRepository.existsById(mechanicId)).thenReturn(true);
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, null)).isNull();
 
-    verify(bidSosRepository, never()).findActiveJob(any());
+    verifyNoInteractions(mechanicRepository, bidSosRepository);
   }
 
   @Test
-  void notThrottled_updatesLocationAndH3Index() {
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+  void notThrottled_writesLocationH3CellAndTimestampInOneStatement() {
     when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
+    LocalDateTime before = LocalDateTime.now().minusSeconds(1);
 
     writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
 
-    assertThat(mechanic.getCurrentLocation()).isNotNull();
-    assertThat(mechanic.getCurrentLocation().getY()).isEqualTo(LAT);
-    assertThat(mechanic.getCurrentLocation().getX()).isEqualTo(LNG);
-    assertThat(mechanic.getCurrentH3Index()).isNotBlank();
-    verify(mechanicRepository).save(mechanic);
-  }
-
-  // Dispatch skips a mechanic whose last ping is too old, so a persisted ping must stamp the time
-  // and a throttled one (which writes nothing) must not.
-  @Test
-  void notThrottled_stampsWhenTheLocationWasLastWritten() {
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
-    java.time.LocalDateTime before = java.time.LocalDateTime.now().minusSeconds(1);
-
-    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
-
-    assertThat(mechanic.getLocationUpdatedAt())
-        .isBetween(before, java.time.LocalDateTime.now().plusSeconds(1));
-  }
-
-  @Test
-  void throttled_doesNotTouchTheLocationTimestamp() {
-    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
-    when(mechanicRepository.existsById(mechanicId)).thenReturn(true);
-
-    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
-
-    assertThat(mechanic.getLocationUpdatedAt()).isNull();
-  }
-
-  // The no-show sweep needs to tell a parked mechanic from a moving one, and locationUpdatedAt
-  // cannot: it is stamped on every ping. locationMovedAt moves only on a real change of position.
-  private void pingFrom(double lat, double lng) {
-    mechanic.setCurrentLocation(
-        new org.locationtech.jts.geom.GeometryFactory(
-                new org.locationtech.jts.geom.PrecisionModel(), 4326)
-            .createPoint(new org.locationtech.jts.geom.Coordinate(lng, lat)));
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
-  }
-
-  @Test
-  void ping_farEnoughFromThePreviousOne_recordsThatTheMechanicMoved() {
-    pingFrom(LAT, LNG);
-    // About 28 m north.
-    writer.persistAndResolveSos(mechanicId, LAT + 0.00025, LNG, null);
-
-    assertThat(mechanic.getLocationMovedAt()).isNotNull();
-  }
-
-  @Test
-  void ping_nearThePreviousOne_doesNotRecordMovement() {
-    pingFrom(LAT, LNG);
-    // About 5 m north: GPS wobble, not movement.
-    writer.persistAndResolveSos(mechanicId, LAT + 0.000045, LNG, null);
-
-    assertThat(mechanic.getLocationMovedAt()).isNull();
-  }
-
-  @Test
-  void firstEverLocation_countsAsMoved() {
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
-    when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
-
-    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
-
-    assertThat(mechanic.getLocationMovedAt()).isNotNull();
+    org.mockito.ArgumentCaptor<String> h3 = org.mockito.ArgumentCaptor.forClass(String.class);
+    org.mockito.ArgumentCaptor<LocalDateTime> now =
+        org.mockito.ArgumentCaptor.forClass(LocalDateTime.class);
+    verify(mechanicRepository)
+        .updateLocation(eq(mechanicId), eq(LAT), eq(LNG), h3.capture(), eq(20d), now.capture());
+    assertThat(h3.getValue()).isNotBlank();
+    // Dispatch skips a mechanic whose last ping is too old, so the write stamps the time.
+    assertThat(now.getValue()).isBetween(before, LocalDateTime.now().plusSeconds(1));
+    verifyNoMoreInteractions(mechanicRepository);
   }
 
   @Test
   void redisUnavailable_writesToPostgresOnEveryPing() {
     when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("Redis down"));
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
     when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
 
     writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
 
-    verify(mechanicRepository).save(mechanic);
+    verify(mechanicRepository)
+        .updateLocation(eq(mechanicId), anyDouble(), anyDouble(), anyString(), anyDouble(), any());
   }
 
+  // An unknown mechanic fails on every ping: the throttle key it just claimed is released, so it is
+  // not answered with a 204 for the rest of the window.
   @Test
-  void mechanicNotFound_persistPath_throws() {
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
+  void mechanicNotFound_throws_andReleasesTheThrottleKey() {
+    when(mechanicRepository.updateLocation(
+            eq(mechanicId), anyDouble(), anyDouble(), anyString(), anyDouble(), any()))
+        .thenReturn(0);
 
     assertThatThrownBy(() -> writer.persistAndResolveSos(mechanicId, LAT, LNG, null))
         .isInstanceOf(EntityNotFoundException.class);
+
+    verify(redisTemplate).delete(throttleKey);
   }
 
   @Test
-  void mechanicNotFound_throttledPath_throws() {
-    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
-    when(mechanicRepository.existsById(mechanicId)).thenReturn(false);
+  void mechanicNotFound_withRedisDown_throwsWithoutTouchingRedisAgain() {
+    when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("Redis down"));
+    when(mechanicRepository.updateLocation(
+            eq(mechanicId), anyDouble(), anyDouble(), anyString(), anyDouble(), any()))
+        .thenReturn(0);
 
     assertThatThrownBy(() -> writer.persistAndResolveSos(mechanicId, LAT, LNG, null))
         .isInstanceOf(EntityNotFoundException.class);
+
+    verify(redisTemplate, never()).delete(anyString());
   }
 
   // A caller-supplied sosId is only trusted when the mechanic holds the accepted bid on that live
@@ -204,8 +143,6 @@ class MechanicLocationWriterTest {
   // someone else's ticket.
   @Test
   void sosIdSupplied_andAssigned_isTrusted_withoutTheActiveJobLookup() {
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
     when(bidSosRepository.isAssignedToActiveJob(mechanicId, sosId)).thenReturn(true);
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).isEqualTo(sosId);
@@ -215,8 +152,6 @@ class MechanicLocationWriterTest {
 
   @Test
   void sosIdSupplied_butNotAssigned_isIgnored_andNothingIsBroadcast() {
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
     when(bidSosRepository.isAssignedToActiveJob(mechanicId, sosId)).thenReturn(false);
     when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
 
@@ -231,8 +166,6 @@ class MechanicLocationWriterTest {
     when(sosRequest.getSosId()).thenReturn(realSos);
     BidSos activeBid = mock(BidSos.class);
     when(activeBid.getSosRequest()).thenReturn(sosRequest);
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
     when(bidSosRepository.isAssignedToActiveJob(mechanicId, sosId)).thenReturn(false);
     when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.of(activeBid));
 
@@ -245,9 +178,6 @@ class MechanicLocationWriterTest {
     when(sosRequest.getSosId()).thenReturn(sosId);
     BidSos activeBid = mock(BidSos.class);
     when(activeBid.getSosRequest()).thenReturn(sosRequest);
-
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
     when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.of(activeBid));
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, null)).isEqualTo(sosId);
@@ -255,8 +185,6 @@ class MechanicLocationWriterTest {
 
   @Test
   void noSosId_noActiveBid_resolvesToNull() {
-    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
-    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
     when(bidSosRepository.findActiveJob(mechanicId)).thenReturn(Optional.empty());
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, null)).isNull();

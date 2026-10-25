@@ -423,8 +423,7 @@ class BidParityIntegrationTest extends FlowTestSupport {
       scenario.accept(via, f);
       return new Outcome(f.trace, snapshot(f), frames(f));
     } finally {
-      for (Actor a : List.of(f.driver, f.otherDriver, f.mech1, f.mech2)) a.session().disconnect();
-      for (Actor a : f.extras) a.session().disconnect();
+      disconnectAll(f);
     }
   }
 
@@ -710,6 +709,17 @@ class BidParityIntegrationTest extends FlowTestSupport {
     return all;
   }
 
+  // Cleanup only. A session the server already closed (a missed heartbeat on a loaded machine)
+  // throws on disconnect, which would replace the test's real result with a cleanup error; a reply
+  // lost mid-race is still caught by the "no request went unanswered" check.
+  private static void disconnectAll(Fixture f) {
+    List<Actor> all = new ArrayList<>(List.of(f.driver, f.otherDriver, f.mech1, f.mech2));
+    all.addAll(f.extras);
+    for (Actor a : all) {
+      if (a.session().isConnected()) a.session().disconnect();
+    }
+  }
+
   private record RaceRun(List<String> outcomes, List<String> db, List<String> frames) {}
 
   private RaceRun runRace(Via via, String name, RaceScenario scenario) throws Exception {
@@ -722,8 +732,7 @@ class BidParityIntegrationTest extends FlowTestSupport {
       assertInvariants(f, name);
       return new RaceRun(outcomes(results), dbShape(f), allFrames(f));
     } finally {
-      for (Actor a : List.of(f.driver, f.otherDriver, f.mech1, f.mech2)) a.session().disconnect();
-      for (Actor a : f.extras) a.session().disconnect();
+      disconnectAll(f);
     }
   }
 

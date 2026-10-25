@@ -1,6 +1,7 @@
 package com.autofik.sos.repository;
 
 import com.autofik.sos.domain.entity.Mechanic;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -8,9 +9,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
@@ -148,6 +151,86 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
       value = "SELECT id FROM mechanic WHERE id = :mechanicId FOR NO KEY UPDATE",
       nativeQuery = true)
   Optional<UUID> lockById(@Param("mechanicId") UUID mechanicId);
+
+  /**
+   * One statement for a persisted location ping. location_moved_at moves only when the fix is at
+   * least {@code movedM} metres from the stored one (or there was none), the rule the service used
+   * to apply in Java; SET expressions read the old row, so the CASE sees the previous position.
+   * Returns the rows changed: 0 means no such mechanic. {@code @Transactional} here, not on the
+   * caller, so a throttled ping that writes nothing never borrows a connection.
+   *
+   * <p>ponytail: compares ping to ping, so GPS jitter can look like movement (the mechanic is not
+   * released) and a crawl under the threshold per ping can look parked. Compare against an anchor
+   * point instead if that turns out to matter.
+   */
+  @Transactional
+  @Modifying
+  @Query(
+      value =
+          """
+            UPDATE mechanic SET
+              location_moved_at = CASE
+                  WHEN current_location IS NULL
+                    OR ST_Distance(current_location,
+                         ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography) >= :movedM
+                  THEN :now ELSE location_moved_at END,
+              current_location = ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
+              current_h3_index = :h3,
+              location_updated_at = :now
+            WHERE id = :id
+            """,
+      nativeQuery = true)
+  int updateLocation(
+      @Param("id") UUID id,
+      @Param("lat") double lat,
+      @Param("lng") double lng,
+      @Param("h3") String h3,
+      @Param("movedM") double movedM,
+      @Param("now") LocalDateTime now);
+
+  /**
+   * Is this one mechanic offered this ticket? The predicates of findByH3CellsAndSkillTag (cell,
+   * availability, freshness, not on a live job, skill) and of the radius filters (the smaller of
+   * the mechanic's own radius and {@code radiusM}), asked about one id, so the cost no longer grows
+   * with the mechanics around the ticket. Callers with no broadcast radius pass a huge {@code
+   * radiusM}, which leaves the mechanic's own radius as the limit, as filterByRadius does.
+   */
+  @Query(
+      value =
+          """
+            SELECT EXISTS (
+              SELECT 1 FROM mechanic m
+              JOIN mechanic_skill ms ON ms.mechanic_profile_id = m.id
+              WHERE m.id = :mechanicId
+                AND m.current_h3_index IN :cellIds
+                AND m.available_status = true
+                AND (m.location_updated_at IS NULL OR m.location_updated_at >= :seenSince)
+                AND NOT EXISTS (
+                    SELECT 1 FROM bid_sos b
+                    JOIN sos_request s ON s.sos_id = b.sos_id
+                    WHERE b.mechanic_id = m.id
+                      AND b.status = 'ACCEPTED'
+                      AND s.status IN ('ACCEPTED', 'ON_THE_WAY', 'ARRIVED', 'IN_PROGRESS')
+                )
+                AND EXISTS (
+                    SELECT 1 FROM unnest(ms.skill_tags) tag WHERE UPPER(tag) = :problemType
+                )
+                AND ST_DWithin(
+                      m.current_location,
+                      ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
+                      LEAST(m.service_radius_km * 1000, :radiusM)
+                    )
+            )
+            """,
+      nativeQuery = true)
+  boolean isEligible(
+      @Param("mechanicId") UUID mechanicId,
+      @Param("cellIds") List<String> cellIds,
+      @Param("problemType") String problemType,
+      @Param("seenSince") LocalDateTime seenSince,
+      @Param("lat") double lat,
+      @Param("lng") double lng,
+      @Param("radiusM") double radiusM);
 
   /** Mechanics by id with their rating joined in, so mapping them costs one query, not N + 1. */
   @EntityGraph(attributePaths = "rate")

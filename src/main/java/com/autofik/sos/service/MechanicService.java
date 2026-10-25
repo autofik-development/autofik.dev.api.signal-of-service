@@ -3,6 +3,7 @@ package com.autofik.sos.service;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.MechanicSkillResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import java.util.List;
 import java.util.UUID;
 
@@ -17,9 +18,10 @@ public interface MechanicService {
    * Use case: Fetch a single mechanic's profile by their unique ID.
    *
    * @param mechanicId Identifies the target mechanic.
-   * @return The matching mechanic profile.
+   * @return The public view of the mechanic: no contact fields and no position, since the id can
+   *     name any mechanic anywhere.
    */
-  MechanicResponse getById(UUID mechanicId);
+  MechanicSummaryResponse getById(UUID mechanicId);
 
   /**
    * Use case: Find available mechanics near a GPS location. Three-stage search: H3 adaptive kRing →
@@ -30,7 +32,8 @@ public interface MechanicService {
    * @param problemType Optional breakdown category filter (e.g. "flat_tire"). Pass null to skip.
    * @param radiusKm Search radius in km (5–20). Controls the H3 kRing depth.
    */
-  List<MechanicResponse> findAvailable(double lat, double lng, String problemType, int radiusKm);
+  List<MechanicSummaryResponse> findAvailable(
+      double lat, double lng, String problemType, int radiusKm);
 
   /**
    * Use case: List every skill entry a mechanic has declared.

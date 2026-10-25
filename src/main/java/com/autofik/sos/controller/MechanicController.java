@@ -3,6 +3,7 @@ package com.autofik.sos.controller;
 import com.autofik.sos.dto.response.MechanicLocationResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
 import com.autofik.sos.dto.response.MechanicSkillResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.security.AuthMechanic;
 import com.autofik.sos.security.AuthUser;
 import com.autofik.sos.security.Caller;
@@ -36,9 +37,9 @@ public class MechanicController {
 
   private final MechanicService mechanicService;
 
-  // GET /api/mechanics/{mechanicId} — Fetch a single mechanic profile by ID
+  // GET /api/mechanics/{mechanicId} — Public view of one mechanic: no contact fields, no position
   @GetMapping("/{mechanicId}")
-  public MechanicResponse getById(@PathVariable UUID mechanicId) {
+  public MechanicSummaryResponse getById(@PathVariable UUID mechanicId) {
     return mechanicService.getById(mechanicId);
   }
 
@@ -49,7 +50,7 @@ public class MechanicController {
   // "flat_tire")
   @GetMapping("/available")
   @PreAuthorize("hasRole('USER')")
-  public List<MechanicResponse> findAvailable(
+  public List<MechanicSummaryResponse> findAvailable(
       @RequestParam @DecimalMin("10.41") @DecimalMax("14.69") double lat,
       @RequestParam @DecimalMin("102.5") @DecimalMax("107.63") double lng,
       @RequestParam(required = false) String problemType,

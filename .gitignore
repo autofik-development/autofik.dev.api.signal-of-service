@@ -74,3 +74,4 @@ reports/
 # JMeter load tests are kept local only
 load-tests/
 __pycache__/
+.10x/

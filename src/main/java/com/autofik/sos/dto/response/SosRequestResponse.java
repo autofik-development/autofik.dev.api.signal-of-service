@@ -57,4 +57,29 @@ public record SosRequestResponse(
         historyId,
         approveBy);
   }
+
+  /** The ticket without the customer and the assigned mechanic: what a bidding mechanic sees. */
+  public SosRequestResponse withoutParties() {
+    return new SosRequestResponse(
+        sosId,
+        problemType,
+        description,
+        locationAddress,
+        status,
+        latitude,
+        longitude,
+        broadcastRadiusKm,
+        createdAt,
+        updatedAt,
+        biddingExpiresAt,
+        jobStartedAt,
+        jobCompletedAt,
+        durationSeconds,
+        rebroadcastCount,
+        null,
+        vehicle,
+        null,
+        pendingCompletionHistoryId,
+        pendingCompletionApproveBy);
+  }
 }

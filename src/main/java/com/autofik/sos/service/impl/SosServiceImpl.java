@@ -19,6 +19,7 @@ import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
@@ -196,6 +197,15 @@ public class SosServiceImpl implements SosService {
           SosStatus.ON_THE_WAY,
           SosStatus.ARRIVED,
           SosStatus.IN_PROGRESS);
+
+  // A bid lets its mechanic read the ticket only while it is live: waiting for the customer, or
+  // accepted. A rejected, withdrawn or released bid is over, and with it the access.
+  // Radius meant as "no cap" for the eligibility query: LEAST() then leaves the mechanic's own.
+  private static final double NO_BROADCAST_CAP_M = 1e12;
+
+  private static final List<BidStatus> LIVE_BID_STATUSES =
+      List.of(BidStatus.PENDING, BidStatus.ACCEPTED);
+
   private static final H3Core H3;
 
   static {
@@ -665,6 +675,14 @@ public class SosServiceImpl implements SosService {
       throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
     SosRequestResponse response = toResponseWithMechanic(sos);
+    boolean owner = sos.getUser().getUserId().equals(callerId);
+    // The customer's contact details and the assigned mechanic's are for the two people on the
+    // job. A mechanic still deciding whether to bid sees the job, not the people.
+    boolean assigned =
+        response.mechanic() != null && response.mechanic().mechanicId().equals(callerId);
+    if (!owner && !assigned) {
+      return response.withoutParties();
+    }
     // The owner needs the historyId of a waiting request to answer it: completion while the job is
     // IN_PROGRESS, arrival while the mechanic is still ON_THE_WAY (the field keeps its old name).
     // The push and the COMPLETION_REQUESTED / ARRIVAL_REQUESTED frame carry it too, but a missed
@@ -687,9 +705,11 @@ public class SosServiceImpl implements SosService {
   // ticket's radius has auto-expanded past it.
   @Override
   @Transactional(readOnly = true)
-  public List<MechanicResponse> getNearbyMechanics(UUID sosId, UUID callerId) {
+  public List<MechanicSummaryResponse> getNearbyMechanics(UUID sosId, UUID callerId) {
     SosRequest sos = findSosOrThrow(sosId);
-    if (!isVisibleTo(sos, callerId)) {
+    // Owner only. Bidders and eligible mechanics can read the ticket itself, but everyone on this
+    // list is their competitor. 404 rather than 403, as for any SOS the caller may not see.
+    if (!sos.getUser().getUserId().equals(callerId)) {
       throw new EntityNotFoundException("SOS request not found: " + sosId);
     }
 
@@ -698,7 +718,7 @@ public class SosServiceImpl implements SosService {
         sos.getBroadcastRadiusKm() != null ? sos.getBroadcastRadiusKm() : defaultBroadcastKm;
     return findMatchedMechanics(location.getY(), location.getX(), sos.getProblemType(), radiusKm)
         .stream()
-        .map(mechanicMapper::toResponse)
+        .map(mechanicMapper::toSummary)
         .toList();
   }
 
@@ -728,6 +748,15 @@ public class SosServiceImpl implements SosService {
         .orElse(false);
   }
 
+  @Override
+  @Transactional(readOnly = true)
+  public boolean isOwner(UUID sosId, UUID callerId) {
+    return sosRequestRepository
+        .findById(sosId)
+        .map(sos -> sos.getUser().getUserId().equals(callerId))
+        .orElse(false);
+  }
+
   // The driver who raised it, an existing bidder, or an eligible mechanic during the bidding
   // window.
   // Eligibility matched the broadcast fan-out criteria so a mechanic can inspect an SOS before
@@ -736,10 +765,14 @@ public class SosServiceImpl implements SosService {
     if (sos.getUser().getUserId().equals(callerId)) {
       return true;
     }
-    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sos.getSosId(), callerId)) {
+    if (bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+        sos.getSosId(), callerId, LIVE_BID_STATUSES)) {
       return true;
     }
-    if (sos.getBiddingExpiresAt() == null
+    // Accept does not clear biddingExpiresAt, so the window alone would keep the ticket (and the
+    // assigned mechanic on it) open to every nearby mechanic for the rest of the minute.
+    if (sos.getStatus() != SosStatus.PENDING
+        || sos.getBiddingExpiresAt() == null
         || !LocalDateTime.now().isBefore(sos.getBiddingExpiresAt())) {
       return false;
     }
@@ -762,20 +795,15 @@ public class SosServiceImpl implements SosService {
     List<String> searchCells =
         H3.kRing(sosCell, Geo.ringRadiusFor(effectiveRadiusKm, h3CenterToCenterKm));
 
-    List<UUID> coarse =
-        mechanicRepository.findByH3CellsAndSkillTag(
-            searchCells, sos.getProblemType(), locationFreshSince());
-
-    if (!coarse.contains(callerId)) {
-      return false;
-    }
-
-    List<UUID> matched =
+    // One mechanic, asked about by id: the same predicates as the area matcher, at a cost that does
+    // not grow with the mechanics around the ticket. No broadcast radius: only the mechanic's own
+    // radius limits them (what filterByRadius did).
+    double radiusM =
         sos.getBroadcastRadiusKm() != null
-            ? mechanicRepository.filterByRadiusAndBroadcast(
-                coarse, lat, lng, sos.getBroadcastRadiusKm() * 1000.0)
-            : mechanicRepository.filterByRadius(coarse, lat, lng);
-    return matched.contains(callerId);
+            ? sos.getBroadcastRadiusKm() * 1000.0
+            : NO_BROADCAST_CAP_M;
+    return mechanicRepository.isEligible(
+        callerId, searchCells, sos.getProblemType(), locationFreshSince(), lat, lng, radiusM);
   }
 
   @Override

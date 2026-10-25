@@ -12,7 +12,7 @@ The service does **not** validate tokens. The internal gateway verifies the call
 |---|---|---|
 | `user-context` | the customer app | `{"user":{"uuid":"<uuid>","role":"USER","deviceId":"…","otpVerify":true,"profileVerify":true,"tokenStatus":"active","isLogout":false}}` |
 | `mechanic-context` | the mechanic app | `{"mechanic":{"uuid":"<uuid>","role":"MECHANIC","deviceId":"…","otpVerify":true,"profileVerify":true,"tokenStatus":"active","isLogout":false}}` |
-| `service-code` | optional | which internal service proxied the call; logged only |
+| `service-code` | every call through the gateway | `autofik-costumer` / `autofik-mechanic`. The gateway requires it from the app (2026-10-22) and passes it on; SOS only logs it |
 | `x-forwarded-for`, `user-agent` | optional | logs only |
 
 Rules (`MicroserviceTokenSdk`, `CallerRole`):

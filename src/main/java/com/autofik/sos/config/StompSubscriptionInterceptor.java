@@ -29,8 +29,8 @@ public class StompSubscriptionInterceptor implements ChannelInterceptor {
 
   private static final AntPathMatcher ANT = new AntPathMatcher(); // same matcher the broker uses
 
-  // /topic/sos/{sosId}/location and /media
-  private static final Pattern SOS_TOPIC = Pattern.compile("^/topic/sos/([^/]+)/.*$");
+  // /topic/sos/{sosId}/location and /media; group 2 is the channel
+  private static final Pattern SOS_TOPIC = Pattern.compile("^/topic/sos/([^/]+)/(.*)$");
 
   // Lazy: SosServiceImpl needs SimpMessagingTemplate, which the WebSocket configuration creates.
   // Injecting the service directly would close that loop and fail startup.
@@ -80,7 +80,14 @@ public class StompSubscriptionInterceptor implements ChannelInterceptor {
     } catch (IllegalArgumentException malformedUuid) {
       throw new AccessDeniedException("Malformed subscription destination");
     }
-    if (!sosService.getObject().canView(sosId, callerId)) {
+    // The live position of the assigned mechanic is for the customer alone. Bidders and eligible
+    // mechanics can read the ticket, but a subscription is never revoked, so anyone else let in
+    // here keeps watching after they lose the bid or are released. The owner never changes.
+    boolean allowed =
+        "location".equals(matcher.group(2))
+            ? sosService.getObject().isOwner(sosId, callerId)
+            : sosService.getObject().canView(sosId, callerId);
+    if (!allowed) {
       throw new AccessDeniedException("Not your SOS request");
     }
   }

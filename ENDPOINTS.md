@@ -14,7 +14,7 @@ Base path `/api/v1`.
 | GET | `/sos` | any | `?status=&page=&size=&sort=` | 200 page |
 | GET | `/sos/{sosId}` | any (owner, bidder, eligible mechanic) | | 200 |
 | GET | `/sos/{sosId}/history` | any (owner, assigned mechanic) | | 200 |
-| GET | `/sos/{sosId}/nearby-mechanics` | any (same as `GET /sos/{sosId}`) | | 200 |
+| GET | `/sos/{sosId}/nearby-mechanics` | customer (SOS owner only; anyone else 404) | | 200 `MechanicSummaryResponse[]`, positions snapped to ~1 km |
 | PATCH | `/sos/{sosId}/status` | mechanic (assigned) | `?toStatus=ON_THE_WAY\|IN_PROGRESS` | 200 |
 | POST | `/sos/{sosId}/arrival` | mechanic (assigned) | | 201 |
 | PATCH | `/sos/{sosId}/customer-no-show` | mechanic (assigned) | | 200 |
@@ -43,8 +43,8 @@ Base path `/api/v1`.
 ### Mechanics
 | Method | Path | Who | Params / body | Success |
 |---|---|---|---|---|
-| GET | `/mechanics/{mechanicId}` | any | | 200 |
-| GET | `/mechanics/available` | customer | `?lat=&lng=&problemType=&radiusKm=` (radius 5–20, default 15) | 200 |
+| GET | `/mechanics/{mechanicId}` | any | | 200 `MechanicSummaryResponse`, no contact fields, no position |
+| GET | `/mechanics/available` | customer | `?lat=&lng=&problemType=&radiusKm=` (radius 5–20, default 15) | 200 `MechanicSummaryResponse[]`, positions snapped to ~1 km |
 | GET | `/mechanics/{mechanicId}/skills` | any | | 200 |
 | PATCH | `/mechanics/{mechanicId}/location` | mechanic (own id only) | `?lat=&lng=&sosId=` (`sosId` optional) | 204 |
 | GET | `/mechanics/{mechanicId}/location` | any (the mechanic, or the customer on an active job with them) | | 200 |

@@ -50,12 +50,34 @@ class StompSubscriptionInterceptorTest {
   }
 
   @Test
-  void participantMaySubscribeToSosTopic() {
-    when(sosService.canView(sosId, callerId)).thenReturn(true);
+  void ownerMaySubscribeToLocation() {
+    when(sosService.isOwner(sosId, callerId)).thenReturn(true);
 
     Message<byte[]> message = subscribe("/topic/sos/" + sosId + "/location", principal(callerId));
 
     assertThat(interceptor.preSend(message, null)).isSameAs(message);
+  }
+
+  // canView passes bidders and eligible mechanics; the live position is for the owner alone.
+  @Test
+  void bidderWhoCanViewTheSos_mayNotSubscribeToLocation() {
+    when(sosService.canView(sosId, callerId)).thenReturn(true);
+    when(sosService.isOwner(sosId, callerId)).thenReturn(false);
+
+    Message<byte[]> message = subscribe("/topic/sos/" + sosId + "/location", principal(callerId));
+
+    assertThatThrownBy(() -> interceptor.preSend(message, null))
+        .isInstanceOf(AccessDeniedException.class);
+  }
+
+  @Test
+  void mediaTopic_stillAllowsAnyoneWhoCanView() {
+    when(sosService.canView(sosId, callerId)).thenReturn(true);
+
+    Message<byte[]> message = subscribe("/topic/sos/" + sosId + "/media", principal(callerId));
+
+    assertThat(interceptor.preSend(message, null)).isSameAs(message);
+    verify(sosService, never()).isOwner(any(), any());
   }
 
   /**
@@ -81,7 +103,7 @@ class StompSubscriptionInterceptorTest {
 
   @Test
   void outsiderMayNotSubscribeToSosTopic() {
-    when(sosService.canView(sosId, callerId)).thenReturn(false);
+    when(sosService.isOwner(sosId, callerId)).thenReturn(false);
 
     Message<byte[]> message = subscribe("/topic/sos/" + sosId + "/location", principal(callerId));
 
@@ -123,6 +145,7 @@ class StompSubscriptionInterceptorTest {
     assertThatThrownBy(() -> interceptor.preSend(message, null))
         .isInstanceOf(AccessDeniedException.class);
     verify(sosService, never()).canView(any(), any());
+    verify(sosService, never()).isOwner(any(), any());
   }
 
   private Message<byte[]> sendTo(String destination) {

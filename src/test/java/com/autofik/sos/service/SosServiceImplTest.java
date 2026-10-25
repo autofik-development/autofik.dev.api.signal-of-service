@@ -18,9 +18,11 @@ import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import com.autofik.sos.dto.response.UserResponse;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.MechanicMapper;
@@ -93,6 +95,7 @@ class SosServiceImplTest {
   private final UUID historyId = UUID.randomUUID();
   private final String serviceGroupId = "sg_01ABC123";
   private final String resolvedKey = "flat_tire";
+  private static final List<BidStatus> LIVE_BIDS = List.of(BidStatus.PENDING, BidStatus.ACCEPTED);
 
   private User user;
   private Vehicle vehicle;
@@ -1258,7 +1261,8 @@ class SosServiceImplTest {
     UUID assignedMechanic = UUID.randomUUID();
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
     when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, assignedMechanic))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, assignedMechanic, LIVE_BIDS))
         .thenReturn(true);
 
     assertThat(sosService.getById(sosId, assignedMechanic).pendingCompletionHistoryId()).isNull();
@@ -1349,7 +1353,8 @@ class SosServiceImplTest {
   void getById_foreignSos_hidesItAsNotFound() {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     UUID stranger = UUID.randomUUID();
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, stranger))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, stranger, LIVE_BIDS))
         .thenReturn(false);
 
     assertThatThrownBy(() -> sosService.getById(sosId, stranger))
@@ -1362,12 +1367,10 @@ class SosServiceImplTest {
     pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
 
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
-        .thenReturn(ids(mechanic));
-    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble()))
-        .thenReturn(ids(mechanic));
+    mechanicEligibility(true);
     when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
     SosRequestResponse result = sosService.getById(sosId, mechanicId);
     assertThat(result).isEqualTo(sosResponse);
@@ -1379,14 +1382,28 @@ class SosServiceImplTest {
     pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
 
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
-    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
-        .thenReturn(ids(mechanic));
-    when(mechanicRepository.filterByRadius(anyList(), anyDouble(), anyDouble())).thenReturn(ids());
+    mechanicEligibility(false);
 
     assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
         .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  /**
+   * What the one-mechanic eligibility query answers; its SQL is checked in MechanicRepositoryTest.
+   */
+  private void mechanicEligibility(boolean eligible) {
+    when(mechanicRepository.isEligible(
+            eq(mechanicId),
+            anyList(),
+            eq(resolvedKey),
+            any(),
+            anyDouble(),
+            anyDouble(),
+            anyDouble()))
+        .thenReturn(eligible);
   }
 
   @Test
@@ -1395,12 +1412,124 @@ class SosServiceImplTest {
     pendingSos.setBiddingExpiresAt(LocalDateTime.now().minusMinutes(1));
 
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, mechanicId))
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
         .thenReturn(false);
     assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
         .isInstanceOf(EntityNotFoundException.class);
 
     verifyNoInteractions(mechanicRepository);
+  }
+
+  // A rejected or withdrawn bid is not a live one, and accept leaves biddingExpiresAt in the
+  // future:
+  // neither may keep the ticket (and the winner on it) open to a mechanic who lost.
+  @Test
+  void getById_afterAccept_aMechanicWithoutALiveBid_cannotView_evenInsideTheWindow() {
+    pendingSos.setStatus(SosStatus.ACCEPTED);
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    pendingSos.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
+        .thenReturn(false);
+
+    assertThatThrownBy(() -> sosService.getById(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+    verifyNoInteractions(mechanicRepository);
+  }
+
+  @Test
+  void getById_pendingBidder_seesTheJob_butNotTheCustomer() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
+        .thenReturn(true);
+    when(sosMapper.toResponse(pendingSos)).thenReturn(responseWithCustomer());
+
+    SosRequestResponse result = sosService.getById(sosId, mechanicId);
+
+    assertThat(result.user()).isNull();
+    assertThat(result.mechanic()).isNull();
+    assertThat(result.sosId()).isEqualTo(sosId);
+    assertThat(result.latitude()).isEqualTo(13.7);
+  }
+
+  @Test
+  void getById_assignedMechanic_keepsTheCustomer() {
+    pendingSos.setStatus(SosStatus.ACCEPTED);
+    BidSos acceptedBid =
+        BidSos.builder()
+            .bidId(UUID.randomUUID())
+            .status(BidStatus.ACCEPTED)
+            .sosRequest(pendingSos)
+            .mechanic(mechanic)
+            .build();
+    MechanicResponse assigned =
+        new MechanicResponse(
+            mechanicId, "Bob", "081", null, null, null, null, null, null, null, true, null, null);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+            sosId, mechanicId, LIVE_BIDS))
+        .thenReturn(true);
+    when(sosMapper.toResponse(pendingSos)).thenReturn(responseWithCustomer());
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(acceptedBid));
+    when(mechanicMapper.toResponse(mechanic)).thenReturn(assigned);
+
+    SosRequestResponse result = sosService.getById(sosId, mechanicId);
+
+    assertThat(result.user().phone()).isEqualTo("012");
+    assertThat(result.mechanic()).isEqualTo(assigned);
+  }
+
+  private SosRequestResponse responseWithCustomer() {
+    return new SosRequestResponse(
+        sosId,
+        resolvedKey,
+        null,
+        null,
+        SosStatus.PENDING,
+        13.7,
+        100.5,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        0,
+        new UserResponse(userId, "Alice", "012", null, null),
+        null,
+        null,
+        null,
+        null);
+  }
+
+  // ── isOwner ──────────────────────────────────────────────────────────────
+
+  @Test
+  void isOwner_trueForTheDriverWhoRaisedIt() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+
+    assertThat(sosService.isOwner(sosId, userId)).isTrue();
+  }
+
+  // Unlike canView, a bid does not count: isOwner never even asks.
+  @Test
+  void isOwner_falseForAMechanicWhoBid() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+
+    assertThat(sosService.isOwner(sosId, mechanicId)).isFalse();
+    verifyNoInteractions(bidSosRepository);
+  }
+
+  @Test
+  void isOwner_falseForAnUnknownSos() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+
+    assertThat(sosService.isOwner(sosId, userId)).isFalse();
   }
 
   // ── getNearbyMechanics ───────────────────────────────────────────────────
@@ -1409,32 +1538,20 @@ class SosServiceImplTest {
   void getNearbyMechanics_owner_usesTicketsCurrentRadiusAndReturnsMappedList() {
     pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
     pendingSos.setBroadcastRadiusKm(25); // already auto-expanded past the default 15
-    MechanicResponse mechanicResponse =
-        new MechanicResponse(
-            mechanicId,
-            "Bob",
-            "081",
-            "bob@fix.com",
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            true,
-            null,
-            null);
+    MechanicSummaryResponse summary =
+        new MechanicSummaryResponse(mechanicId, "Bob", null, null, null, true, 11.56, 104.93);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(25_000.0)))
         .thenReturn(ids(mechanic));
-    when(mechanicMapper.toResponse(mechanic)).thenReturn(mechanicResponse);
+    when(mechanicMapper.toSummary(mechanic)).thenReturn(summary);
 
-    List<MechanicResponse> result = sosService.getNearbyMechanics(sosId, userId);
+    List<MechanicSummaryResponse> result = sosService.getNearbyMechanics(sosId, userId);
 
-    assertThat(result).containsExactly(mechanicResponse);
+    assertThat(result).containsExactly(summary);
+    verify(mechanicMapper, never()).toResponse(any());
   }
 
   @Test
@@ -1447,24 +1564,11 @@ class SosServiceImplTest {
     when(mechanicRepository.filterByRadiusAndBroadcast(
             anyList(), anyDouble(), anyDouble(), eq(15_000.0))) // sos.broadcast.default-km
         .thenReturn(ids(mechanic));
-    when(mechanicMapper.toResponse(mechanic))
+    when(mechanicMapper.toSummary(mechanic))
         .thenReturn(
-            new MechanicResponse(
-                mechanicId,
-                "Bob",
-                "081",
-                "bob@fix.com",
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                true,
-                null,
-                null));
+            new MechanicSummaryResponse(mechanicId, "Bob", null, null, null, true, null, null));
 
-    List<MechanicResponse> result = sosService.getNearbyMechanics(sosId, userId);
+    List<MechanicSummaryResponse> result = sosService.getNearbyMechanics(sosId, userId);
 
     assertThat(result).hasSize(1);
   }
@@ -1473,12 +1577,27 @@ class SosServiceImplTest {
   void getNearbyMechanics_foreignCaller_throwsEntityNotFoundException() {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     UUID stranger = UUID.randomUUID();
-    when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicId(sosId, stranger))
-        .thenReturn(false);
 
     assertThatThrownBy(() -> sosService.getNearbyMechanics(sosId, stranger))
         .isInstanceOf(EntityNotFoundException.class);
     verifyNoInteractions(mechanicMapper);
+  }
+
+  // A mechanic who bid can read the ticket, but the list is of their competitors.
+  @Test
+  void getNearbyMechanics_mechanicWhoBidOnIt_throwsEntityNotFoundException() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    lenient()
+        .when(
+            bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
+                sosId, mechanicId, LIVE_BIDS))
+        .thenReturn(true);
+
+    assertThatThrownBy(() -> sosService.getNearbyMechanics(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+    verifyNoInteractions(mechanicMapper);
+    verify(mechanicRepository, never()).findByH3CellsAndSkillTag(anyList(), any(), any());
   }
 
   // ── proposeStatusChange ───────────────────────────────────────────────────
@@ -2908,10 +3027,7 @@ class SosServiceImplTest {
         .thenReturn(List.of(second, sosId)); // newest first
     when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a, b));
     // Both pass the real rule: the mechanic is in the H3 ring and inside the radius.
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
-        .thenReturn(List.of(mechanicId));
-    when(mechanicRepository.filterByRadius(any(), anyDouble(), anyDouble()))
-        .thenReturn(List.of(mechanicId));
+    mechanicEligibility(true);
     when(sosMediaServiceBean.photoUrls(any())).thenReturn(List.of("https://x/p.jpg"));
 
     List<SosNotificationEvent> offers = sosService.openOffersFor(mechanicId);
@@ -2931,8 +3047,8 @@ class SosServiceImplTest {
     when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
         .thenReturn(List.of(sosId));
     when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a));
-    // Not in the mechanic's reach by the H3 + skill rule (busy, stale, or the ring misses them).
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any())).thenReturn(List.of());
+    // Not in the mechanic's reach by the real rule (busy, stale, or the ring misses them).
+    mechanicEligibility(false);
 
     assertThat(sosService.openOffersFor(mechanicId)).isEmpty();
   }
@@ -2944,10 +3060,7 @@ class SosServiceImplTest {
     when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
         .thenReturn(List.of(sosId));
     when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a));
-    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
-        .thenReturn(List.of(mechanicId));
-    when(mechanicRepository.filterByRadius(any(), anyDouble(), anyDouble()))
-        .thenReturn(List.of(mechanicId));
+    mechanicEligibility(true);
     when(redisTemplate.opsForHash()).thenReturn(hashOps);
     when(hashOps.entries(anyString()))
         .thenReturn(

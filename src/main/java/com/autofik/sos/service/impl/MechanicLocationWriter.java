@@ -1,10 +1,7 @@
 package com.autofik.sos.service.impl;
 
-import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
-import com.autofik.sos.util.Geo;
-import com.autofik.sos.util.GeoDistance;
 import com.uber.h3core.H3Core;
 import jakarta.persistence.EntityNotFoundException;
 import java.io.IOException;
@@ -13,19 +10,17 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.locationtech.jts.geom.Coordinate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The transactional half of a mechanic location ping.
+ * The database half of a mechanic location ping.
  *
  * <p>Kept in its own bean so the broadcast half — a Google call, a Redis publish and a Kafka
- * fallback — runs with no Postgres connection checked out. Calling this from within
- * MechanicServiceImpl would not work: self-invocation bypasses the proxy, so the boundary has to
- * sit on a different bean to take effect.
+ * fallback — runs with no Postgres connection checked out. Not transactional itself: a ping inside
+ * the throttle window touches no table, and the one write is a single statement that carries its
+ * own transaction (MechanicRepository#updateLocation).
  */
 @Component
 @RequiredArgsConstructor
@@ -55,9 +50,6 @@ public class MechanicLocationWriter {
   @Value("${sos.location.moved-threshold-meters:20}")
   private int movedThresholdMeters;
 
-  @Value("${sos.geo.earth-radius-m:6371000}")
-  private double earthRadiusM;
-
   private final MechanicRepository mechanicRepository;
   private final BidSosRepository bidSosRepository;
   private final StringRedisTemplate redisTemplate;
@@ -71,7 +63,6 @@ public class MechanicLocationWriter {
    *     positions or trigger billed route lookups on someone else's ticket
    * @return the SOS to broadcast on, or null when the mechanic has no active job
    */
-  @Transactional
   public UUID persistAndResolveSos(UUID mechanicId, double lat, double lng, UUID sosId) {
     boolean persisted = writeLocation(mechanicId, lat, lng);
 
@@ -95,13 +86,14 @@ public class MechanicLocationWriter {
   // Returns true when this ping actually wrote to Postgres, letting callers hang other
   // per-interval work off the same throttle.
   private boolean writeLocation(UUID mechanicId, double lat, double lng) {
+    String key = PG_SYNC_KEY_PREFIX + mechanicId;
+    boolean claimed = false;
     boolean shouldPersist;
     try {
-      Boolean throttle =
-          redisTemplate
-              .opsForValue()
-              .setIfAbsent(PG_SYNC_KEY_PREFIX + mechanicId, "1", Duration.ofSeconds(pgSyncSeconds));
-      shouldPersist = Boolean.TRUE.equals(throttle);
+      claimed =
+          Boolean.TRUE.equals(
+              redisTemplate.opsForValue().setIfAbsent(key, "1", Duration.ofSeconds(pgSyncSeconds)));
+      shouldPersist = claimed;
     } catch (Exception e) {
       log.warn(
           "Redis unavailable for mechanic {}, writing to Postgres on every ping: {}",
@@ -110,27 +102,31 @@ public class MechanicLocationWriter {
       shouldPersist = true;
     }
 
-    if (shouldPersist) {
-      Mechanic mechanic =
-          mechanicRepository
-              .findById(mechanicId)
-              .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
-      org.locationtech.jts.geom.Point previous = mechanic.getCurrentLocation();
-      // ponytail: compares ping to ping, so GPS jitter can look like movement (the mechanic is not
-      // released) and a crawl under the threshold per ping can look parked. Compare against an
-      // anchor point instead if that turns out to matter.
-      if (previous == null
-          || GeoDistance.haversineMeters(previous.getY(), previous.getX(), lat, lng, earthRadiusM)
-              >= movedThresholdMeters) {
-        mechanic.setLocationMovedAt(LocalDateTime.now());
-      }
-      mechanic.setCurrentLocation(Geo.WGS84.createPoint(new Coordinate(lng, lat)));
-      mechanic.setCurrentH3Index(H3.geoToH3Address(lat, lng, h3Resolution));
-      mechanic.setLocationUpdatedAt(LocalDateTime.now());
-      mechanicRepository.save(mechanic);
-    } else if (!mechanicRepository.existsById(mechanicId)) {
+    // Inside the window the last persisted ping stands. Only a ping that was persisted can have
+    // claimed the key, so the mechanic existed a moment ago and needs no second look.
+    if (!shouldPersist) return false;
+
+    int updated =
+        mechanicRepository.updateLocation(
+            mechanicId,
+            lat,
+            lng,
+            H3.geoToH3Address(lat, lng, h3Resolution),
+            movedThresholdMeters,
+            LocalDateTime.now());
+    if (updated == 0) {
+      // An unknown mechanic must not be throttled into a 204: the next ping tries again.
+      if (claimed) releaseThrottle(key);
       throw new EntityNotFoundException("Mechanic not found: " + mechanicId);
     }
-    return shouldPersist;
+    return true;
+  }
+
+  private void releaseThrottle(String key) {
+    try {
+      redisTemplate.delete(key);
+    } catch (Exception e) {
+      log.warn("Could not release {}: {}", key, e.getMessage());
+    }
   }
 }

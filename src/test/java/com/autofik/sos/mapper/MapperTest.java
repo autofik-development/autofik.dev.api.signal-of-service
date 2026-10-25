@@ -18,6 +18,7 @@ import com.autofik.sos.domain.enums.MediaType;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.response.BidSosResponse;
 import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
 import java.math.BigDecimal;
@@ -91,6 +92,34 @@ class MapperTest {
     assertThat(r.longitude()).isEqualTo(LNG);
     assertThat(r.avgRate()).isEqualByComparingTo("4.50");
     assertThat(r.rateCount()).isEqualTo(12);
+  }
+
+  // 11.556374 / 104.928207 snap to the 0.01° grid; a swapped or unsnapped point fails here.
+  @Test
+  void mechanicSummary_snapsThePositionAndCarriesTheRatingThrough() {
+    MechanicSummaryResponse r = mechanicMapper.toSummary(mechanic());
+
+    assertThat(r.latitude()).isEqualTo(11.56);
+    assertThat(r.longitude()).isEqualTo(104.93);
+    assertThat(r.avgRate()).isEqualByComparingTo("4.50");
+  }
+
+  @Test
+  void mechanicSummaryWithoutPosition_hasNoPosition() {
+    MechanicSummaryResponse r = mechanicMapper.toSummaryWithoutPosition(mechanic());
+
+    assertThat(r.latitude()).isNull();
+    assertThat(r.longitude()).isNull();
+    assertThat(r.fullName()).isEqualTo(mechanic().getFullName());
+  }
+
+  // The list must use the snapped mapping, never the position-less one or the full response.
+  @Test
+  void mechanicSummaryList_usesTheSnappedMapping() {
+    assertThat(mechanicMapper.toSummaryList(List.of(mechanic())))
+        .singleElement()
+        .extracting(MechanicSummaryResponse::latitude)
+        .isEqualTo(11.56);
   }
 
   @Test

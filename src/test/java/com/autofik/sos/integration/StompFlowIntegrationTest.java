@@ -85,6 +85,39 @@ class StompFlowIntegrationTest extends FlowTestSupport {
     assertThat(intruder.isConnected()).as("server closes the offending session").isFalse();
   }
 
+  // A bidder can read the ticket and its media, but not the assigned mechanic's live position: the
+  // subscription would outlive their bid, and the broker never revokes it.
+  @Test
+  void aMechanicWhoBid_cannotSubscribeToItsLocation_butCanSubscribeToItsMedia() throws Exception {
+    Driver owner = newDriver();
+    UUID sosId = createSosOk(owner);
+    Mechanic bidder = skilledMechanic(11.55, 104.92, "TOW");
+    placeBidOk(bidder, sosId);
+
+    BlockingQueue<String> mediaErrors = new LinkedBlockingQueue<>();
+    StompSession viewer =
+        connectCapturingErrors(
+            "mechanic-context", mechanicContext(bidder.getMechanicId()), mediaErrors);
+    viewer.subscribe("/topic/sos/" + sosId + "/media", new NoOpHandler());
+    assertThat(mediaErrors.poll(2, java.util.concurrent.TimeUnit.SECONDS))
+        .as("media stays open to a bidder")
+        .isNull();
+    assertThat(viewer.isConnected()).isTrue();
+
+    BlockingQueue<String> errors = new LinkedBlockingQueue<>();
+    StompSession watcher =
+        connectCapturingErrors("mechanic-context", mechanicContext(bidder.getMechanicId()), errors);
+    watcher.subscribe("/topic/sos/" + sosId + "/location", new NoOpHandler());
+
+    assertThat(errors.poll(WAIT.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS))
+        .as("server reaction to a bidder's location subscription")
+        .isNotNull();
+    long deadline = System.currentTimeMillis() + 5_000;
+    while (watcher.isConnected() && System.currentTimeMillis() < deadline) Thread.sleep(50);
+    assertThat(watcher.isConnected()).as("server closes the offending session").isFalse();
+    viewer.disconnect();
+  }
+
   @Test
   void unsubscribe_stopsDelivery() throws Exception {
     Driver d = newDriver();

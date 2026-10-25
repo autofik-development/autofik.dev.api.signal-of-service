@@ -4,7 +4,7 @@ import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.request.ApproveStatusChangeRequest;
 import com.autofik.sos.dto.request.CreateSosRequest;
 import com.autofik.sos.dto.request.ProposeStatusChangeRequest;
-import com.autofik.sos.dto.response.MechanicResponse;
+import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
@@ -41,10 +41,16 @@ public interface SosService {
 
   /**
    * May this identity see this SOS? True for the driver who raised it and for any mechanic who bid
-   * on it. Shared by the REST reads and by the WebSocket SUBSCRIBE check, which guards the same
-   * data on /topic/sos/{sosId}/**.
+   * on it. Shared by the REST reads and by the WebSocket SUBSCRIBE check for
+   * /topic/sos/{sosId}/media.
    */
   boolean canView(UUID sosId, UUID callerId);
+
+  /**
+   * True when the caller raised this SOS; false for anyone else and for an unknown sosId. Guards
+   * /topic/sos/{sosId}/location, which carries the assigned mechanic's live position.
+   */
+  boolean isOwner(UUID sosId, UUID callerId);
 
   /**
    * Use Case: while waiting for a bid, the customer's screen shows who's actually nearby right now
@@ -53,10 +59,10 @@ public interface SosService {
    * reconstruct those themselves or worry about the radius having grown past whatever they
    * originally picked.
    *
-   * @throws jakarta.persistence.EntityNotFoundException when the caller may not see it, same rule
-   *     as {@link #getById}
+   * @throws jakarta.persistence.EntityNotFoundException when the caller is not the SOS owner — the
+   *     mechanics who can read the ticket are competitors of everyone on this list
    */
-  List<MechanicResponse> getNearbyMechanics(UUID sosId, UUID callerId);
+  List<MechanicSummaryResponse> getNearbyMechanics(UUID sosId, UUID callerId);
 
   /**
    * Use case: View history sos

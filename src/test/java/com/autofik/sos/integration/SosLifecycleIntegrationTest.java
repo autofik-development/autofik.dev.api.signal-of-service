@@ -667,7 +667,14 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
                 .GET());
     assertThat(r.statusCode()).as(r.body()).isEqualTo(200);
     List<String> ids = new ArrayList<>();
-    for (JsonNode n : parse(r.body())) ids.add(n.get("mechanicId").asString());
+    for (JsonNode n : parse(r.body())) {
+      ids.add(n.get("mechanicId").asString());
+      // A competitor list: no way to reach anyone on it.
+      assertThat(
+              n.has("phoneNumber") || n.has("email") || n.has("address") || n.has("referralCode"))
+          .as(n.toString())
+          .isFalse();
+    }
 
     assertThat(ids)
         .contains(near.getMechanicId().toString(), mid.getMechanicId().toString())
@@ -687,6 +694,22 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
         send(
             req("/api/v1/sos/" + sosId + "/nearby-mechanics")
                 .header("user-context", userContext(stranger.user().getUserId()))
+                .GET());
+
+    assertThat(r.statusCode()).as(r.body()).isEqualTo(404);
+  }
+
+  @Test
+  void nearbyMechanics_asAMechanicWhoBidOnIt_is404() throws Exception {
+    Driver d = newDriver();
+    Mechanic bidder = skilledMechanic(11.5600, 104.9300, PROBLEM_TYPE);
+    UUID sosId = createSosOk(d);
+    placeBidOk(bidder, sosId);
+
+    HttpResponse<String> r =
+        send(
+            req("/api/v1/sos/" + sosId + "/nearby-mechanics")
+                .header("mechanic-context", mechanicContextHeader(bidder))
                 .GET());
 
     assertThat(r.statusCode()).as(r.body()).isEqualTo(404);
