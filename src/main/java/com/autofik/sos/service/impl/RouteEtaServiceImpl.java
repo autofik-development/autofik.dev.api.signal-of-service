@@ -58,6 +58,7 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   private final SosRequestRepository sosRequestRepository;
   private final GoogleMapsService googleMapsService;
   private final StringRedisTemplate redisTemplate;
+  private final RedisHealthGate redisGate;
   private final ObjectMapper objectMapper;
 
   // L2 fallback for both the gate and the snapshot, used only while Redis is unreachable.
@@ -107,16 +108,19 @@ public class RouteEtaServiceImpl implements RouteEtaService {
     if (sosId == null) return;
     localGate.invalidate(sosId);
     localSnapshots.invalidate(sosId);
+    if (redisGate.isDown()) return;
     try {
       redisTemplate.delete(ETA_CACHE_PREFIX + sosId);
       redisTemplate.delete(ETA_LOCK_PREFIX + sosId);
     } catch (Exception e) {
+      redisGate.markDown();
       log.warn("Failed clearing ETA cache for SOS {}: {}", sosId, e.getMessage());
     }
   }
 
   // True when this ping is the one that should pay for a Google call.
   private boolean shouldRefresh(UUID sosId) {
+    if (redisGate.isDown()) return claimLocally(sosId);
     try {
       Boolean acquired =
           redisTemplate
@@ -125,14 +129,19 @@ public class RouteEtaServiceImpl implements RouteEtaService {
                   ETA_LOCK_PREFIX + sosId, "1", Duration.ofSeconds(refreshIntervalSeconds));
       return Boolean.TRUE.equals(acquired);
     } catch (Exception e) {
+      redisGate.markDown();
       log.warn(
           "Redis unavailable for ETA throttle on SOS {}, using in-process gate: {}",
           sosId,
           e.getMessage());
-      if (localGate.getIfPresent(sosId) != null) return false;
-      localGate.put(sosId, Boolean.TRUE);
-      return true;
+      return claimLocally(sosId);
     }
+  }
+
+  private boolean claimLocally(UUID sosId) {
+    if (localGate.getIfPresent(sosId) != null) return false;
+    localGate.put(sosId, Boolean.TRUE);
+    return true;
   }
 
   private EtaInfo refresh(UUID sosId, double lat, double lng) {
@@ -199,10 +208,12 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   // --- Snapshot storage: Redis primary, in-process fallback, never throws to the caller ---
 
   private EtaSnapshot readSnapshot(UUID sosId) {
+    if (redisGate.isDown()) return localSnapshots.getIfPresent(sosId);
     try {
       String raw = redisTemplate.opsForValue().get(ETA_CACHE_PREFIX + sosId);
       return raw == null ? null : objectMapper.readValue(raw, EtaSnapshot.class);
     } catch (Exception e) {
+      redisGate.markDown();
       log.warn(
           "Failed reading ETA snapshot for SOS {}, using in-process copy: {}",
           sosId,
@@ -213,6 +224,7 @@ public class RouteEtaServiceImpl implements RouteEtaService {
 
   private void writeSnapshot(UUID sosId, EtaSnapshot snapshot) {
     localSnapshots.put(sosId, snapshot);
+    if (redisGate.isDown()) return;
     try {
       redisTemplate
           .opsForValue()
@@ -221,6 +233,7 @@ public class RouteEtaServiceImpl implements RouteEtaService {
               objectMapper.writeValueAsString(snapshot),
               Duration.ofMinutes(cacheTtlMinutes));
     } catch (Exception e) {
+      redisGate.markDown();
       log.warn("Failed caching ETA snapshot for SOS {}: {}", sosId, e.getMessage());
     }
   }

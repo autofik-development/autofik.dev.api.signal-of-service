@@ -101,6 +101,39 @@ class DependencyFailureIntegrationTest extends FlowTestSupport {
     mechanic.disconnect();
   }
 
+  // The first ping after Redis stalls pays the command timeout (1 s per call) and trips the gate;
+  // pings after that must not wait on Redis again.
+  @Test
+  void redisPaused_afterTheFirstFailure_pingsNoLongerWaitOnRedis() throws Exception {
+    Driver d = newDriver();
+    Mechanic m = skilledMechanic(11.55, 104.92, "TOW");
+    UUID sosId = createSosOk(d);
+    assignMechanic(d, m, sosId);
+    StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
+    StompSession mechanic =
+        stomp.connect(port, "mechanic-context", mechanicContext(m.getMechanicId()));
+    Tap location = subscribe(customer, "/topic/sos/" + sosId + "/location");
+    Thread.sleep(500);
+
+    pause(REDIS);
+    try {
+      sendPing(mechanic, ping(11.5704, 104.9404, sosId));
+      assertThat(location.next(Duration.ofSeconds(60))).as("first ping trips the gate").isNotNull();
+
+      long start = System.nanoTime();
+      sendPing(mechanic, ping(11.5705, 104.9405, sosId));
+      String frame = location.next(Duration.ofSeconds(30));
+      long ms = (System.nanoTime() - start) / 1_000_000;
+      finding("Redis paused, gate open: ping-to-broadcast took " + ms + " ms");
+      assertThat(frame).as("ping while the gate is open").isNotNull();
+      assertThat(ms).as("no Redis command timeout on this ping").isLessThan(800);
+    } finally {
+      unpause(REDIS);
+    }
+    customer.disconnect();
+    mechanic.disconnect();
+  }
+
   @Test
   void redisPaused_createSos_isBoundedInTime_andRecoversAfterwards() throws Exception {
     Driver d = newDriver();

@@ -78,6 +78,7 @@ public class MechanicServiceImpl implements MechanicService {
   private final SosEventProducer sosEventProducer;
   private final RouteEtaService routeEtaService;
   private final StringRedisTemplate redisTemplate;
+  private final RedisHealthGate redisGate;
   private final ObjectMapper objectMapper;
 
   @Override
@@ -215,9 +216,14 @@ public class MechanicServiceImpl implements MechanicService {
             eta == null ? null : eta.remainingDurationS(),
             eta == null ? null : eta.remainingDistanceText(),
             eta == null ? null : eta.remainingDurationText());
+    if (redisGate.isDown()) {
+      sosEventProducer.publishMechanicLocation(event);
+      return;
+    }
     try {
       redisTemplate.convertAndSend("mechanic:loc:" + sosId, objectMapper.writeValueAsString(event));
     } catch (Exception e) {
+      redisGate.markDown();
       log.warn("Redis pub/sub failed for SOS {}, falling back to Kafka: {}", sosId, e.getMessage());
       sosEventProducer.publishMechanicLocation(event);
     }

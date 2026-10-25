@@ -34,6 +34,7 @@ import org.locationtech.jts.geom.PrecisionModel;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
@@ -56,6 +57,11 @@ class MechanicServiceImplTest {
   @Mock SosEventProducer sosEventProducer;
   @Mock RouteEtaService routeEtaService;
   @Mock StringRedisTemplate redisTemplate;
+
+  @Spy
+  com.autofik.sos.service.impl.RedisHealthGate redisGate =
+      new com.autofik.sos.service.impl.RedisHealthGate();
+
   @Mock ObjectMapper objectMapper;
 
   @InjectMocks MechanicServiceImpl mechanicService;
