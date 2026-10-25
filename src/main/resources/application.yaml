@@ -33,6 +33,10 @@ spring:
       max-file-size: ${SOS_MEDIA_MAX_UPLOAD_MB:10}MB
       max-request-size: ${SOS_MEDIA_MAX_UPLOAD_MB:10}MB
   data:
+    web:
+      pageable:
+        # Spring's default cap is 2000 rows per page, far above what any screen shows.
+        max-page-size: 100
     redis:
       host: ${REDIS_HOST}
       port: ${REDIS_PORT}

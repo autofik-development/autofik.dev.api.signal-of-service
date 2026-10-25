@@ -9,7 +9,7 @@ import java.time.OffsetDateTime;
  *
  * @param latitude current latitude
  * @param longitude current longitude
- * @param asOf time this position was last known (Redis read time, or Postgres snapshot time when
- *     falling back); Cambodian local time (+07:00), serialized as ISO-8601
+ * @param asOf time of the stored fix (not of this read); Cambodian local time (+07:00), serialized
+ *     as ISO-8601. Null when the stored position has no timestamp
  */
 public record MechanicLocationResponse(double latitude, double longitude, OffsetDateTime asOf) {}

@@ -576,7 +576,12 @@ public class BidServiceImpl implements BidService {
         bidSosRepository.findBySosRequestSosIdAndStatus(sosId, BidStatus.PENDING);
 
     // Loop through and flip them all to REJECTED status states
-    pendingBids.forEach(b -> b.setStatus(BidStatus.REJECTED));
+    LocalDateTime now = LocalDateTime.now();
+    pendingBids.forEach(
+        b -> {
+          b.setStatus(BidStatus.REJECTED);
+          b.setRespondedAt(now);
+        });
 
     // Update them collectively via batch saving
     bidSosRepository.saveAll(pendingBids);
