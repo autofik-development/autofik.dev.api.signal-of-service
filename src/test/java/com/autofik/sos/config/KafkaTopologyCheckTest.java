@@ -39,4 +39,14 @@ class KafkaTopologyCheckTest {
   void healthyCluster_isQuiet() {
     assertThat(KafkaTopologyCheck.problems(3, 3, Map.of("sos.created", 3, "sos.dlq", 3))).isEmpty();
   }
+
+  /** A cluster that cannot be reached is logged, never thrown: the check must not stop the boot. */
+  @Test
+  void check_withAnUnusableAdminConfiguration_doesNotThrow() {
+    org.springframework.kafka.core.KafkaAdmin admin =
+        org.mockito.Mockito.mock(org.springframework.kafka.core.KafkaAdmin.class);
+    org.mockito.Mockito.when(admin.getConfigurationProperties()).thenReturn(Map.of());
+
+    new KafkaTopologyCheck(admin).check();
+  }
 }
