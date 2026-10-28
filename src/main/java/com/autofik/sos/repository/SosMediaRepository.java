@@ -14,4 +14,6 @@ import org.springframework.stereotype.Repository;
 public interface SosMediaRepository extends JpaRepository<SosMedia, UUID> {
   // list all media files which associated with a specific sos request
   List<SosMedia> findBySosRequestSosId(UUID sosId);
+
+  long countBySosRequestSosId(UUID sosId);
 }

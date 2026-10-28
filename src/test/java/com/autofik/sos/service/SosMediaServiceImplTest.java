@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosMedia;
 import com.autofik.sos.domain.entity.SosRequest;
@@ -33,6 +34,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -46,6 +48,7 @@ class SosMediaServiceImplTest {
   @Mock SosMediaRepository sosMediaRepository;
   @Mock SosService sosService;
   @Mock SosRequestRepository sosRequestRepository;
+  @Mock com.autofik.sos.repository.BidSosRepository bidSosRepository;
   @Mock UserRepository userRepository;
   @Mock MechanicRepository mechanicRepository;
   @Mock SosMediaMapper sosMediaMapper;
@@ -85,6 +88,7 @@ class SosMediaServiceImplTest {
     ReflectionTestUtils.setField(sosMediaService, "presignTtlMinutes", 15);
     ReflectionTestUtils.setField(sosMediaService, "maxSourceDimension", 8000);
     ReflectionTestUtils.setField(sosMediaService, "maxUploadMb", 10L);
+    ReflectionTestUtils.setField(sosMediaService, "maxPerSos", 10);
     ReflectionTestUtils.setField(sosMediaService, "maxImageDimension", 1280);
     ReflectionTestUtils.setField(sosMediaService, "jpegQuality", 0.80);
     // upload() runs its two database phases through the template; run the callback inline.
@@ -98,8 +102,13 @@ class SosMediaServiceImplTest {
     // Participation is covered by SosServiceImplTest; here every caller is a legitimate party.
     lenient().when(sosService.canView(any(), any())).thenReturn(true);
 
-    sosRequest = SosRequest.builder().sosId(sosId).build();
     user = User.builder().userId(userId).name("Alice").build();
+    sosRequest =
+        SosRequest.builder()
+            .sosId(sosId)
+            .user(user)
+            .status(com.autofik.sos.domain.enums.SosStatus.PENDING)
+            .build();
     mechanic =
         Mechanic.builder()
             .mechanicId(mechanicId)
@@ -158,7 +167,8 @@ class SosMediaServiceImplTest {
     assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
         .isInstanceOf(com.autofik.sos.exception.ServiceUnavailableException.class);
 
-    verifyNoInteractions(sosMediaRepository, sosEventProducer);
+    verify(sosMediaRepository, never()).save(any());
+    verifyNoInteractions(sosEventProducer);
   }
 
   @Test
@@ -212,6 +222,7 @@ class SosMediaServiceImplTest {
   @Test
   void upload_mechanicUpload_setsUploadedByMechanic() throws Exception {
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    assignMechanic(mechanicId);
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));
     when(sosMediaMapper.toResponse(any(SosMedia.class)))
@@ -287,7 +298,8 @@ class SosMediaServiceImplTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("does not match declared type");
 
-    verifyNoInteractions(s3Client, sosMediaRepository);
+    verifyNoInteractions(s3Client);
+    verify(sosMediaRepository, never()).save(any());
   }
 
   @Test
@@ -321,5 +333,71 @@ class SosMediaServiceImplTest {
         .hasMessageContaining(sosId.toString());
 
     verifyNoInteractions(sosMediaRepository);
+  }
+
+  private void assignMechanic(UUID assignedId) {
+    Mechanic assigned = Mechanic.builder().mechanicId(assignedId).build();
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(
+            sosId, com.autofik.sos.domain.enums.BidStatus.ACCEPTED))
+        .thenReturn(Optional.of(BidSos.builder().mechanic(assigned).build()));
+  }
+
+  @Test
+  void upload_closedTicket_isConflict_andNothingIsStored() {
+    for (var closed :
+        List.of(
+            com.autofik.sos.domain.enums.SosStatus.COMPLETED,
+            com.autofik.sos.domain.enums.SosStatus.CANCELLED,
+            com.autofik.sos.domain.enums.SosStatus.EXPIRED)) {
+      sosRequest.setStatus(closed);
+      when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+
+      assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+          .as(closed.name())
+          .isInstanceOf(com.autofik.sos.exception.ConflictException.class);
+    }
+    verifyNoInteractions(s3Client);
+  }
+
+  @Test
+  void upload_overThePerTicketCap_isConflict() {
+    ReflectionTestUtils.setField(sosMediaService, "maxPerSos", 10);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    when(sosMediaRepository.countBySosRequestSosId(sosId)).thenReturn(10L);
+
+    assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+        .isInstanceOf(com.autofik.sos.exception.ConflictException.class)
+        .hasMessageContaining("10");
+    verifyNoInteractions(s3Client);
+  }
+
+  @Test
+  void upload_aDriverWhoDidNotRaiseTheTicket_isForbidden() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+
+    assertThatThrownBy(() -> sosMediaService.upload(sosId, file, UUID.randomUUID(), null))
+        .isInstanceOf(AccessDeniedException.class);
+    verifyNoInteractions(s3Client);
+  }
+
+  @Test
+  void upload_aMechanicWhoIsNotTheAssignedOne_isForbidden() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    assignMechanic(UUID.randomUUID()); // someone else holds the accepted bid
+
+    assertThatThrownBy(() -> sosMediaService.upload(sosId, file, null, mechanicId))
+        .isInstanceOf(AccessDeniedException.class);
+    verifyNoInteractions(s3Client);
+  }
+
+  @Test
+  void upload_aMechanicOnATicketWithNoAcceptedBid_isForbidden() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(any(), any()))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosMediaService.upload(sosId, file, null, mechanicId))
+        .isInstanceOf(AccessDeniedException.class);
+    verifyNoInteractions(s3Client);
   }
 }

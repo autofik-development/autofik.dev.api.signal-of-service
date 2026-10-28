@@ -4,12 +4,16 @@ import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosMedia;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
+import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.MediaType;
+import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.response.SosMediaResponse;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.SosMediaMapper;
+import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosMediaRepository;
 import com.autofik.sos.repository.SosRequestRepository;
@@ -87,6 +91,7 @@ public class SosMediaServiceImpl implements SosMediaService {
 
   private final SosMediaRepository sosMediaRepository;
   private final SosRequestRepository sosRequestRepository;
+  private final BidSosRepository bidSosRepository;
   private final SosService sosService; // reuses the one definition of "who may see this SOS"
   private final UserRepository userRepository;
   private final MechanicRepository mechanicRepository;
@@ -106,6 +111,15 @@ public class SosMediaServiceImpl implements SosMediaService {
 
   @Value("${sos.broadcast.max-photos:3}")
   private int maxBroadcastPhotos;
+
+  // Photos kept per ticket. ponytail: counted before the insert, so two uploads at the same moment
+  // can overshoot by one; a lock on the ticket row if that ever matters.
+  @Value("${sos.media.max-per-sos:10}")
+  private int maxPerSos;
+
+  // Tickets that are over: no more photos, whoever asks.
+  private static final java.util.Set<SosStatus> CLOSED_STATUSES =
+      java.util.EnumSet.of(SosStatus.COMPLETED, SosStatus.CANCELLED, SosStatus.EXPIRED);
 
   // Set by Spring; stays NOOP when the class is built by hand (tests), which records nothing.
   @Autowired(required = false)
@@ -208,10 +222,23 @@ public class SosMediaServiceImpl implements SosMediaService {
             .findById(sosId)
             .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
 
-    // Only the driver and the mechanics who bid may attach to a ticket — otherwise anyone
-    // holding a sosId can push images into someone else's incident.
-    if (!sosService.canView(sosId, userId != null ? userId : mechanicId)) {
+    // Only the driver who raised the ticket and the mechanic assigned to it may attach — otherwise
+    // anyone holding a sosId (or a past bidder) can push images into someone else's incident.
+    boolean party =
+        userId != null
+            ? sos.getUser().getUserId().equals(userId)
+            : bidSosRepository
+                .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+                .map(bid -> bid.getMechanic().getMechanicId().equals(mechanicId))
+                .orElse(false);
+    if (!party) {
       throw new AccessDeniedException("You are not part of this SOS request");
+    }
+    if (CLOSED_STATUSES.contains(sos.getStatus())) {
+      throw new ConflictException("This SOS request is closed; photos can no longer be added");
+    }
+    if (sosMediaRepository.countBySosRequestSosId(sosId) >= maxPerSos) {
+      throw new ConflictException("This SOS request already has " + maxPerSos + " photos");
     }
 
     if (userId != null) {
