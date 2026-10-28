@@ -82,10 +82,15 @@ jobs:
           cache: maven
 
       # Testcontainers: Postgres+PostGIS, Redis, Kafka (Docker is on the runner). About 10 minutes.
+      # application.yaml reads spring.profiles.active from SPRING_PROFILES_ACTIVE with no default,
+      # and the repository tests (@DataJpaTest) fail to load their context without it. Locally the
+      # variable comes from .env, which CI does not have.
       - name: Integration tests
         id: it
         continue-on-error: true
         run: ./mvnw -B test -Pintegration -Dtest='!SosApplicationTests'
+        env:
+          SPRING_PROFILES_ACTIVE: test
 
       - name: Read results
         id: results
