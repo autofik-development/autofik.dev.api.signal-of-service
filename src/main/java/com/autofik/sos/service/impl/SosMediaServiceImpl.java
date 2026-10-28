@@ -41,6 +41,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -141,7 +142,7 @@ public class SosMediaServiceImpl implements SosMediaService {
     // Phase 1: Basic validation filters
     validateContentType(file.getContentType());
     if (file.getSize() > maxUploadMb * 1024 * 1024) {
-      throw new IllegalArgumentException("File exceeds the " + maxUploadMb + " MB limit");
+      throw new MaxUploadSizeExceededException(maxUploadMb * 1024 * 1024);
     }
 
     // Phase 2: Domain Entity Verification (short transaction)

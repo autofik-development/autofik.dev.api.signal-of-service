@@ -138,6 +138,38 @@ class ExceptionMappingTest {
     assertThat(missing.message()).contains("lat");
   }
 
+  @Test
+  void uploadOverTheLimit_is413_withTheLimitInMb() {
+    ErrorResponse r =
+        handler.handleUploadTooLarge(
+            new org.springframework.web.multipart.MaxUploadSizeExceededException(
+                10L * 1024 * 1024));
+
+    assertThat(r.status()).isEqualTo(413);
+    assertThat(r.message()).isEqualTo("File exceeds the 10 MB limit");
+  }
+
+  @Test
+  void uploadOverAnUnknownLimit_is413_withoutANumber() {
+    ErrorResponse r =
+        handler.handleUploadTooLarge(
+            new org.springframework.web.multipart.MaxUploadSizeExceededException(-1));
+
+    assertThat(r.status()).isEqualTo(413);
+    assertThat(r.message()).isEqualTo("File is too large");
+  }
+
+  @Test
+  void multipartWithoutTheFilePart_is400_namingThePart() {
+    ErrorResponse r =
+        handler.handleMissingPart(
+            new org.springframework.web.multipart.support.MissingServletRequestPartException(
+                "file"));
+
+    assertThat(r.status()).isEqualTo(400);
+    assertThat(r.message()).isEqualTo("Missing required part 'file'");
+  }
+
   /**
    * The two ways "no database connection within the pool timeout" surfaces: opening a transaction
    * (CannotCreateTransactionException) and a repository call outside one

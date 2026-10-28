@@ -265,12 +265,13 @@ class SosMediaServiceImplTest {
   }
 
   @Test
-  void upload_imageTooLarge_throwsIllegalArgumentException() {
+  void upload_imageTooLarge_throwsMaxUploadSizeExceeded() {
     when(file.getSize()).thenReturn(11L * 1024 * 1024); // 11 MB > 10 MB limit
 
     assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("10 MB");
+        .isInstanceOfSatisfying(
+            org.springframework.web.multipart.MaxUploadSizeExceededException.class,
+            e -> assertThat(e.getMaxUploadSize()).isEqualTo(10L * 1024 * 1024));
 
     verifyNoInteractions(sosRequestRepository, s3Client, sosMediaRepository);
   }
