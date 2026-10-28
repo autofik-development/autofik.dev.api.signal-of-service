@@ -162,23 +162,57 @@ class UserProfileSyncTest {
   }
 
   @Test
-  void noUsableNameOrPhone_createsNoDriver() {
+  void noUsableName_createsTheDriverWithAPlaceholderName() {
     when(users.findById(id)).thenReturn(Optional.empty());
+    when(vehicles.findById(any())).thenReturn(Optional.empty());
+    stubSavesReturnArgument();
 
     sync.sync(id, ctx(null, "+855123456789", List.of(car("1"))));
-    sync.sync(id, ctx("name", null, List.of(car("1"))));
 
-    verify(users, never()).save(any());
-    verify(vehicles, never()).save(any());
+    ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
+    verify(users).save(saved.capture());
+    assertThat(saved.getValue().getName()).isEqualTo("Driver");
+    assertThat(saved.getValue().getPhone()).isEqualTo("+855123456789");
   }
 
   @Test
-  void aPhoneOverTheBound_isNotStored() {
+  void noUsablePhone_createsTheDriverWithAPlaceholderPhone_uniquePerDriver() {
     when(users.findById(id)).thenReturn(Optional.empty());
+    when(vehicles.findById(any())).thenReturn(Optional.empty());
+    stubSavesReturnArgument();
+
+    sync.sync(id, ctx("name", null, List.of(car("1"))));
+
+    ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
+    verify(users).save(saved.capture());
+    assertThat(saved.getValue().getName()).isEqualTo("name");
+    assertThat(saved.getValue().getPhone()).isEqualTo("missing:" + id);
+    verify(users, never()).findByPhone(any()); // nothing to release for a stand-in
+  }
+
+  @Test
+  void aPlaceholderPhone_isReplacedWhenTheRealOneArrives() {
+    User existing = User.builder().userId(id).name("name").phone("missing:" + id).build();
+    when(users.findById(id)).thenReturn(Optional.of(existing));
+    when(users.findByPhone("+855123456789")).thenReturn(Optional.empty());
+    when(vehicles.findById(any())).thenReturn(Optional.empty());
+    stubSavesReturnArgument();
+
+    sync.sync(id, ctx("name", "+855123456789", null));
+
+    assertThat(existing.getPhone()).isEqualTo("+855123456789");
+  }
+
+  @Test
+  void aPhoneOverTheBound_isNotStored_theDriverGetsAPlaceholder() {
+    when(users.findById(id)).thenReturn(Optional.empty());
+    stubSavesReturnArgument();
 
     sync.sync(id, ctx("name", "+8551234567890123456789", null));
 
-    verify(users, never()).save(any());
+    ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
+    verify(users).save(saved.capture());
+    assertThat(saved.getValue().getPhone()).doesNotContain("+8551234567890123456789");
   }
 
   @Test
