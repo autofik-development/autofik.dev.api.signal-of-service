@@ -260,6 +260,8 @@ sos:
     # decompression-bomb uploads; raising it increases worst-case memory per upload.
     max-source-dimension: ${SOS_MEDIA_MAX_SOURCE_DIMENSION:8000}
     max-upload-mb: ${SOS_MEDIA_MAX_UPLOAD_MB:10}
+    # Photos decoded at once; another upload waits 2 s for a slot, then answers 503.
+    max-concurrent-decodes: ${SOS_MEDIA_MAX_CONCURRENT_DECODES:2}
     # Photos kept per ticket; the next upload answers 409.
     max-per-sos: ${SOS_MEDIA_MAX_PER_SOS:10}
     # Stored photos are resized to fit this box, then re-encoded at this JPEG quality (0.0-1.0).

@@ -400,4 +400,30 @@ class SosMediaServiceImplTest {
         .isInstanceOf(AccessDeniedException.class);
     verifyNoInteractions(s3Client);
   }
+
+  @Test
+  void upload_whenEveryDecodeSlotIsBusy_answers503_andStoresNothing() {
+    sosMediaService.setMaxConcurrentDecodes(0); // no slot ever frees up
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+
+    assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+        .isInstanceOf(com.autofik.sos.exception.ServiceUnavailableException.class);
+    verifyNoInteractions(s3Client);
+    verify(sosMediaRepository, never()).save(any());
+  }
+
+  @Test
+  void upload_releasesTheSlotWhenTheDecodeFails() throws Exception {
+    sosMediaService.setMaxConcurrentDecodes(1);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosRequest));
+    when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+    when(file.getBytes()).thenReturn(new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, 0, 0});
+
+    // Passes the signature check, does not decode: 400 both times, never a 503 from a leaked slot.
+    for (int i = 0; i < 2; i++) {
+      assertThatThrownBy(() -> sosMediaService.upload(sosId, file, userId, null))
+          .isInstanceOf(com.autofik.sos.exception.BadRequestException.class);
+    }
+  }
 }

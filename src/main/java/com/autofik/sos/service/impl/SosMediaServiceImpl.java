@@ -34,6 +34,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
@@ -118,6 +120,21 @@ public class SosMediaServiceImpl implements SosMediaService {
   @Value("${sos.media.max-per-sos:10}")
   private int maxPerSos;
 
+  // Photos decoded at once. A photo may be up to maxSourceDimension squared pixels (~256 MB at the
+  // default), so a few parallel uploads could exhaust the heap that also holds every live socket
+  // and
+  // bidding timer. Set from sos.media.max-concurrent-decodes.
+  private Semaphore decodeSlots = new Semaphore(2);
+
+  // How long an upload waits for a slot before answering 503 (retry), so a burst queues briefly
+  // instead of piling up request threads.
+  private static final long DECODE_WAIT_MS = 2000;
+
+  @Value("${sos.media.max-concurrent-decodes:2}")
+  public void setMaxConcurrentDecodes(int permits) {
+    decodeSlots = new Semaphore(permits);
+  }
+
   // Tickets that are over: no more photos, whoever asks.
   private static final java.util.Set<SosStatus> CLOSED_STATUSES =
       java.util.EnumSet.of(SosStatus.COMPLETED, SosStatus.CANCELLED, SosStatus.EXPIRED);
@@ -176,7 +193,7 @@ public class SosMediaServiceImpl implements SosMediaService {
     byte[] compressed;
     try {
       // Normalize image bounds and transcode directly to JPEG
-      compressed = compressToJpeg(raw);
+      compressed = compressToJpegWithinLimit(raw);
     } catch (IOException e) {
       // The bytes passed the signature check but do not decode: the client's file is bad (400),
       // not our failure (500).
@@ -366,6 +383,25 @@ public class SosMediaServiceImpl implements SosMediaService {
         };
     if (!valid) {
       throw new BadRequestException("File content does not match declared type: " + contentType);
+    }
+  }
+
+  /** {@link #compressToJpeg} behind the decode semaphore; 503 if no slot frees up in time. */
+  private byte[] compressToJpegWithinLimit(byte[] raw) throws IOException {
+    boolean acquired;
+    try {
+      acquired = decodeSlots.tryAcquire(DECODE_WAIT_MS, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ServiceUnavailableException("Photo processing is busy, please retry shortly");
+    }
+    if (!acquired) {
+      throw new ServiceUnavailableException("Photo processing is busy, please retry shortly");
+    }
+    try {
+      return compressToJpeg(raw);
+    } finally {
+      decodeSlots.release();
     }
   }
 
