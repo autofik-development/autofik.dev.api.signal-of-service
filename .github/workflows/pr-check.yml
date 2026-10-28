@@ -2,14 +2,22 @@ name: PR Check
 
 # The release workflow (master.yml) only runs on tags, and the Dockerfile builds with
 # -DskipTests, so without this the test suite never runs in CI at all.
+#
+# Unit and integration tests run as parallel jobs; the last job ("Tests", the required check)
+# gathers their results, sends them to Telegram and fails the PR if any of them failed.
 on:
   pull_request:
     branches: [master]
 
 jobs:
-  test:
-    name: Tests
+  unit:
+    name: Lint and unit tests
     runs-on: ubuntu-24.04
+    outputs:
+      lint: ${{ steps.lint.outcome }}
+      unit: ${{ steps.unit.outcome }}
+      counts: ${{ steps.results.outputs.counts }}
+      coverage: ${{ steps.results.outputs.coverage }}
 
     steps:
       - name: Checkout repository
@@ -22,29 +30,107 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      # continue-on-error on both: the Telegram message needs every result even when one fails.
+      # The last job fails the PR.
       - name: Lint (spotless)
+        id: lint
+        continue-on-error: true
         run: ./mvnw -B spotless:check
 
       # SosApplicationTests boots the whole context and needs a live Postgres+PostGIS,
       # Redis and Kafka. Everything else is unit and slice tests that need nothing.
-      # Excluded rather than deleted: bring it back behind a Postgres service container
-      # (or Testcontainers) when wiring bugs start slipping through.
-      - name: Run tests
+      - name: Unit tests
+        id: unit
+        continue-on-error: true
         run: ./mvnw -B test -Dtest='!SosApplicationTests'
         env:
           SPRING_PROFILES_ACTIVE: test
 
-      # The integration tests (Testcontainers: Postgres, Redis, Kafka) run locally only, not in CI:
-      #   ./mvnw test -Pintegration -Dtest='!SosApplicationTests'
-      # Run them before opening a PR that touches the service, repository or socket layers.
+      - name: Read results
+        id: results
+        if: always()
+        run: |
+          echo "counts=$(python3 .github/ci/surefire-summary.py target/surefire-reports)" >> "$GITHUB_OUTPUT"
+          if [ -f target/site/jacoco/jacoco.csv ]; then
+            echo "coverage=$(python3 .github/ci/jacoco-summary.py target/site/jacoco/jacoco.csv)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload test reports
-        if: failure()
+        if: steps.unit.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports
+          name: surefire-unit
           path: target/surefire-reports/
           retention-days: 7
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-24.04
+    outputs:
+      result: ${{ steps.it.outcome }}
+      counts: ${{ steps.results.outputs.counts }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # Testcontainers: Postgres+PostGIS, Redis, Kafka (Docker is on the runner). About 10 minutes.
+      - name: Integration tests
+        id: it
+        continue-on-error: true
+        run: ./mvnw -B test -Pintegration -Dtest='!SosApplicationTests'
+
+      - name: Read results
+        id: results
+        if: always()
+        run: echo "counts=$(python3 .github/ci/surefire-summary.py target/surefire-reports)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload test reports
+        if: steps.it.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-integration
+          path: target/surefire-reports/
+          retention-days: 7
+
+  # Required check. Keeps the old job name "Tests" so branch protection still matches.
+  report:
+    name: Tests
+    needs: [unit, integration]
+    if: always()
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Notify Telegram
+        run: bash .github/ci/telegram-test-report.sh
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+          LINT_OUTCOME: ${{ needs.unit.outputs.lint || 'skipped' }}
+          UNIT_OUTCOME: ${{ needs.unit.outputs.unit || 'skipped' }}
+          IT_OUTCOME: ${{ needs.integration.outputs.result || 'skipped' }}
+          UNIT_COUNTS: ${{ needs.unit.outputs.counts }}
+          IT_COUNTS: ${{ needs.integration.outputs.counts }}
+          COV: ${{ needs.unit.outputs.coverage }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Fail if anything failed
+        if: needs.unit.outputs.lint != 'success' || needs.unit.outputs.unit != 'success' || needs.integration.outputs.result != 'success'
+        run: exit 1
 
   docker:
     name: Docker image builds
