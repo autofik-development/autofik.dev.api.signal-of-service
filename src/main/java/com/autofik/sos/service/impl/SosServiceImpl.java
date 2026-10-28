@@ -158,6 +158,10 @@ public class SosServiceImpl implements SosService {
   // How long the customer has to answer a completion request. When it passes, the request is
   // approved automatically, so a customer who never answers cannot leave the job open forever (it
   // blocks them from a new SOS and keeps the mechanic tied to it).
+  // F-11: a job cannot be marked complete the moment it starts. 0 turns the check off.
+  @Value("${sos.completion.min-in-progress-seconds:60}")
+  private int minInProgressSeconds;
+
   @Value("${sos.completion.approval-window-seconds:120}")
   private long completionApprovalWindowSeconds;
 
@@ -947,6 +951,13 @@ public class SosServiceImpl implements SosService {
             .findById(mechanicId)
             .orElseThrow(() -> new EntityNotFoundException("Mechanic not found: " + mechanicId));
     requireAssignedMechanic(sos, mechanicId);
+    if (toStatus == SosStatus.COMPLETED
+        && minInProgressSeconds > 0
+        && sos.getJobStartedAt() != null
+        && sos.getJobStartedAt().plusSeconds(minInProgressSeconds).isAfter(LocalDateTime.now())) {
+      throw new ConflictException(
+          "The job was started less than " + minInProgressSeconds + " seconds ago");
+    }
     // A retry (double tap, timeout) must not leave two approvable rows or push the customer twice:
     // the request that is already waiting is the answer.
     var alreadyWaiting =

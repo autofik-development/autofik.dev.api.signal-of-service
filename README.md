@@ -251,6 +251,8 @@ Applies to: Create SOS, Create Mechanic, Update Mechanic Location, and Find Avai
 | :--- | :--- |
 | Active SOS check | A user cannot submit a new SOS while one is already in `PENDING`, `ACCEPTED`, `ON_THE_WAY`, or `ARRIVED` state. Returns **409 Conflict**. |
 | Create cooldown | After any SOS creation, the same user must wait **60 seconds** before creating another. Enforced via a Redis `SET NX EX` key. Returns **429 Too Many Requests**. |
+| Minimum job time | A mechanic cannot propose `COMPLETED` sooner than `SOS_COMPLETION_MIN_IN_PROGRESS_SECONDS` (default 60, `0` = off) after the job went `IN_PROGRESS`. Returns **409 Conflict**. |
+| Media upload | JPEG and PNG only (checked by content), at most 10 files per SOS, only by the SOS owner or the assigned mechanic, and only while the ticket is open (**409** once closed). Oversized request: **413**; missing file part: **400**. |
 
 ---
 
@@ -303,10 +305,17 @@ The app starts on the port set by `SERVER_PORT` in `.env`.
 | `S3_REGION` | Required by AWS SDK SigV4 signing — must be a non-empty string (e.g. `us-east-1`) even against MinIO |
 | `S3_BUCKET_NAME` | Bucket name where SOS media objects are stored |
 | `SERVER_PORT` | HTTP port the app listens on |
+| `SOS_GATEWAY_SECRET` | Shared secret the internal gateway sends in `X-Edge-Auth` (blank = check off; `prod` logs an error if blank). `SOS_GATEWAY_HEADER` renames the header |
+| `SOS_COMPLETION_MIN_IN_PROGRESS_SECONDS` | Shortest time between `IN_PROGRESS` and a `COMPLETED` proposal (default `60`, `0` = off) |
+| `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE` | Actuator endpoints exposed (default `health`; add `prometheus` only on a private network) |
 | `JAEGER_ENABLED` | Span export to Jaeger (default `true`). Only the exact string `false` turns it off; the incoming `traceparent` is still passed on |
 | `JAEGER_SERVICE_NAME` | `service.name` in Jaeger (default `autofik-sos-service`) |
 | `JAEGER_EXPORTER_OTLP_ENDPOINT` | Jaeger's OTLP/HTTP receiver, full URL (default `http://localhost:4318/v1/traces`) |
 | `JAEGER_SAMPLE_RATIO` | 0–1, share of traces started here that are kept (default `1`; clamped). A gateway-sent `traceparent` decides for its own requests |
+
+### Metrics and request ids
+
+Business counters are registered with Micrometer and appear at `/actuator/prometheus` when that endpoint is exposed (see `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE`): `sos.events.published{kind}` (created, bid_*, status_updated, notification, ...), `sos.status.transitions{to}`, `sos.notifications{type}` (`SOS_AUTO_REBROADCAST` = radius auto-widened) and `sos.events.failed{topic}` (a Kafka send that failed). Labels are fixed names, never ids. Every response carries `X-Request-Id` (the trace id) to match a client report with the logs and Jaeger.
 
 ### Distributed Tracing (Jaeger)
 
@@ -407,4 +416,5 @@ The mobile app must call `OneSignal.login(userId)` with the user's UUID on login
 | Push notifications | Complete — OneSignal push for bid received, bid accepted/rejected/cancelled, status transitions, completion flow |
 | SOS media (photo/video) | Complete — upload and retrieve via S3-compatible storage |
 | Input validation | Complete — Cambodia bounding box on all lat/lng inputs; `broadcastRadiusKm` 5–20 km; rate limiting (60 s cooldown + active SOS guard) |
+| Security policy | See [SECURITY.md](SECURITY.md) for how to report a vulnerability and the security model |
 | Identity | Complete — the gateway verifies the token and forwards `user-context` / `mechanic-context`; this service trusts those headers and does not validate JWTs (see INTEGRATION.md) |

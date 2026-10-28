@@ -126,4 +126,14 @@ class HealthControllerChecksTest {
 
     new HealthController(null, null, null, null).close(); // nothing to close
   }
+
+  @Test
+  void redis_anyNonNullReplyCountsAsUp() {
+    RedisConnectionFactory factory = mock(RedisConnectionFactory.class);
+    RedisConnection connection = mock(RedisConnection.class);
+    when(factory.getConnection()).thenReturn(connection);
+    when(connection.ping()).thenReturn("OK");
+
+    assertThat(new HealthController(null, factory, null, null).checkRedis()).isEqualTo("UP");
+  }
 }

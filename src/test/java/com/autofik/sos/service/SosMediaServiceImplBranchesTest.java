@@ -229,4 +229,12 @@ class SosMediaServiceImplBranchesTest {
     assertThat(urls).hasSize(2); // maxBroadcastPhotos, and the video is not a photo
     assertThat(urls).allMatch(u -> u.contains("minio.example.com"));
   }
+
+  @Test
+  void aPictureTooBigInEitherDirection_isRefusedBeforeDecoding() throws Exception {
+    ReflectionTestUtils.setField(service, "maxSourceDimension", 50);
+
+    assertRefusedAsBadRequest("image/jpeg", image("jpeg", 20, 120));
+    assertRefusedAsBadRequest("image/jpeg", image("jpeg", 120, 20));
+  }
 }

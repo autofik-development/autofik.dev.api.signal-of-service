@@ -164,4 +164,26 @@ class OneSignalServiceImplTest {
     verify(oneSignalApi).createNotification(sent.capture());
     assertThat(sent.getValue().getIdempotencyKey()).isNull();
   }
+
+  @Test
+  void noData_andEmptyData_sendWithoutADataBlock() throws ApiException {
+    oneSignalService.send(UUID.randomUUID(), "t", "b", null, null);
+    oneSignalService.send(UUID.randomUUID(), "t", "b", Map.of(), null);
+
+    ArgumentCaptor<Notification> sent = ArgumentCaptor.forClass(Notification.class);
+    verify(oneSignalApi, times(2)).createNotification(sent.capture());
+    assertThat(sent.getAllValues()).allMatch(n -> n.getData() == null);
+  }
+
+  @Test
+  void sendToMany_apiRejection_isReportedForEveryRecipient() throws ApiException {
+    ApiException rejected = org.mockito.Mockito.mock(ApiException.class);
+    when(rejected.getCode()).thenReturn(400);
+    doThrow(rejected).when(oneSignalApi).createNotification(any(Notification.class));
+
+    oneSignalService.sendToMany(
+        List.of(UUID.randomUUID(), UUID.randomUUID()), "t", "b", Map.of("type", "X"), null);
+
+    verify(sosEventProducer, times(2)).publishOneSignalPushFailed(any());
+  }
 }

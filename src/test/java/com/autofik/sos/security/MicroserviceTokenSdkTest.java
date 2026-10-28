@@ -160,4 +160,13 @@ class MicroserviceTokenSdkTest {
                 headers(Map.of("X-User-Id", ID.toString(), "X-Mechanic-Id", ID.toString()))))
         .isEmpty();
   }
+
+  @Test
+  void aContextThatNamesNobodyOrNamesGarbage_isNoCaller() {
+    java.util.Map<String, Object> noUuid = new java.util.HashMap<>();
+    noUuid.put("uuid", null);
+    assertThat(resolve(noUuid)).isEmpty();
+    assertThat(resolve(Map.of("uuid", "   "))).isEmpty();
+    assertThat(resolve(Map.of("uuid", "not-a-uuid"))).isEmpty();
+  }
 }

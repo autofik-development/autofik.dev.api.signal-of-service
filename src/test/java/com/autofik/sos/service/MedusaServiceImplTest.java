@@ -201,4 +201,12 @@ class MedusaServiceImplTest {
     assertThat(cfg.getConnectTimeoutMs()).isEqualTo(2000);
     assertThat(cfg.getReadTimeoutMs()).isEqualTo(3000);
   }
+
+  @Test
+  void nullBody_becomesEntityNotFound() {
+    body = "null";
+
+    assertThatThrownBy(() -> service().resolveServiceGroupKey("sg"))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
 }

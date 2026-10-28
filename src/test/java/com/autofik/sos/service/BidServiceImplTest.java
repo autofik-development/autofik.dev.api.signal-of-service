@@ -410,6 +410,129 @@ class BidServiceImplTest {
     assertThat(bidService.getBySosRequest(sosId, null, UUID.randomUUID())).isEmpty();
   }
 
+  // ── gaps: missing rows ──
+
+  @Test
+  void create_unknownSos_isNotFound() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(
+            () -> bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN)))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void create_unknownMechanic_isNotFound() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(
+            () -> bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN)))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void getBySosRequest_unknownSos_isNotFound() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> bidService.getBySosRequest(sosId, null, userId))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void updateStatus_bidGoneUnderTheLock_isNotFound() {
+    when(bidSosRepository.findById(bidId)).thenReturn(Optional.of(bid));
+    when(bidSosRepository.currentStatus(bidId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(
+            () ->
+                bidService.updateStatus(
+                    bidId, new UpdateBidStatusRequest(userId, BidStatus.ACCEPTED)))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void create_biddingWindowAlreadyClosed_isConflict() {
+    pendingSos.setBiddingExpiresAt(java.time.LocalDateTime.now().minusSeconds(5));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+
+    assertThatThrownBy(
+            () -> bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN)))
+        .hasMessageContaining("closed");
+  }
+
+  @Test
+  void create_biddingWindowStillOpen_isAccepted() {
+    pendingSos.setBiddingExpiresAt(java.time.LocalDateTime.now().plusMinutes(5));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(bidSosRepository.save(any(BidSos.class))).thenReturn(bid);
+    when(bidSosMapper.toResponse(bid)).thenReturn(bidResponse);
+
+    assertThat(bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.TEN)))
+        .isEqualTo(bidResponse);
+  }
+
+  private BidSosResponse sortable(int price, Long distanceM, BigDecimal avgRate, boolean withMech) {
+    com.autofik.sos.dto.response.MechanicResponse m =
+        withMech
+            ? new com.autofik.sos.dto.response.MechanicResponse(
+                null, null, null, null, null, null, null, null, avgRate, null, null, null, null)
+            : null;
+    return new BidSosResponse(
+        UUID.randomUUID(),
+        BigDecimal.valueOf(price),
+        BidStatus.PENDING,
+        distanceM,
+        null,
+        null,
+        null,
+        null,
+        null,
+        m);
+  }
+
+  private List<BidSosResponse> sorted(
+      com.autofik.sos.domain.enums.BidSortFilter filter, List<BidSosResponse> in) {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(bidSosRepository.findBySosRequestSosId(sosId)).thenReturn(List.of(bid));
+    when(bidSosMapper.toResponseList(List.of(bid))).thenReturn(in);
+    return bidService.getBySosRequest(sosId, filter, userId);
+  }
+
+  @Test
+  void getBySosRequest_nearest_putsUnknownDistanceLast() {
+    BidSosResponse far = sortable(1, 900L, null, false);
+    BidSosResponse unknown = sortable(2, null, null, false);
+    BidSosResponse near = sortable(3, 100L, null, false);
+
+    assertThat(
+            sorted(com.autofik.sos.domain.enums.BidSortFilter.NEAREST, List.of(far, unknown, near)))
+        .containsExactly(near, far, unknown);
+  }
+
+  @Test
+  void getBySosRequest_cheapest_lowestPriceFirst() {
+    BidSosResponse dear = sortable(900, null, null, false);
+    BidSosResponse cheap = sortable(100, null, null, false);
+
+    assertThat(sorted(com.autofik.sos.domain.enums.BidSortFilter.CHEAPEST, List.of(dear, cheap)))
+        .containsExactly(cheap, dear);
+  }
+
+  @Test
+  void getBySosRequest_topRated_highestRateFirst_unratedTreatedAsZero() {
+    BidSosResponse noMechanic = sortable(1, null, null, false);
+    BidSosResponse unrated = sortable(2, null, null, true);
+    BidSosResponse good = sortable(3, null, BigDecimal.valueOf(4.5), true);
+
+    assertThat(
+            sorted(
+                com.autofik.sos.domain.enums.BidSortFilter.TOP_RATED,
+                List.of(noMechanic, unrated, good)))
+        .containsExactly(good, noMechanic, unrated);
+  }
+
   @Test
   void getByMechanic_delegatesAndReturnsMappedList() {
     Pageable pageable = PageRequest.of(0, 20);

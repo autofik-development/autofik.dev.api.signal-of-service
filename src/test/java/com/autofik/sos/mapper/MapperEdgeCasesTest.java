@@ -107,4 +107,44 @@ class MapperEdgeCasesTest {
     assertThat(response.latitude()).isNull();
     assertThat(response.durationSeconds()).isNull();
   }
+
+  @Test
+  void nonEmptyLists_mapEveryElement_ofTheRemainingMappers() {
+    MechanicSkill skill =
+        MechanicSkill.builder().id(UUID.randomUUID()).vehicleSpecialization("ALL").build();
+    SosRequest sos = SosRequest.builder().sosId(UUID.randomUUID()).build();
+    var history =
+        com.autofik.sos.domain.entity.SosStatusHistory.builder().id(UUID.randomUUID()).build();
+    var bid = com.autofik.sos.domain.entity.BidSos.builder().bidId(UUID.randomUUID()).build();
+
+    assertThat(skills.toResponseList(List.of(skill))).hasSize(1);
+    assertThat(sosMapper().toResponseList(List.of(sos))).hasSize(1);
+    var historyMapper = new SosStatusHistoryMapperImpl();
+    ReflectionTestUtils.setField(historyMapper, "mechanicMapper", mechanics);
+    ReflectionTestUtils.setField(historyMapper, "userMapper", users);
+    assertThat(historyMapper.toResponseList(null)).isNull();
+    assertThat(historyMapper.toResponseList(List.of(history))).hasSize(1);
+    var bidMapper = new BidSosMapperImpl();
+    ReflectionTestUtils.setField(bidMapper, "mechanicMapper", mechanics);
+    assertThat(bidMapper.toResponseList(List.of(bid))).hasSize(1);
+  }
+
+  @Test
+  void summaryWithoutPosition_carriesTheRatingWhenThereIsOne() {
+    var rate =
+        com.autofik.sos.domain.entity.MechanicRate.builder()
+            .ratingAvg(new java.math.BigDecimal("4.5"))
+            .build();
+    Mechanic rated =
+        Mechanic.builder().mechanicId(UUID.randomUUID()).fullName("Bob").rate(rate).build();
+    Mechanic unrated = Mechanic.builder().mechanicId(UUID.randomUUID()).fullName("Al").build();
+
+    assertThat(mechanics.toSummaryWithoutPosition(rated).avgRate()).isEqualByComparingTo("4.5");
+    assertThat(mechanics.toSummaryWithoutPosition(unrated).avgRate()).isNull();
+  }
+
+  @Test
+  void bidMapper_nullList_isNull() {
+    assertThat(new BidSosMapperImpl().toResponseList(null)).isNull();
+  }
 }

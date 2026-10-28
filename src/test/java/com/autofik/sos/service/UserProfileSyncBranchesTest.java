@@ -269,4 +269,16 @@ class UserProfileSyncBranchesTest {
 
     verify(vehicles, org.mockito.Mockito.times(20)).save(any(Vehicle.class));
   }
+
+  @Test
+  void aPhoneAloneIsEnoughToSync_andSoAreVehiclesAlone() {
+    sync.sync(UUID.randomUUID(), ctx(null, "+855123456789", null));
+    sync.sync(
+        UUID.randomUUID(),
+        ctx(
+            null,
+            null,
+            List.of(
+                new UserContext.ContextVehicle("v1", "Toyota", "Camry", "2022", "petrol", "1A"))));
+  }
 }

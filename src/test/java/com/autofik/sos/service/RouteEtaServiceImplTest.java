@@ -271,4 +271,53 @@ class RouteEtaServiceImplTest {
 
     routeEtaService.clear(sosId);
   }
+
+  // ── branch gaps ──
+
+  @Test
+  void clear_nullId_isIgnored() {
+    routeEtaService.clear(null);
+    org.mockito.Mockito.verifyNoInteractions(redisTemplate);
+  }
+
+  @Test
+  void clear_redisKnownDown_skipsRedis() {
+    redisGate.markDown();
+    routeEtaService.clear(sosId);
+    org.mockito.Mockito.verify(redisTemplate, org.mockito.Mockito.never()).delete(anyString());
+  }
+
+  @Test
+  void formatDuration_coversEveryShape() {
+    assertThat(
+            (String)
+                ReflectionTestUtils.invokeMethod(RouteEtaServiceImpl.class, "formatDuration", 30L))
+        .isEqualTo("< 1 min");
+    assertThat(
+            (String)
+                ReflectionTestUtils.invokeMethod(RouteEtaServiceImpl.class, "formatDuration", 300L))
+        .isEqualTo("5 min");
+    assertThat(
+            (String)
+                ReflectionTestUtils.invokeMethod(
+                    RouteEtaServiceImpl.class, "formatDuration", 7200L))
+        .isEqualTo("2 hr");
+    assertThat(
+            (String)
+                ReflectionTestUtils.invokeMethod(
+                    RouteEtaServiceImpl.class, "formatDuration", 5400L))
+        .isEqualTo("1 hr 30 min");
+  }
+
+  @Test
+  void interpolate_snapshotTakenAtTheDestination_isZero() {
+    EtaSnapshot atDest = new EtaSnapshot(10, 5, DEST_LAT, DEST_LNG, DEST_LAT, DEST_LNG);
+
+    com.autofik.sos.dto.external.EtaInfo info =
+        ReflectionTestUtils.invokeMethod(
+            routeEtaService, "interpolate", atDest, START_LAT, START_LNG);
+
+    assertThat(info.remainingDistanceM()).isZero();
+    assertThat(info.remainingDurationS()).isZero();
+  }
 }

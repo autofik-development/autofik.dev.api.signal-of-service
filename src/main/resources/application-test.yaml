@@ -25,3 +25,8 @@ websocket:
   # application.yaml imports .env for every profile, and a developer's .env may enable the insecure
   # handshake for local work. Tests always run with the real handshake.
   dev-insecure-handshake: false
+
+sos:
+  completion:
+    # Flow tests complete a job seconds after starting it; the production default would refuse that.
+    min-in-progress-seconds: 0

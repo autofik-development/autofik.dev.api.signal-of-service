@@ -89,6 +89,11 @@ class ConfigBeansTest {
 
     assertThat(container).isNotNull();
     assertThat(container.getConnectionFactory()).isSameAs(factory);
+    // A Redis error is only logged: the Kafka fallback carries location while Redis is down.
+    org.springframework.util.ErrorHandler onError =
+        (org.springframework.util.ErrorHandler)
+            ReflectionTestUtils.getField(container, "errorHandler");
+    onError.handleError(new IllegalStateException("redis down"));
   }
 
   @Test
