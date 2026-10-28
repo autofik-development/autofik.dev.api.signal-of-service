@@ -50,6 +50,11 @@ public class UserProfileSync {
   /** What a released phone becomes; unique per user because it carries that user's id. */
   static final String RELEASED_PHONE_PREFIX = "released:";
 
+  /** Stand-ins for a profile with no usable name or phone, so the driver can still raise an SOS. */
+  static final String PLACEHOLDER_NAME = "Driver";
+
+  static final String MISSING_PHONE_PREFIX = "missing:";
+
   private final UserRepository userRepository;
   private final VehicleRepository vehicleRepository;
   private final TransactionTemplate tx;
@@ -97,12 +102,19 @@ public class UserProfileSync {
   private void apply(UUID userId, Snapshot s) {
     User user = userRepository.findById(userId).orElse(null);
     if (user == null) {
+      // A bad SSO or gateway release must not block an emergency: create the row with stand-ins
+      // and let the real values replace them on a later request (the update branch below).
       if (s.name == null || s.phone == null) {
-        log.warn("Driver {} not created: the profile has no usable name or phone", userId);
-        return;
+        log.warn(
+            "Driver {} created with a placeholder: the profile has no usable name or phone",
+            userId);
       }
-      releasePhoneHeldByAnother(s.phone, userId);
-      user = userRepository.save(User.builder().userId(userId).name(s.name).phone(s.phone).build());
+      String name = s.name != null ? s.name : PLACEHOLDER_NAME;
+      String phone = s.phone != null ? s.phone : MISSING_PHONE_PREFIX + userId;
+      if (s.phone != null) {
+        releasePhoneHeldByAnother(s.phone, userId);
+      }
+      user = userRepository.save(User.builder().userId(userId).name(name).phone(phone).build());
       log.info("Created driver {} from the gateway profile", userId);
     } else {
       boolean changed = false;

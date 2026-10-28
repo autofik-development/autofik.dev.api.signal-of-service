@@ -31,6 +31,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
@@ -239,11 +241,50 @@ public class GlobalExceptionHandler {
         LocalDateTime.now());
   }
 
-  /** Handles invalid parameters passed to methods or controllers. Maps to HTTP 400 Bad Request. */
+  /**
+   * An upload over the multipart limit (the parser's, or the media service's own check). A client
+   * mistake, so 413 with the limit, not the catch-all's 500. Logs no file name or user data.
+   */
+  @ExceptionHandler(MaxUploadSizeExceededException.class)
+  @ResponseStatus(HttpStatus.PAYLOAD_TOO_LARGE)
+  public ErrorResponse handleUploadTooLarge(MaxUploadSizeExceededException ex) {
+    log.warn("Upload rejected: over the size limit");
+    long limitMb = ex.getMaxUploadSize() / (1024 * 1024);
+    return new ErrorResponse(
+        HttpStatus.PAYLOAD_TOO_LARGE.value(),
+        HttpStatus.PAYLOAD_TOO_LARGE.getReasonPhrase(),
+        limitMb > 0 ? "File exceeds the " + limitMb + " MB limit" : "File is too large",
+        LocalDateTime.now());
+  }
+
+  /** A multipart request without a required part, usually the file. Maps to HTTP 400. */
+  @ExceptionHandler(MissingServletRequestPartException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleMissingPart(MissingServletRequestPartException ex) {
+    log.warn("Request rejected: missing part '{}'", ex.getRequestPartName());
+    return new ErrorResponse(
+        400,
+        "Bad Request",
+        "Missing required part '" + ex.getRequestPartName() + "'",
+        LocalDateTime.now());
+  }
+
+  /** A request the service itself refused, with a message written for the client. Maps to 400. */
+  @ExceptionHandler(BadRequestException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleBadRequest(BadRequestException ex) {
+    return new ErrorResponse(400, "Bad Request", ex.getMessage(), LocalDateTime.now());
+  }
+
+  /**
+   * Any other IllegalArgumentException: a library rejecting a value (JTS, H3, UUID parsing). 400,
+   * but with a fixed text — the library's names classes and internals the client should not see.
+   */
   @ExceptionHandler(IllegalArgumentException.class)
   @ResponseStatus(HttpStatus.BAD_REQUEST)
   public ErrorResponse handleBadArgument(IllegalArgumentException ex) {
-    return new ErrorResponse(400, "Bad Request", ex.getMessage(), LocalDateTime.now());
+    log.warn("Rejected as a bad argument: {}", ex.getMessage());
+    return new ErrorResponse(400, "Bad Request", "Invalid request", LocalDateTime.now());
   }
 
   /**

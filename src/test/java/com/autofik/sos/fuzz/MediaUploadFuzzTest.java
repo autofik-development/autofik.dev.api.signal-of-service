@@ -63,6 +63,7 @@ class MediaUploadFuzzTest {
   @Mock SosMediaRepository sosMediaRepository;
   @Mock SosService sosService;
   @Mock SosRequestRepository sosRequestRepository;
+  @Mock com.autofik.sos.repository.BidSosRepository bidSosRepository;
   @Mock UserRepository userRepository;
   @Mock MechanicRepository mechanicRepository;
   @Mock SosMediaMapper sosMediaMapper;
@@ -85,6 +86,7 @@ class MediaUploadFuzzTest {
     ReflectionTestUtils.setField(sosMediaService, "presignTtlMinutes", 15);
     ReflectionTestUtils.setField(sosMediaService, "maxSourceDimension", 8000);
     ReflectionTestUtils.setField(sosMediaService, "maxUploadMb", 10L);
+    ReflectionTestUtils.setField(sosMediaService, "maxPerSos", 10);
     ReflectionTestUtils.setField(sosMediaService, "maxImageDimension", 1280);
     ReflectionTestUtils.setField(sosMediaService, "jpegQuality", 0.80);
     // upload() runs its two database phases through the template; run the callback inline.
@@ -97,7 +99,13 @@ class MediaUploadFuzzTest {
                     .doInTransaction(null));
     when(sosService.canView(any(), any())).thenReturn(true);
     when(sosRequestRepository.findById(sosId))
-        .thenReturn(Optional.of(SosRequest.builder().sosId(sosId).build()));
+        .thenReturn(
+            Optional.of(
+                SosRequest.builder()
+                    .sosId(sosId)
+                    .user(User.builder().userId(userId).build())
+                    .status(com.autofik.sos.domain.enums.SosStatus.PENDING)
+                    .build()));
     when(userRepository.findById(userId))
         .thenReturn(Optional.of(User.builder().userId(userId).name("Alice").build()));
     when(sosMediaRepository.save(any(SosMedia.class))).thenAnswer(inv -> inv.getArgument(0));

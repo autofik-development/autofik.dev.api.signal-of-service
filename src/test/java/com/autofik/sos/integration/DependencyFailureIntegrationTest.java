@@ -1,8 +1,13 @@
 package com.autofik.sos.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.autofik.sos.domain.entity.Mechanic;
+import com.autofik.sos.exception.ServiceUnavailableException;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.UUID;
@@ -132,6 +137,26 @@ class DependencyFailureIntegrationTest extends FlowTestSupport {
     }
     customer.disconnect();
     mechanic.disconnect();
+  }
+
+  /**
+   * Medusa validates the service group on every create and nothing caches the answer (decision
+   * 2026-10-24, F-03), so Medusa being down stops creates: a retryable 503 each time, no ticket
+   * left behind, and Medusa asked again on the second attempt.
+   */
+  @Test
+  void medusaDown_createSos_is503_andMedusaIsAskedOnEveryAttempt() throws Exception {
+    Driver d = newDriver();
+    when(medusaService.resolveServiceGroupKey(any()))
+        .thenThrow(
+            new ServiceUnavailableException("Unable to reach Medusa to validate service group"));
+
+    HttpResponse<String> first = createSos(d);
+    HttpResponse<String> second = createSos(d);
+
+    assertThat(first.statusCode()).as(first.body()).isEqualTo(503);
+    assertThat(second.statusCode()).as(second.body()).isEqualTo(503);
+    verify(medusaService, times(2)).resolveServiceGroupKey(any());
   }
 
   @Test

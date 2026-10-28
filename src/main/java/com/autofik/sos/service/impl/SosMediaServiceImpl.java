@@ -4,12 +4,17 @@ import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosMedia;
 import com.autofik.sos.domain.entity.SosRequest;
 import com.autofik.sos.domain.entity.User;
+import com.autofik.sos.domain.enums.BidStatus;
 import com.autofik.sos.domain.enums.MediaType;
+import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.response.SosMediaResponse;
+import com.autofik.sos.exception.BadRequestException;
+import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.SosMediaMapper;
+import com.autofik.sos.repository.BidSosRepository;
 import com.autofik.sos.repository.MechanicRepository;
 import com.autofik.sos.repository.SosMediaRepository;
 import com.autofik.sos.repository.SosRequestRepository;
@@ -29,6 +34,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
@@ -41,6 +48,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -86,6 +94,7 @@ public class SosMediaServiceImpl implements SosMediaService {
 
   private final SosMediaRepository sosMediaRepository;
   private final SosRequestRepository sosRequestRepository;
+  private final BidSosRepository bidSosRepository;
   private final SosService sosService; // reuses the one definition of "who may see this SOS"
   private final UserRepository userRepository;
   private final MechanicRepository mechanicRepository;
@@ -105,6 +114,30 @@ public class SosMediaServiceImpl implements SosMediaService {
 
   @Value("${sos.broadcast.max-photos:3}")
   private int maxBroadcastPhotos;
+
+  // Photos kept per ticket. ponytail: counted before the insert, so two uploads at the same moment
+  // can overshoot by one; a lock on the ticket row if that ever matters.
+  @Value("${sos.media.max-per-sos:10}")
+  private int maxPerSos;
+
+  // Photos decoded at once. A photo may be up to maxSourceDimension squared pixels (~256 MB at the
+  // default), so a few parallel uploads could exhaust the heap that also holds every live socket
+  // and
+  // bidding timer. Set from sos.media.max-concurrent-decodes.
+  private Semaphore decodeSlots = new Semaphore(2);
+
+  // How long an upload waits for a slot before answering 503 (retry), so a burst queues briefly
+  // instead of piling up request threads.
+  private static final long DECODE_WAIT_MS = 2000;
+
+  @Value("${sos.media.max-concurrent-decodes:2}")
+  public void setMaxConcurrentDecodes(int permits) {
+    decodeSlots = new Semaphore(permits);
+  }
+
+  // Tickets that are over: no more photos, whoever asks.
+  private static final java.util.Set<SosStatus> CLOSED_STATUSES =
+      java.util.EnumSet.of(SosStatus.COMPLETED, SosStatus.CANCELLED, SosStatus.EXPIRED);
 
   // Set by Spring; stays NOOP when the class is built by hand (tests), which records nothing.
   @Autowired(required = false)
@@ -141,7 +174,7 @@ public class SosMediaServiceImpl implements SosMediaService {
     // Phase 1: Basic validation filters
     validateContentType(file.getContentType());
     if (file.getSize() > maxUploadMb * 1024 * 1024) {
-      throw new IllegalArgumentException("File exceeds the " + maxUploadMb + " MB limit");
+      throw new MaxUploadSizeExceededException(maxUploadMb * 1024 * 1024);
     }
 
     // Phase 2: Domain Entity Verification (short transaction)
@@ -160,11 +193,11 @@ public class SosMediaServiceImpl implements SosMediaService {
     byte[] compressed;
     try {
       // Normalize image bounds and transcode directly to JPEG
-      compressed = compressToJpeg(raw);
+      compressed = compressToJpegWithinLimit(raw);
     } catch (IOException e) {
       // The bytes passed the signature check but do not decode: the client's file is bad (400),
       // not our failure (500).
-      throw new IllegalArgumentException("File is not a readable image", e);
+      throw new BadRequestException("File is not a readable image", e);
     }
 
     // Phase 4: S3 Object Storage Persistence (no transaction)
@@ -207,10 +240,23 @@ public class SosMediaServiceImpl implements SosMediaService {
             .findById(sosId)
             .orElseThrow(() -> new EntityNotFoundException("SOS request not found: " + sosId));
 
-    // Only the driver and the mechanics who bid may attach to a ticket — otherwise anyone
-    // holding a sosId can push images into someone else's incident.
-    if (!sosService.canView(sosId, userId != null ? userId : mechanicId)) {
+    // Only the driver who raised the ticket and the mechanic assigned to it may attach — otherwise
+    // anyone holding a sosId (or a past bidder) can push images into someone else's incident.
+    boolean party =
+        userId != null
+            ? sos.getUser().getUserId().equals(userId)
+            : bidSosRepository
+                .findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED)
+                .map(bid -> bid.getMechanic().getMechanicId().equals(mechanicId))
+                .orElse(false);
+    if (!party) {
       throw new AccessDeniedException("You are not part of this SOS request");
+    }
+    if (CLOSED_STATUSES.contains(sos.getStatus())) {
+      throw new ConflictException("This SOS request is closed; photos can no longer be added");
+    }
+    if (sosMediaRepository.countBySosRequestSosId(sosId) >= maxPerSos) {
+      throw new ConflictException("This SOS request already has " + maxPerSos + " photos");
     }
 
     if (userId != null) {
@@ -303,7 +349,7 @@ public class SosMediaServiceImpl implements SosMediaService {
   /** Confirms that the HTTP header content-type matches whitelist protocols. */
   private void validateContentType(String contentType) {
     if (contentType == null || !ALLOWED_CONTENT_TYPES.containsKey(contentType)) {
-      throw new IllegalArgumentException(
+      throw new BadRequestException(
           "Unsupported content type: "
               + contentType
               + ". Allowed: "
@@ -336,8 +382,26 @@ public class SosMediaServiceImpl implements SosMediaService {
           default -> true;
         };
     if (!valid) {
-      throw new IllegalArgumentException(
-          "File content does not match declared type: " + contentType);
+      throw new BadRequestException("File content does not match declared type: " + contentType);
+    }
+  }
+
+  /** {@link #compressToJpeg} behind the decode semaphore; 503 if no slot frees up in time. */
+  private byte[] compressToJpegWithinLimit(byte[] raw) throws IOException {
+    boolean acquired;
+    try {
+      acquired = decodeSlots.tryAcquire(DECODE_WAIT_MS, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ServiceUnavailableException("Photo processing is busy, please retry shortly");
+    }
+    if (!acquired) {
+      throw new ServiceUnavailableException("Photo processing is busy, please retry shortly");
+    }
+    try {
+      return compressToJpeg(raw);
+    } finally {
+      decodeSlots.release();
     }
   }
 
@@ -349,7 +413,7 @@ public class SosMediaServiceImpl implements SosMediaService {
     Dimension size = readDimensions(raw);
     // Pre-decode safety check: intercepts malicious payloads attempting to exhaust JVM memory
     if (size.width > maxSourceDimension || size.height > maxSourceDimension) {
-      throw new IllegalArgumentException(
+      throw new BadRequestException(
           "Image dimensions "
               + size.width
               + "x"

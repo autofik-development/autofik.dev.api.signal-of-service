@@ -17,6 +17,7 @@ import com.autofik.sos.dto.external.DistanceInfo;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
+import com.autofik.sos.exception.BadRequestException;
 import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
 import com.autofik.sos.mapper.BidSosMapper;
@@ -306,8 +307,7 @@ public class BidServiceImpl implements BidService {
     // Mechanics are blocked from using this endpoint to back out; they must use the cancel endpoint
     if (request.status() == BidStatus.CANCELLED) {
       // Wrong endpoint for what was asked — a malformed request (400), not a state conflict.
-      throw new IllegalArgumentException(
-          "Use the cancel endpoint for mechanic-initiated cancellation");
+      throw new BadRequestException("Use the cancel endpoint for mechanic-initiated cancellation");
     }
 
     BidSos bid =

@@ -23,6 +23,7 @@ import com.autofik.sos.dto.response.MechanicSummaryResponse;
 import com.autofik.sos.dto.response.SosRequestResponse;
 import com.autofik.sos.dto.response.SosStatusHistoryEntry;
 import com.autofik.sos.dto.response.SosStatusHistoryResponse;
+import com.autofik.sos.exception.BadRequestException;
 import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.exception.TooManyRequestsException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
@@ -829,7 +830,7 @@ public class SosServiceImpl implements SosService {
     if (toStatus != SosStatus.ON_THE_WAY && toStatus != SosStatus.IN_PROGRESS) {
       // The requested target status is not one this endpoint accepts: a bad request (400), not a
       // conflict with the ticket's current state.
-      throw new IllegalArgumentException(
+      throw new BadRequestException(
           "Only ON_THE_WAY and IN_PROGRESS can be set directly. Use POST /api/v1/sos/{sosId}/arrival for ARRIVED and POST /api/v1/sos/{sosId}/completion for COMPLETED.");
     }
     // Same ticket lock a mechanic's release takes, so ARRIVED and a release cannot both win.
@@ -886,7 +887,7 @@ public class SosServiceImpl implements SosService {
   public SosStatusHistoryResponse proposeStatusChange(
       UUID sosId, ProposeStatusChangeRequest request) {
     if (request.toStatus() != SosStatus.COMPLETED) {
-      throw new IllegalArgumentException(
+      throw new BadRequestException(
           "Only COMPLETED requires customer approval here. Use POST /api/v1/sos/{sosId}/arrival for ARRIVED and PATCH /api/v1/sos/{sosId}/status for ON_THE_WAY and IN_PROGRESS.");
     }
     // Same ticket lock a cancel, a release and proposeArrival take, so a proposal cannot be written
@@ -1162,7 +1163,7 @@ public class SosServiceImpl implements SosService {
     // PENDING_APPROVAL is a state, not an answer: decideCompletion would stamp approver and time on
     // a row that stays pending, change nothing, and still answer 200.
     if (request.approvedStatus() == ApprovedStatus.PENDING_APPROVAL) {
-      throw new IllegalArgumentException("approvedStatus must be ACCEPTED or REJECTED");
+      throw new BadRequestException("approvedStatus must be ACCEPTED or REJECTED");
     }
     SosStatusHistory history =
         sosStatusHistoryRepository

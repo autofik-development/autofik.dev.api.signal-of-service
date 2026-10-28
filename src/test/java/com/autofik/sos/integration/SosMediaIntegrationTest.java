@@ -50,6 +50,7 @@ class SosMediaIntegrationTest extends FlowTestSupport {
     r.add("aws.s3.secret-key", () -> "it");
     r.add("aws.s3.region", () -> "us-east-1");
     r.add("aws.s3.bucket", () -> BUCKET);
+    r.add("sos.media.max-per-sos", () -> 2); // small, so the cap test needs two uploads
   }
 
   @Autowired private S3Client s3Client;
@@ -137,6 +138,41 @@ class SosMediaIntegrationTest extends FlowTestSupport {
     assertThat(
             s3Client.listObjectsV2(b -> b.bucket(BUCKET).prefix("sos/" + sosId + "/")).keyCount())
         .isZero();
+  }
+
+  @Test
+  void aCancelledTicket_refusesPhotos_with409() throws Exception {
+    Driver d = newDriver();
+    UUID sosId = createSosOk(d);
+    HttpResponse<String> cancelled =
+        send(
+            req("/api/v1/sos/" + sosId + "/cancel")
+                .header("user-context", userContext(d.user().getUserId()))
+                .method("PATCH", java.net.http.HttpRequest.BodyPublishers.noBody()));
+    assertThat(cancelled.statusCode()).as(cancelled.body()).isEqualTo(200);
+
+    HttpResponse<String> r = upload(d, sosId, "image/png", png(), "late.png");
+
+    assertThat(r.statusCode()).as(r.body()).isEqualTo(409);
+    assertThat(
+            s3Client.listObjectsV2(b -> b.bucket(BUCKET).prefix("sos/" + sosId + "/")).keyCount())
+        .isZero();
+  }
+
+  // The cap is lowered to 2 for this class in s3(); the default is 10.
+  @Test
+  void theThirdPhotoOnATicket_isRefused_with409() throws Exception {
+    Driver d = newDriver();
+    UUID sosId = createSosOk(d);
+
+    assertThat(upload(d, sosId, "image/png", png(), "a.png").statusCode()).isEqualTo(201);
+    assertThat(upload(d, sosId, "image/png", png(), "b.png").statusCode()).isEqualTo(201);
+    HttpResponse<String> third = upload(d, sosId, "image/png", png(), "c.png");
+
+    assertThat(third.statusCode()).as(third.body()).isEqualTo(409);
+    assertThat(
+            s3Client.listObjectsV2(b -> b.bucket(BUCKET).prefix("sos/" + sosId + "/")).keyCount())
+        .isEqualTo(2);
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
