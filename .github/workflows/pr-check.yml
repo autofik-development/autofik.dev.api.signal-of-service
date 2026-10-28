@@ -9,10 +9,18 @@ on:
   pull_request:
     branches: [master]
 
+# A new push to the same PR cancels the run still going for the previous one, so each push does not
+# add a ~14 minute run and a second Telegram message for a commit that is already out of date.
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   unit:
     name: Lint and unit tests
     runs-on: ubuntu-24.04
+    # A hung run would otherwise hold a runner for 6 hours and never report.
+    timeout-minutes: 20
     outputs:
       lint: ${{ steps.lint.outcome }}
       unit: ${{ steps.unit.outcome }}
@@ -66,6 +74,8 @@ jobs:
   integration:
     name: Integration tests
     runs-on: ubuntu-24.04
+    # Normally about 10 minutes; a stuck container must not run for 6 hours.
+    timeout-minutes: 30
     outputs:
       result: ${{ steps.it.outcome }}
       counts: ${{ steps.results.outputs.counts }}
@@ -108,9 +118,14 @@ jobs:
   # Required check. Keeps the old job name "Tests" so branch protection still matches.
   report:
     name: Tests
-    needs: [unit, integration]
-    if: always()
+    # Waits for every job, the Docker build included, so the one message is sent when the run is
+    # completely finished. The Docker build is not part of the message: its own check shows it.
+    needs: [unit, integration, docker]
+    # Not always(): a run cancelled by a newer push must not report (always() runs even then).
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
+    # Only reads the results and posts one message.
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -140,6 +155,8 @@ jobs:
   docker:
     name: Docker image builds
     runs-on: ubuntu-24.04
+    # Normally about 1 minute.
+    timeout-minutes: 20
 
     # The release build happens on a tag, long after review. Without this, a change that
     # breaks the image is only discovered when someone tries to cut a release.

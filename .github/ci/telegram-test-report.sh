@@ -15,6 +15,9 @@ line() { # label outcome "tests failed skipped"
     echo "⏭ <b>${label}:</b> not run"
   elif [ "$outcome" = "success" ] && [ "${failed:-0}" = "0" ]; then
     echo "✅ <b>${label}:</b> $((tests - skipped))/${tests} passed"
+  elif [ "${failed:-0}" = "0" ]; then
+    # Not a success, yet no failed test: the job crashed or was cut off (a timeout).
+    echo "❌ <b>${label}:</b> did not finish (${tests} tests had run)"
   else
     echo "❌ <b>${label}:</b> ${failed} failed of ${tests}"
   fi

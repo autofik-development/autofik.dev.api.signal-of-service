@@ -33,3 +33,7 @@ echo
 echo "================ LINT FAILED ================"
 LINT_OUTCOME=failure IT_OUTCOME=success IT_COUNTS="229 0 0" \
   bash ./telegram-test-report.sh
+
+echo
+echo "================ INTEGRATION CUT OFF BY ITS TIMEOUT ================"
+IT_OUTCOME=failure IT_COUNTS="120 0 0"   bash ./telegram-test-report.sh
