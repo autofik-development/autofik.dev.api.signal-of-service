@@ -9,6 +9,7 @@ import com.autofik.sos.domain.enums.MediaType;
 import com.autofik.sos.domain.enums.SosStatus;
 import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.response.SosMediaResponse;
+import com.autofik.sos.exception.BadRequestException;
 import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.kafka.producer.SosEventProducer;
@@ -179,7 +180,7 @@ public class SosMediaServiceImpl implements SosMediaService {
     } catch (IOException e) {
       // The bytes passed the signature check but do not decode: the client's file is bad (400),
       // not our failure (500).
-      throw new IllegalArgumentException("File is not a readable image", e);
+      throw new BadRequestException("File is not a readable image", e);
     }
 
     // Phase 4: S3 Object Storage Persistence (no transaction)
@@ -331,7 +332,7 @@ public class SosMediaServiceImpl implements SosMediaService {
   /** Confirms that the HTTP header content-type matches whitelist protocols. */
   private void validateContentType(String contentType) {
     if (contentType == null || !ALLOWED_CONTENT_TYPES.containsKey(contentType)) {
-      throw new IllegalArgumentException(
+      throw new BadRequestException(
           "Unsupported content type: "
               + contentType
               + ". Allowed: "
@@ -364,8 +365,7 @@ public class SosMediaServiceImpl implements SosMediaService {
           default -> true;
         };
     if (!valid) {
-      throw new IllegalArgumentException(
-          "File content does not match declared type: " + contentType);
+      throw new BadRequestException("File content does not match declared type: " + contentType);
     }
   }
 
@@ -377,7 +377,7 @@ public class SosMediaServiceImpl implements SosMediaService {
     Dimension size = readDimensions(raw);
     // Pre-decode safety check: intercepts malicious payloads attempting to exhaust JVM memory
     if (size.width > maxSourceDimension || size.height > maxSourceDimension) {
-      throw new IllegalArgumentException(
+      throw new BadRequestException(
           "Image dimensions "
               + size.width
               + "x"

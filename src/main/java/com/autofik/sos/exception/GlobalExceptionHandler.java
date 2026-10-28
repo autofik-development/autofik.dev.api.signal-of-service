@@ -269,11 +269,22 @@ public class GlobalExceptionHandler {
         LocalDateTime.now());
   }
 
-  /** Handles invalid parameters passed to methods or controllers. Maps to HTTP 400 Bad Request. */
+  /** A request the service itself refused, with a message written for the client. Maps to 400. */
+  @ExceptionHandler(BadRequestException.class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  public ErrorResponse handleBadRequest(BadRequestException ex) {
+    return new ErrorResponse(400, "Bad Request", ex.getMessage(), LocalDateTime.now());
+  }
+
+  /**
+   * Any other IllegalArgumentException: a library rejecting a value (JTS, H3, UUID parsing). 400,
+   * but with a fixed text — the library's names classes and internals the client should not see.
+   */
   @ExceptionHandler(IllegalArgumentException.class)
   @ResponseStatus(HttpStatus.BAD_REQUEST)
   public ErrorResponse handleBadArgument(IllegalArgumentException ex) {
-    return new ErrorResponse(400, "Bad Request", ex.getMessage(), LocalDateTime.now());
+    log.warn("Rejected as a bad argument: {}", ex.getMessage());
+    return new ErrorResponse(400, "Bad Request", "Invalid request", LocalDateTime.now());
   }
 
   /**

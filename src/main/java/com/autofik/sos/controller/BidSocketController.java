@@ -6,6 +6,7 @@ import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.request.CreateBidRequest;
 import com.autofik.sos.dto.request.UpdateBidStatusRequest;
 import com.autofik.sos.dto.response.BidSosResponse;
+import com.autofik.sos.exception.BadRequestException;
 import com.autofik.sos.exception.ConflictException;
 import com.autofik.sos.exception.ServiceUnavailableException;
 import com.autofik.sos.exception.TooManyRequestsException;
@@ -253,7 +254,7 @@ public class BidSocketController {
     return switch (statusOf(ex)) {
       case 403 -> "You are not allowed to perform this action";
       case 400 ->
-          ex instanceof IllegalArgumentException && ex.getMessage() != null
+          ex instanceof BadRequestException && ex.getMessage() != null
               ? ex.getMessage()
               : "Invalid message";
       default -> ex.getMessage() == null ? "Rejected" : ex.getMessage();
