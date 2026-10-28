@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.autofik.sos.middleware.AuthMiddleware;
+import java.util.Objects;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.MethodParameter;
@@ -61,16 +62,27 @@ class IdentityBranchesTest {
     return new MethodParameter(holder.getDeclaredMethod(method, CurrentUser.class), 0);
   }
 
+  // Only their signatures are read (by reflection); the body just uses the parameter.
   static class Holder {
-    void mech(@AuthMechanic CurrentUser u) {}
+    void mech(@AuthMechanic CurrentUser u) {
+      Objects.requireNonNull(u);
+    }
 
-    void usr(@AuthUser CurrentUser u) {}
+    void usr(@AuthUser CurrentUser u) {
+      Objects.requireNonNull(u);
+    }
 
-    void plain(CurrentUser u) {}
+    void plain(CurrentUser u) {
+      Objects.requireNonNull(u);
+    }
 
-    void wrongTypeMech(@AuthMechanic String u) {}
+    void wrongTypeMech(@AuthMechanic String u) {
+      Objects.requireNonNull(u);
+    }
 
-    void wrongTypeUsr(@AuthUser String u) {}
+    void wrongTypeUsr(@AuthUser String u) {
+      Objects.requireNonNull(u);
+    }
   }
 
   @Test
