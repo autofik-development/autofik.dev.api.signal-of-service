@@ -21,6 +21,9 @@ class AppHeaderContextTest {
   }
 
   private static Map<String, String> headers(String... kv) {
+    if (kv.length % 2 != 0) {
+      throw new IllegalArgumentException("headers() takes name/value pairs, got " + kv.length);
+    }
     Map<String, String> m = new HashMap<>();
     for (int i = 0; i < kv.length; i += 2) {
       m.put(kv[i], kv[i + 1]);
