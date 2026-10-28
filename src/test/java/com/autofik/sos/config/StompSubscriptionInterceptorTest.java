@@ -179,4 +179,40 @@ class StompSubscriptionInterceptorTest {
           .isInstanceOf(AccessDeniedException.class);
     }
   }
+
+  @Test
+  void subscriptionWithoutADestination_isPassedThrough() {
+    Message<byte[]> message = subscribe(null, principal(callerId));
+    assertThat(interceptor.preSend(message, null)).isSameAs(message);
+  }
+
+  @Test
+  void anonymousSubscriptionToASosTopic_isRefused() {
+    assertThatThrownBy(
+            () -> interceptor.preSend(subscribe("/topic/sos/" + sosId + "/location", null), null))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+  }
+
+  @Test
+  void otherFrames_arePassedThrough_andSendsOutsideAppAreRefused() {
+    StompHeaderAccessor connect = StompHeaderAccessor.create(StompCommand.CONNECT);
+    connect.setLeaveMutable(true);
+    Message<byte[]> connectFrame =
+        MessageBuilder.createMessage(new byte[0], connect.getMessageHeaders());
+    assertThat(interceptor.preSend(connectFrame, null)).isSameAs(connectFrame);
+
+    for (String destination : new String[] {"/topic/x", null}) {
+      StompHeaderAccessor send = StompHeaderAccessor.create(StompCommand.SEND);
+      send.setDestination(destination);
+      send.setLeaveMutable(true);
+      Message<byte[]> frame = MessageBuilder.createMessage(new byte[0], send.getMessageHeaders());
+      assertThatThrownBy(() -> interceptor.preSend(frame, null))
+          .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    }
+    StompHeaderAccessor ok = StompHeaderAccessor.create(StompCommand.SEND);
+    ok.setDestination("/app/bids");
+    ok.setLeaveMutable(true);
+    Message<byte[]> okFrame = MessageBuilder.createMessage(new byte[0], ok.getMessageHeaders());
+    assertThat(interceptor.preSend(okFrame, null)).isSameAs(okFrame);
+  }
 }

@@ -3054,6 +3054,26 @@ class SosServiceImplTest {
   }
 
   @Test
+  void openOffers_aTicketThatVanishedBetweenTheQueries_isSkipped() {
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
+        .thenReturn(List.of(sosId));
+    when(sosRequestRepository.findAllById(any())).thenReturn(List.of());
+
+    assertThat(sosService.openOffersFor(mechanicId)).isEmpty();
+  }
+
+  @Test
+  void openOffers_nothingOpenNearby_isEmpty() {
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
+        .thenReturn(List.of());
+
+    assertThat(sosService.openOffersFor(mechanicId)).isEmpty();
+    verify(sosRequestRepository, never()).findAllById(any());
+  }
+
+  @Test
   void openOffers_attachTheCachedRoadEstimate_whenThereIsOne() {
     SosRequest a = openTicket(sosId, resolvedKey);
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
@@ -3801,6 +3821,452 @@ class SosServiceImplTest {
 
     assertThatThrownBy(() -> sosService.getHistory(sosId, userId))
         .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  // ── gaps: missing rows are a 404, never a half-done change ──
+
+  @Test
+  void updateStatus_unknownMechanic_isNotFound() {
+    SosRequest sos = sosAt(SosStatus.ACCEPTED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.updateStatus(sosId, mechanicId, SosStatus.ON_THE_WAY))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void proposeArrival_unknownMechanic_isNotFound() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.proposeArrival(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void approveStatusChange_unknownHistory_isNotFound() {
+    when(sosStatusHistoryRepository.findById(historyId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(
+            () ->
+                sosService.approveStatusChange(
+                    new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.ACCEPTED)))
+        .isInstanceOf(EntityNotFoundException.class)
+        .hasMessageContaining("Status history");
+  }
+
+  @Test
+  void approveStatusChange_unknownUser_isNotFound() {
+    SosStatusHistory history =
+        SosStatusHistory.builder()
+            .id(historyId)
+            .sosRequest(sosAt(SosStatus.ACCEPTED))
+            .approvedStatus(ApprovedStatus.PENDING_APPROVAL)
+            .build();
+    when(sosStatusHistoryRepository.findById(historyId)).thenReturn(Optional.of(history));
+    when(userRepository.findById(userId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(
+            () ->
+                sosService.approveStatusChange(
+                    new ApproveStatusChangeRequest(userId, historyId, ApprovedStatus.ACCEPTED)))
+        .isInstanceOf(EntityNotFoundException.class)
+        .hasMessageContaining("User not found");
+  }
+
+  @Test
+  void reportCustomerNoShow_unknownMechanic_isNotFound() {
+    arrivedForNoShow(30);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, mechanicId))
+        .isInstanceOf(EntityNotFoundException.class);
+  }
+
+  @Test
+  void reportCustomerNoShow_noArrivalOnRecord_isConflict() {
+    arrivedForNoShow(30);
+    when(sosStatusHistoryRepository
+            .findFirstBySosRequestSosIdAndToStatusAndApprovedStatusOrderByChangeAtDesc(
+                sosId, SosStatus.ARRIVED, ApprovedStatus.ACCEPTED))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> sosService.reportCustomerNoShow(sosId, mechanicId))
+        .isInstanceOf(com.autofik.sos.exception.ConflictException.class);
+  }
+
+  // ── branch gaps: expiry, sweep, assignment ──
+
+  @Test
+  void expiry_ticketWithoutAWindow_isLeftAlone() {
+    SosRequest sos = overduePending();
+    sos.setBiddingExpiresAt(null);
+
+    expireIfDue();
+
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
+    verify(sosRequestRepository, never()).save(any(SosRequest.class));
+  }
+
+  @Test
+  void expiry_autoExpand_widensFromTheTicketsOwnRadius() {
+    SosRequest sos = overduePending();
+    sos.setBroadcastRadiusKm(10);
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
+
+    expireIfDue();
+
+    assertThat(sos.getBroadcastRadiusKm()).isEqualTo(15);
+  }
+
+  @Test
+  void approveOverdueCompletions_requestGone_isSkipped() {
+    SosStatusHistory h = overdueCompletion(inProgressSosOwnedByUser());
+    runSweepTransactionsInline();
+    when(sosStatusHistoryRepository.findByApprovedStatusAndProposedAtBefore(any(), any()))
+        .thenReturn(List.of(h));
+    when(sosStatusHistoryRepository.findById(h.getId())).thenReturn(Optional.empty());
+
+    sosService.approveOverdueCompletions();
+
+    verify(sosRequestRepository, never()).save(any(SosRequest.class));
+  }
+
+  @Test
+  void approveOverdueCompletions_arrivalWhoseMechanicWasReplaced_isClosedNotApplied() {
+    SosRequest sos = sosAt(SosStatus.ON_THE_WAY);
+    SosStatusHistory h = overdueCompletion(sos);
+    h.setToStatus(SosStatus.ARRIVED);
+    h.setFromStatus(SosStatus.ON_THE_WAY);
+    stubOverdue(h);
+    when(sosStatusHistoryRepository.findApprovedStatusById(h.getId()))
+        .thenReturn(Optional.of(ApprovedStatus.PENDING_APPROVAL));
+    when(bidSosRepository.findFirstBySosRequestSosIdAndStatus(sosId, BidStatus.ACCEPTED))
+        .thenReturn(Optional.empty());
+
+    sosService.approveOverdueCompletions();
+
+    assertThat(h.getApprovedStatus()).isEqualTo(ApprovedStatus.REJECTED);
+    assertThat(sos.getStatus()).isEqualTo(SosStatus.ON_THE_WAY);
+  }
+
+  @Test
+  void approveStatusChange_ownerAnswersSomeoneElsesJob_isDenied() {
+    SosRequest sos = sosAt(SosStatus.IN_PROGRESS);
+    SosStatusHistory h =
+        SosStatusHistory.builder()
+            .id(historyId)
+            .sosRequest(sos)
+            .approvedStatus(ApprovedStatus.PENDING_APPROVAL)
+            .build();
+    UUID stranger = UUID.randomUUID();
+    when(sosStatusHistoryRepository.findById(historyId)).thenReturn(Optional.of(h));
+    when(userRepository.findById(stranger))
+        .thenReturn(Optional.of(User.builder().userId(stranger).name("Eve").build()));
+
+    assertThatThrownBy(
+            () ->
+                sosService.approveStatusChange(
+                    new ApproveStatusChangeRequest(stranger, historyId, ApprovedStatus.ACCEPTED)))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+  }
+
+  @Test
+  void offerEstimates_oldFourFieldEntry_isIgnored_andANullInfoIsSkipped() {
+    ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 5);
+    ReflectionTestUtils.setField(sosService, "earthRadiusM", 6371000.0);
+    ReflectionTestUtils.setField(sosService, "offerEstimateMaxAgeSeconds", 600);
+    when(redisTemplate.opsForHash()).thenReturn(hashOps);
+    when(hashOps.entries(anyString()))
+        .thenReturn(Map.of(UUID.randomUUID().toString(), "800	420	0.8 km	7 mins"));
+    when(googleMapsService.getDistanceInfos(any(), any()))
+        .thenReturn(java.util.Collections.singletonList(null));
+
+    Map<?, ?> result =
+        ReflectionTestUtils.invokeMethod(
+            sosService, "offerEstimates", sosId, List.of(mechanic), 11.55, 104.92);
+
+    assertThat(result).isEmpty();
+    verify(hashOps, never()).putAll(anyString(), any());
+  }
+
+  @Test
+  void emptyOfferBookkeeping_touchesNothing() {
+    ReflectionTestUtils.invokeMethod(sosService, "recordOffers", sosId, List.<Mechanic>of());
+    ReflectionTestUtils.invokeMethod(
+        sosService,
+        "writeOfferEstimates",
+        "k",
+        new java.util.HashMap<UUID, com.autofik.sos.dto.external.EtaInfo>());
+
+    verifyNoInteractions(sosOfferRepository);
+    verifyNoInteractions(redisTemplate);
+  }
+
+  // Accepting restarts the stall clock: an old move before the acceptance does not count.
+  @Test
+  void noShow_aJobAcceptedAfterTheLastMove_getsTheFullStalledWindow() {
+    BidSos bid = noShowJob(SosStatus.ACCEPTED, minutesAgo(30), null);
+    bid.setRespondedAt(LocalDateTime.now());
+
+    sosService.checkNoShowJobs();
+
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
+  @Test
+  void noShow_aBidAcceptedBeforeTheLastMove_keepsTheMoveAsTheClock() {
+    BidSos bid = noShowJob(SosStatus.ON_THE_WAY, minutesAgo(6), null);
+    bid.setRespondedAt(minutesAgo(20));
+
+    sosService.checkNoShowJobs();
+
+    verify(sosEventProducer)
+        .publishNotification(argThat(n -> n.type().equals("STILL_COMING_CHECK")));
+  }
+
+  @Test
+  void noShow_askedJustNow_isGivenTimeToAnswer() {
+    noShowJob(SosStatus.ON_THE_WAY, minutesAgo(10), LocalDateTime.now());
+
+    sosService.checkNoShowJobs();
+
+    verifyNoInteractions(messagingTemplate, sosEventProducer);
+  }
+
+  @Test
+  void confirmStillComing_afterArrival_isConflict() {
+    SosRequest sos = sosAt(SosStatus.ARRIVED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    stubAssignedMechanic(sos);
+
+    assertThatThrownBy(() -> sosService.confirmStillComing(sosId, mechanicId))
+        .isInstanceOf(com.autofik.sos.exception.ConflictException.class);
+  }
+
+  @Test
+  void getNearbyMechanics_nobodyInTheCells_isEmpty() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
+        .thenReturn(List.of());
+
+    assertThat(sosService.getNearbyMechanics(sosId, userId)).isEmpty();
+    verify(mechanicRepository, never())
+        .filterByRadiusAndBroadcast(anyList(), anyDouble(), anyDouble(), anyDouble());
+  }
+
+  @Test
+  void getNearbyMechanics_nobodyWithinTheRadius_isEmpty() {
+    pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
+        .thenReturn(ids(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            anyList(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(List.of());
+
+    assertThat(sosService.getNearbyMechanics(sosId, userId)).isEmpty();
+    verify(mechanicRepository, never()).findAllWithRateById(anyList());
+  }
+
+  @Test
+  void getByUser_pageWithRows_attachesTheAssignedMechanic() {
+    Pageable pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+    SosRequest sos = sosAt(SosStatus.ACCEPTED);
+    when(sosRequestRepository.findByUserUserId(userId, pageable))
+        .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(sos)));
+    BidSos bid =
+        BidSos.builder().bidId(UUID.randomUUID()).sosRequest(sos).mechanic(mechanic).build();
+    when(bidSosRepository.findWithMechanicBySosIdsAndStatus(List.of(sosId), BidStatus.ACCEPTED))
+        .thenReturn(List.of(bid));
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+
+    assertThat(sosService.getByUser(userId, pageable).getContent()).hasSize(1);
+    verify(mechanicMapper).toResponse(mechanic);
+  }
+
+  @Test
+  void getByUser_emptyPage_asksNoBidQuery() {
+    Pageable pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+    when(sosRequestRepository.findByUserUserId(userId, pageable))
+        .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of()));
+
+    assertThat(sosService.getByUser(userId, pageable).getContent()).isEmpty();
+    verify(bidSosRepository, never()).findWithMechanicBySosIdsAndStatus(anyList(), any());
+  }
+
+  @Test
+  void isEligibleMechanic_asksTheRepositoryWithOrWithoutATicketRadius() {
+    mechanicEligibility(true);
+    SosRequest withRadius = sosAt(SosStatus.PENDING);
+    withRadius.setBroadcastRadiusKm(10);
+    SosRequest withoutRadius = sosAt(SosStatus.PENDING);
+
+    assertThat(sosService.isEligibleMechanic(withRadius, mechanicId)).isTrue();
+    assertThat(sosService.isEligibleMechanic(withoutRadius, mechanicId)).isTrue();
+  }
+
+  @Test
+  void reportCustomerNoShow_arrivalWithoutAnApproveTime_usesTheTimeItWasProposed() {
+    arrivedForNoShow(30);
+    SosStatusHistory arrived =
+        SosStatusHistory.builder()
+            .sosRequest(sosAt(SosStatus.ARRIVED))
+            .toStatus(SosStatus.ARRIVED)
+            .changeAt(minutesAgo(30))
+            .build();
+    when(sosStatusHistoryRepository
+            .findFirstBySosRequestSosIdAndToStatusAndApprovedStatusOrderByChangeAtDesc(
+                sosId, SosStatus.ARRIVED, ApprovedStatus.ACCEPTED))
+        .thenReturn(Optional.of(arrived));
+
+    sosService.reportCustomerNoShow(sosId, mechanicId);
+
+    verify(sosEventProducer).publishStatusUpdated(any());
+  }
+
+  @Test
+  void confirmStillComing_beforeTheMechanicSetsOff_restartsTheClock() {
+    SosRequest sos = sosAt(SosStatus.ACCEPTED);
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+    stubAssignedMechanic(sos);
+    when(sosMapper.toResponse(sos)).thenReturn(sosResponse);
+
+    sosService.confirmStillComing(sosId, mechanicId);
+
+    assertThat(mechanic.getLocationMovedAt()).isNotNull();
+    verify(mechanicRepository).save(mechanic);
+  }
+
+  // F-11: completion cannot be proposed seconds after the job started.
+  @Test
+  void proposeStatusChange_completedTooSoonAfterStart_isConflict() {
+    ReflectionTestUtils.setField(sosService, "minInProgressSeconds", 60);
+    SosRequest sos = sosAt(SosStatus.IN_PROGRESS);
+    sos.setJobStartedAt(LocalDateTime.now().minusSeconds(5));
+    stubProposeBase(sos);
+
+    assertThatThrownBy(
+            () ->
+                sosService.proposeStatusChange(
+                    sosId, new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED)))
+        .isInstanceOf(com.autofik.sos.exception.ConflictException.class)
+        .hasMessageContaining("60 seconds");
+    verify(sosStatusHistoryRepository, never()).save(any());
+  }
+
+  @Test
+  void proposeStatusChange_completedAfterTheMinimum_isAccepted() {
+    ReflectionTestUtils.setField(sosService, "minInProgressSeconds", 60);
+    SosRequest sos = sosAt(SosStatus.IN_PROGRESS);
+    sos.setJobStartedAt(LocalDateTime.now().minusMinutes(10));
+    stubProposeArrival(sos);
+
+    sosService.proposeStatusChange(
+        sosId, new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED));
+
+    verify(sosStatusHistoryRepository).save(any(SosStatusHistory.class));
+  }
+
+  @Test
+  void proposeStatusChange_minimumOffOrNoStartTime_neverBlocks() {
+    for (int minimum : new int[] {0, 60}) {
+      ReflectionTestUtils.setField(sosService, "minInProgressSeconds", minimum);
+      SosRequest sos = sosAt(SosStatus.IN_PROGRESS);
+      sos.setJobStartedAt(minimum == 0 ? LocalDateTime.now() : null);
+      stubProposeArrival(sos);
+
+      sosService.proposeStatusChange(
+          sosId, new ProposeStatusChangeRequest(mechanicId, SosStatus.COMPLETED));
+    }
+    verify(sosStatusHistoryRepository, times(2)).save(any(SosStatusHistory.class));
+  }
+
+  // ── gaps: eligibility guards, cancel ownership, startup re-arm, expiry failure ──
+
+  @Test
+  void isEligibleMechanic_ticketWithoutLocation_isNotEligible() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    sos.setLocation(null);
+
+    assertThat(sosService.isEligibleMechanic(sos, mechanicId)).isFalse();
+  }
+
+  @Test
+  void isEligibleMechanic_ticketWithoutProblemType_isNotEligible() {
+    SosRequest sos = sosAt(SosStatus.PENDING);
+    sos.setProblemType(null);
+
+    assertThat(sosService.isEligibleMechanic(sos, mechanicId)).isFalse();
+  }
+
+  @Test
+  void canView_ownerOfAKnownTicket_isTrue() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+
+    assertThat(sosService.canView(sosId, userId)).isTrue();
+  }
+
+  @Test
+  void canView_unknownTicket_isFalse() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
+
+    assertThat(sosService.canView(sosId, userId)).isFalse();
+  }
+
+  @Test
+  void cancel_notYourTicket_isDeniedAndNothingSaved() {
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+
+    assertThatThrownBy(() -> sosService.cancel(sosId, UUID.randomUUID()))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    verify(sosRequestRepository, never()).save(any());
+  }
+
+  @Test
+  void expireOverduePendingRequests_reArmsTheTimerOfEveryStillOpenTicket() {
+    SosRequest open = sosAt(SosStatus.PENDING);
+    open.setBiddingExpiresAt(LocalDateTime.now().plusMinutes(1));
+    when(sosRequestRepository.findByStatusAndBiddingExpiresAtBefore(
+            eq(SosStatus.PENDING), any(LocalDateTime.class)))
+        .thenReturn(List.of());
+    when(sosRequestRepository.findByStatusAndBiddingExpiresAtAfter(
+            eq(SosStatus.PENDING), any(LocalDateTime.class)))
+        .thenReturn(List.of(open));
+
+    sosService.expireOverduePendingRequests();
+
+    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  @Test
+  void expireOverduePendingRequests_nothingOpen_schedulesNothing() {
+    when(sosRequestRepository.findByStatusAndBiddingExpiresAtBefore(any(), any()))
+        .thenReturn(List.of());
+    when(sosRequestRepository.findByStatusAndBiddingExpiresAtAfter(any(), any()))
+        .thenReturn(List.of());
+
+    sosService.expireOverduePendingRequests();
+
+    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
+  }
+
+  // A ticket without an expiry has nothing to arm.
+  @Test
+  void expireOverduePendingRequests_ticketWithoutExpiry_isNotScheduled() {
+    SosRequest open = sosAt(SosStatus.PENDING);
+    open.setBiddingExpiresAt(null);
+    when(sosRequestRepository.findByStatusAndBiddingExpiresAtBefore(any(), any()))
+        .thenReturn(List.of());
+    when(sosRequestRepository.findByStatusAndBiddingExpiresAtAfter(any(), any()))
+        .thenReturn(List.of(open));
+
+    sosService.expireOverduePendingRequests();
+
+    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
   }
 
   private List<UUID> ids(Mechanic... mechanics) {

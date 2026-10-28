@@ -290,6 +290,8 @@ sos:
     approval-window-seconds: ${SOS_COMPLETION_APPROVAL_WINDOW_SECONDS:120}
     # How often the service looks for requests past that window.
     sweep-interval-ms: ${SOS_COMPLETION_SWEEP_INTERVAL_MS:15000}
+    # F-11: shortest time between starting a job (IN_PROGRESS) and the mechanic proposing COMPLETED; 0 = off
+    min-in-progress-seconds: ${SOS_COMPLETION_MIN_IN_PROGRESS_SECONDS:60}
   create:
     # Minimum gap between two SOS creations by the same user.
     cooldown-seconds: ${SOS_CREATE_COOLDOWN_SECONDS:60}

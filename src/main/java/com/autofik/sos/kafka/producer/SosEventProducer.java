@@ -12,7 +12,9 @@ import com.autofik.sos.dto.event.SosMediaUploadedEvent;
 import com.autofik.sos.dto.event.SosNotificationEvent;
 import com.autofik.sos.dto.event.SosStatusUpdatedEvent;
 import com.autofik.sos.util.AfterCommit;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
@@ -26,9 +28,35 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class SosEventProducer {
 
   private final KafkaTemplate<String, Object> kafkaTemplate;
+
+  // Business counters, one per event kind, counted when the event is handed to Kafka (after the
+  // transaction committed). Tags are fixed vocabularies (event kind, status, notification type,
+  // topic): never an id, a name or a location. Prometheus sees them only where
+  // management.endpoints.web.exposure.include has prometheus.
+  private final MeterRegistry meters;
+
+  private void count(String name, String tagKey, String tagValue) {
+    meters.counter(name, tagKey, tagValue).increment();
+  }
+
+  /** Sends and counts; a send that fails is counted by topic and logged, never thrown. */
+  private void send(String topic, String key, Object event, String kind) {
+    count("sos.events.published", "kind", kind);
+    var result = kafkaTemplate.send(topic, key, event);
+    if (result != null) {
+      result.whenComplete(
+          (ok, error) -> {
+            if (error != null) {
+              count("sos.events.failed", "topic", topic);
+              log.warn("Kafka send to {} failed: {}", topic, error.toString());
+            }
+          });
+    }
+  }
 
   /**
    * Publishes an event indicating a new SOS request has been created.
@@ -37,7 +65,7 @@ public class SosEventProducer {
    */
   public void publishSosCreated(SosCreatedEvent event) {
     AfterCommit.run(
-        () -> kafkaTemplate.send(KafkaConfig.TOPIC_SOS_CREATED, event.sosId().toString(), event));
+        () -> send(KafkaConfig.TOPIC_SOS_CREATED, event.sosId().toString(), event, "sos_created"));
   }
 
   /**
@@ -48,7 +76,8 @@ public class SosEventProducer {
   public void publishBidCreated(BidCreatedEvent event) {
     AfterCommit.run(
         () ->
-            kafkaTemplate.send(KafkaConfig.TOPIC_SOS_BID_CREATED, event.sosId().toString(), event));
+            send(
+                KafkaConfig.TOPIC_SOS_BID_CREATED, event.sosId().toString(), event, "bid_created"));
   }
 
   /**
@@ -59,8 +88,11 @@ public class SosEventProducer {
   public void publishBidAccepted(BidAcceptedEvent event) {
     AfterCommit.run(
         () ->
-            kafkaTemplate.send(
-                KafkaConfig.TOPIC_SOS_BID_ACCEPTED, event.sosId().toString(), event));
+            send(
+                KafkaConfig.TOPIC_SOS_BID_ACCEPTED,
+                event.sosId().toString(),
+                event,
+                "bid_accepted"));
   }
 
   /**
@@ -71,8 +103,11 @@ public class SosEventProducer {
   public void publishBidRejected(BidRejectedEvent event) {
     AfterCommit.run(
         () ->
-            kafkaTemplate.send(
-                KafkaConfig.TOPIC_SOS_BID_REJECTED, event.sosId().toString(), event));
+            send(
+                KafkaConfig.TOPIC_SOS_BID_REJECTED,
+                event.sosId().toString(),
+                event,
+                "bid_rejected"));
   }
 
   /**
@@ -83,8 +118,11 @@ public class SosEventProducer {
   public void publishBidCancelled(BidCancelledEvent event) {
     AfterCommit.run(
         () ->
-            kafkaTemplate.send(
-                KafkaConfig.TOPIC_SOS_BID_CANCELLED, event.sosId().toString(), event));
+            send(
+                KafkaConfig.TOPIC_SOS_BID_CANCELLED,
+                event.sosId().toString(),
+                event,
+                "bid_cancelled"));
   }
 
   /**
@@ -94,9 +132,14 @@ public class SosEventProducer {
    */
   public void publishStatusUpdated(SosStatusUpdatedEvent event) {
     AfterCommit.run(
-        () ->
-            kafkaTemplate.send(
-                KafkaConfig.TOPIC_SOS_STATUS_UPDATED, event.sosId().toString(), event));
+        () -> {
+          count("sos.status.transitions", "to", String.valueOf(event.toStatus()));
+          send(
+              KafkaConfig.TOPIC_SOS_STATUS_UPDATED,
+              event.sosId().toString(),
+              event,
+              "status_updated");
+        });
   }
 
   /**
@@ -107,8 +150,11 @@ public class SosEventProducer {
   public void publishMechanicLocation(MechanicLocationEvent event) {
     AfterCommit.run(
         () ->
-            kafkaTemplate.send(
-                KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED, event.sosId().toString(), event));
+            send(
+                KafkaConfig.TOPIC_MECHANIC_LOCATION_UPDATED,
+                event.sosId().toString(),
+                event,
+                "mechanic_location"));
   }
 
   /**
@@ -119,19 +165,27 @@ public class SosEventProducer {
   public void publishMediaUploaded(SosMediaUploadedEvent event) {
     AfterCommit.run(
         () ->
-            kafkaTemplate.send(
-                KafkaConfig.TOPIC_SOS_MEDIA_UPLOADED, event.sosId().toString(), event));
+            send(
+                KafkaConfig.TOPIC_SOS_MEDIA_UPLOADED,
+                event.sosId().toString(),
+                event,
+                "media_uploaded"));
   }
 
   public void publishNotification(SosNotificationEvent event) {
     // recipientId is null for fan-out notifications (e.g. SOS_CREATED, resolved externally
     // by the notification-service) — null key just means round-robin partitioning for those.
     String key = event.recipientId() != null ? event.recipientId().toString() : null;
-    AfterCommit.run(() -> kafkaTemplate.send(KafkaConfig.TOPIC_SOS_NOTIFICATION, key, event));
+    AfterCommit.run(
+        () -> {
+          count("sos.notifications", "type", String.valueOf(event.type()));
+          send(KafkaConfig.TOPIC_SOS_NOTIFICATION, key, event, "notification");
+        });
   }
 
   public void publishOneSignalPushFailed(OneSignalPushFailedEvent event) {
     AfterCommit.run(
-        () -> kafkaTemplate.send(KafkaConfig.TOPIC_SOS_DLQ, event.recipientId().toString(), event));
+        () ->
+            send(KafkaConfig.TOPIC_SOS_DLQ, event.recipientId().toString(), event, "push_failed"));
   }
 }

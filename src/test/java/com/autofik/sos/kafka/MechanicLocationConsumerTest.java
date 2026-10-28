@@ -88,4 +88,10 @@ class MechanicLocationConsumerTest {
     // No exception = Kafka commits the offset and moves on rather than retrying forever
     assertThatCode(() -> consumer.consume(event)).doesNotThrowAnyException();
   }
+
+  @Test
+  void consume_nullRecord_isIgnored() {
+    consumer.consume(null);
+    org.mockito.Mockito.verifyNoInteractions(messagingTemplate);
+  }
 }

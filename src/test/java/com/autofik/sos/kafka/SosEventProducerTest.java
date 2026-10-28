@@ -1,8 +1,12 @@
 package com.autofik.sos.kafka;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.autofik.sos.config.KafkaConfig;
 import com.autofik.sos.dto.event.BidAcceptedEvent;
@@ -35,6 +39,10 @@ import org.springframework.kafka.core.KafkaTemplate;
 class SosEventProducerTest {
 
   @Mock KafkaTemplate<String, Object> kafkaTemplate;
+
+  @org.mockito.Spy
+  io.micrometer.core.instrument.simple.SimpleMeterRegistry meters =
+      new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
 
   @InjectMocks SosEventProducer producer;
 
@@ -112,5 +120,42 @@ class SosEventProducerTest {
         new OneSignalPushFailedEvent(other, 500, "boom", LocalDateTime.now());
     producer.publishOneSignalPushFailed(e);
     verify(kafkaTemplate).send(KafkaConfig.TOPIC_SOS_DLQ, other.toString(), e);
+  }
+
+  @Test
+  void everyPublish_isCounted_byKind_andStatusTransitionsByTargetStatus() {
+    java.util.UUID id = java.util.UUID.randomUUID();
+    producer.publishStatusUpdated(
+        new com.autofik.sos.dto.event.SosStatusUpdatedEvent(
+            id,
+            null,
+            id,
+            com.autofik.sos.domain.enums.SosStatus.PENDING,
+            com.autofik.sos.domain.enums.SosStatus.EXPIRED,
+            java.time.LocalDateTime.now()));
+    producer.publishNotification(
+        new com.autofik.sos.dto.event.SosNotificationEvent(
+            "SOS_AUTO_REBROADCAST", id, "USER", id, "t", "b"));
+
+    assertThat(meters.counter("sos.events.published", "kind", "status_updated").count())
+        .isEqualTo(1);
+    assertThat(meters.counter("sos.status.transitions", "to", "EXPIRED").count()).isEqualTo(1);
+    assertThat(meters.counter("sos.notifications", "type", "SOS_AUTO_REBROADCAST").count())
+        .isEqualTo(1);
+  }
+
+  @Test
+  void aFailedSend_isCountedByTopic_andDoesNotThrow() {
+    java.util.UUID id = java.util.UUID.randomUUID();
+    when(kafkaTemplate.send(anyString(), anyString(), any()))
+        .thenReturn(
+            java.util.concurrent.CompletableFuture.failedFuture(
+                new RuntimeException("broker down")));
+
+    producer.publishBidCancelled(
+        new com.autofik.sos.dto.event.BidCancelledEvent(id, id, id, java.time.LocalDateTime.now()));
+
+    assertThat(meters.counter("sos.events.failed", "topic", "sos.bid.cancelled").count())
+        .isEqualTo(1);
   }
 }

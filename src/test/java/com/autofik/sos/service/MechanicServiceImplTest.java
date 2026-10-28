@@ -64,6 +64,8 @@ class MechanicServiceImplTest {
 
   @Mock ObjectMapper objectMapper;
 
+  @Mock com.autofik.sos.repository.BidSosRepository bidSosRepository;
+
   @InjectMocks MechanicServiceImpl mechanicService;
 
   private ValueOperations<String, String> valueOps;
@@ -317,6 +319,41 @@ class MechanicServiceImplTest {
     verify(routeEtaService, never()).currentEta(any(), anyDouble(), anyDouble());
   }
 
+  // ── getCurrentLocation: who may look ──────────────────────────────────────
+
+  @Test
+  void getCurrentLocation_driverOnAnActiveJobWithTheMechanic_mayLook() {
+    UUID driverId = UUID.randomUUID();
+    mechanic.setCurrentLocation(GEO.createPoint(new Coordinate(LNG, LAT)));
+    when(bidSosRepository.isOnActiveJobWithDriver(mechanicId, driverId)).thenReturn(true);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+
+    assertThat(mechanicService.getCurrentLocation(mechanicId, driverId).latitude()).isEqualTo(LAT);
+  }
+
+  @Test
+  void getCurrentLocation_anyoneElse_isDenied() {
+    UUID stranger = UUID.randomUUID();
+    when(bidSosRepository.isOnActiveJobWithDriver(mechanicId, stranger)).thenReturn(false);
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> mechanicService.getCurrentLocation(mechanicId, stranger))
+        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+  }
+
+  // ── setAvailability ───────────────────────────────────────────────────────
+
+  @Test
+  void setAvailability_updatesTheProjectionAndSaves() {
+    MechanicResponse mapped = mock(MechanicResponse.class);
+    when(ssoProjection.mechanic(mechanicId)).thenReturn(mechanic);
+    when(mechanicRepository.save(mechanic)).thenReturn(mechanic);
+    when(mechanicMapper.toResponse(mechanic)).thenReturn(mapped);
+
+    assertThat(mechanicService.setAvailability(mechanicId, true)).isSameAs(mapped);
+    assertThat(mechanic.getAvailableStatus()).isTrue();
+  }
+
   // ── getCurrentLocation ────────────────────────────────────────────────────
 
   @Test
@@ -398,5 +435,43 @@ class MechanicServiceImplTest {
 
   private static List<UUID> ids(Mechanic... mechanics) {
     return java.util.Arrays.stream(mechanics).map(Mechanic::getMechanicId).toList();
+  }
+
+  @Test
+  void findAvailable_skipsMechanicsWhoseSkillsOrTagsAreMissing() {
+    Mechanic noSkills = buildMechanicWithSkill("X");
+    noSkills.setSkills(null);
+    Mechanic noTags = buildMechanicWithSkill("X");
+    noTags.getSkills().get(0).setSkillTags(null);
+    when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(noSkills, noTags));
+    when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG)))
+        .thenReturn(ids(noSkills, noTags));
+    when(mechanicRepository.findByIdsWithSkills(anyList())).thenReturn(List.of(noSkills, noTags));
+    when(mechanicMapper.toSummaryList(List.of())).thenReturn(List.of());
+
+    assertThat(mechanicService.findAvailable(LAT, LNG, "Flat Tire", 15)).isEmpty();
+  }
+
+  @Test
+  void findAvailable_blankProblemType_meansNoSkillFilter() {
+    Mechanic m = buildMechanicWithSkill("X");
+    when(mechanicRepository.findByH3Cells(anyList())).thenReturn(List.of(m));
+    when(mechanicRepository.filterByRadius(anyList(), eq(LAT), eq(LNG))).thenReturn(ids(m));
+    when(mechanicMapper.toSummaryList(List.of(m))).thenReturn(List.of());
+
+    assertThat(mechanicService.findAvailable(LAT, LNG, "  ", 15)).isEmpty();
+    org.mockito.Mockito.verify(mechanicRepository, org.mockito.Mockito.never())
+        .findByIdsWithSkills(anyList());
+  }
+
+  @Test
+  void updateLocation_redisKnownDown_goesStraightToKafka() {
+    redisGate.markDown();
+    when(locationWriter.persistAndResolveSos(mechanicId, LAT, LNG, sosId)).thenReturn(sosId);
+
+    mechanicService.updateLocation(mechanicId, LAT, LNG, sosId);
+
+    verify(sosEventProducer).publishMechanicLocation(any());
+    verify(redisTemplate, never()).convertAndSend(anyString(), anyString());
   }
 }

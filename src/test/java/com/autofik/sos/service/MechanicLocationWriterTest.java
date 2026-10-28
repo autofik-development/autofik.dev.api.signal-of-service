@@ -200,4 +200,45 @@ class MechanicLocationWriterTest {
 
     assertThat(writer.persistAndResolveSos(mechanicId, LAT, LNG, null)).isNull();
   }
+
+  @Test
+  void redisKnownDown_secondPingInsideTheWindow_isThrottledInProcess() {
+    redisGate.markDown();
+
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+
+    verify(mechanicRepository, times(1))
+        .updateLocation(
+            eq(mechanicId),
+            anyDouble(),
+            anyDouble(),
+            anyString(),
+            anyDouble(),
+            any(LocalDateTime.class));
+  }
+
+  @Test
+  void mechanicNotFound_andReleasingTheKeyFails_stillThrowsTheNotFound() {
+    when(mechanicRepository.updateLocation(
+            eq(mechanicId), anyDouble(), anyDouble(), anyString(), anyDouble(), any()))
+        .thenReturn(0);
+    doThrow(new RuntimeException("redis gone")).when(redisTemplate).delete(throttleKey);
+
+    assertThatThrownBy(() -> writer.persistAndResolveSos(mechanicId, LAT, LNG, null))
+        .isInstanceOf(EntityNotFoundException.class);
+    assertThat(redisGate.isDown()).isTrue();
+  }
+
+  @Test
+  void redisKnownDown_andTheWindowHasPassed_theNextPingPersistsAgain() {
+    redisGate.markDown();
+    org.springframework.test.util.ReflectionTestUtils.setField(writer, "pgSyncSeconds", 0);
+
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+    writer.persistAndResolveSos(mechanicId, LAT, LNG, null);
+
+    verify(mechanicRepository, times(2))
+        .updateLocation(eq(mechanicId), anyDouble(), anyDouble(), anyString(), anyDouble(), any());
+  }
 }
