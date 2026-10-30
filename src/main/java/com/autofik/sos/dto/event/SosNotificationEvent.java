@@ -1,6 +1,7 @@
 package com.autofik.sos.dto.event;
 
 import com.autofik.sos.dto.external.EtaInfo;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -22,16 +23,51 @@ public record SosNotificationEvent(
     List<String> photoUrls,
     EtaInfo estimate,
     List<UUID> recipientIds,
-    Customer customer) {
+    Customer customer,
+    String problemType,
+    OffsetDateTime biddingExpiresAt,
+    String locationAddress) {
 
   /** Who raised the SOS and with what car; mechanic fan-out only, null on every other frame. */
   public record Customer(
-      UUID userId,
       String name,
       String vehicleBrand,
       String vehicleModel,
       String vehicleYear,
-      String licensePlate) {}
+      String licensePlate,
+      String fuelType) {}
+
+  /**
+   * {@code problemType} (machine-readable, for the icon), {@code biddingExpiresAt} (+07:00, the app
+   * counts down to it itself) and {@code locationAddress} (where the vehicle is). Null on every
+   * frame that is not an offer.
+   */
+  public SosNotificationEvent(
+      String type,
+      UUID recipientId,
+      String recipientRole,
+      UUID sosId,
+      String title,
+      String body,
+      List<String> photoUrls,
+      EtaInfo estimate,
+      List<UUID> recipientIds,
+      Customer customer) {
+    this(
+        type,
+        recipientId,
+        recipientRole,
+        sosId,
+        title,
+        body,
+        photoUrls,
+        estimate,
+        recipientIds,
+        customer,
+        null,
+        null,
+        null);
+  }
 
   public SosNotificationEvent(
       String type,

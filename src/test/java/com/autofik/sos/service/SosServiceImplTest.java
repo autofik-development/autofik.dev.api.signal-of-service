@@ -3097,6 +3097,7 @@ class SosServiceImplTest {
   @Test
   void openOffers_carryTheCustomerAndVehicle() {
     SosRequest a = openTicket(sosId, resolvedKey);
+    a.setLocationAddress("Street 271, Phnom Penh");
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
         .thenReturn(List.of(sosId));
@@ -3112,8 +3113,11 @@ class SosServiceImplTest {
     SosNotificationEvent offer = sosService.openOffersFor(mechanicId).get(0);
 
     assertThat(offer.customer()).isNotNull();
-    assertThat(offer.customer().userId()).isEqualTo(userId);
     assertThat(offer.customer().name()).isEqualTo("Alice");
+    assertThat(offer.locationAddress()).isEqualTo("Street 271, Phnom Penh");
+    assertThat(offer.problemType()).isEqualTo(resolvedKey);
+    assertThat(offer.biddingExpiresAt()).isNotNull();
+    assertThat(offer.biddingExpiresAt().getOffset().getTotalSeconds()).isEqualTo(7 * 3600);
     assertThat(offer.customer().vehicleBrand()).isEqualTo("Toyota");
     assertThat(offer.customer().vehicleModel()).isEqualTo("Camry");
   }
