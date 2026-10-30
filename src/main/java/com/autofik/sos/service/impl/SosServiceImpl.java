@@ -1732,6 +1732,7 @@ public class SosServiceImpl implements SosService {
     // what the job actually is before bidding.
     List<String> photoUrls = sosMediaService.getObject().photoUrls(sosId);
     Map<UUID, EtaInfo> estimates = offerEstimates(sosId, matched, lat, lng);
+    SosNotificationEvent.Customer customer = customerOf(sosId);
     // Straight-line radius ignores the road network: drop anyone the estimate says is too far to
     // drive. No estimate (beyond the nearest few, or Google down) never blocks an offer.
     List<Mechanic> reachable =
@@ -1749,8 +1750,32 @@ public class SosServiceImpl implements SosService {
             messagingTemplate.convertAndSendToUser(
                 m.getMechanicId().toString(),
                 "/queue/sos-new-request",
-                offerFrame(sosId, problemType, photoUrls, estimates.get(m.getMechanicId()))));
+                offerFrame(
+                    sosId, problemType, photoUrls, estimates.get(m.getMechanicId()), customer)));
     recordOffers(sosId, reachable);
+  }
+
+  // Same for every mechanic offered this ticket, so it is read once per fan-out. A failed read
+  // only drops the customer block; the offer itself still goes out.
+  private SosNotificationEvent.Customer customerOf(UUID sosId) {
+    try {
+      return sosRequestRepository.findWithCustomerBySosId(sosId).map(this::customerOf).orElse(null);
+    } catch (RuntimeException e) {
+      log.warn("Could not load the customer for SOS {}: {}", sosId, e.toString());
+      return null;
+    }
+  }
+
+  private SosNotificationEvent.Customer customerOf(SosRequest sos) {
+    User u = sos.getUser();
+    Vehicle v = sos.getVehicle();
+    return new SosNotificationEvent.Customer(
+        u.getUserId(),
+        u.getName(),
+        v.getCarBrand(),
+        v.getCarModel(),
+        v.getCarModelYear(),
+        v.getLicensePlate());
   }
 
   // G12: who was offered, so an offer never answered by a bid can be counted later. A statistics
@@ -1768,7 +1793,11 @@ public class SosServiceImpl implements SosService {
   // The offer a mechanic receives, shared by the broadcast and the reconnect sync so the two cannot
   // drift apart.
   private static SosNotificationEvent offerFrame(
-      UUID sosId, String problemType, List<String> photoUrls, EtaInfo estimate) {
+      UUID sosId,
+      String problemType,
+      List<String> photoUrls,
+      EtaInfo estimate,
+      SosNotificationEvent.Customer customer) {
     return new SosNotificationEvent(
         "SOS_CREATED",
         null,
@@ -1777,7 +1806,9 @@ public class SosServiceImpl implements SosService {
         "New SOS request nearby",
         "Problem: " + problemType,
         photoUrls,
-        estimate);
+        estimate,
+        null,
+        customer);
   }
 
   // A 60 s bidding window keeps the number of open tickets around one mechanic tiny, so a small cap
@@ -1809,7 +1840,8 @@ public class SosServiceImpl implements SosService {
               id,
               sos.getProblemType(),
               sosMediaService.getObject().photoUrls(id),
-              readOfferEstimates(OFFER_ETA_KEY_PREFIX + id).get(mechanicId)));
+              readOfferEstimates(OFFER_ETA_KEY_PREFIX + id).get(mechanicId),
+              customerOf(sos)));
     }
     return offers;
   }

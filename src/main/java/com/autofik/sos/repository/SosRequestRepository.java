@@ -32,6 +32,10 @@ public interface SosRequestRepository extends JpaRepository<SosRequest, UUID> {
    */
   Page<SosRequest> findByUserUserId(UUID userId, Pageable pageable);
 
+  /** The ticket with its customer and vehicle loaded, for offer frames built outside a session. */
+  @Query("select s from SosRequest s join fetch s.user join fetch s.vehicle where s.sosId = :sosId")
+  Optional<SosRequest> findWithCustomerBySosId(@Param("sosId") UUID sosId);
+
   /**
    * Retrieves a paginated list of all SOS requests currently matching a specific system status.
    * Frequently used by administrative dashboards or discovery lists for available mechanics.

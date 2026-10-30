@@ -21,7 +21,40 @@ public record SosNotificationEvent(
     String body,
     List<String> photoUrls,
     EtaInfo estimate,
-    List<UUID> recipientIds) {
+    List<UUID> recipientIds,
+    Customer customer) {
+
+  /** Who raised the SOS and with what car; mechanic fan-out only, null on every other frame. */
+  public record Customer(
+      UUID userId,
+      String name,
+      String vehicleBrand,
+      String vehicleModel,
+      String vehicleYear,
+      String licensePlate) {}
+
+  public SosNotificationEvent(
+      String type,
+      UUID recipientId,
+      String recipientRole,
+      UUID sosId,
+      String title,
+      String body,
+      List<String> photoUrls,
+      EtaInfo estimate,
+      List<UUID> recipientIds) {
+    this(
+        type,
+        recipientId,
+        recipientRole,
+        sosId,
+        title,
+        body,
+        photoUrls,
+        estimate,
+        recipientIds,
+        null);
+  }
 
   public SosNotificationEvent(
       String type,
@@ -32,7 +65,7 @@ public record SosNotificationEvent(
       String body,
       List<String> photoUrls,
       EtaInfo estimate) {
-    this(type, recipientId, recipientRole, sosId, title, body, photoUrls, estimate, null);
+    this(type, recipientId, recipientRole, sosId, title, body, photoUrls, estimate, null, null);
   }
 
   public SosNotificationEvent(

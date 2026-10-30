@@ -3095,6 +3095,30 @@ class SosServiceImplTest {
   }
 
   @Test
+  void openOffers_carryTheCustomerAndVehicle() {
+    SosRequest a = openTicket(sosId, resolvedKey);
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
+        .thenReturn(List.of(sosId));
+    when(sosRequestRepository.findAllById(any())).thenReturn(List.of(a));
+    mechanicEligibility(true);
+    when(redisTemplate.opsForHash()).thenReturn(hashOps);
+    when(hashOps.entries(anyString()))
+        .thenReturn(
+            Map.of(
+                mechanicId.toString(),
+                "800\t420\t0.8 km\t7 mins\t" + java.time.Instant.now().getEpochSecond()));
+
+    SosNotificationEvent offer = sosService.openOffersFor(mechanicId).get(0);
+
+    assertThat(offer.customer()).isNotNull();
+    assertThat(offer.customer().userId()).isEqualTo(userId);
+    assertThat(offer.customer().name()).isEqualTo("Alice");
+    assertThat(offer.customer().vehicleBrand()).isEqualTo("Toyota");
+    assertThat(offer.customer().vehicleModel()).isEqualTo("Camry");
+  }
+
+  @Test
   void openOffers_aMechanicWithNoStoredLocation_getsNothing_andNoQueryRuns() {
     mechanic.setCurrentLocation(null);
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
