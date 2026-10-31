@@ -114,7 +114,9 @@ public class UserProfileSync {
       if (s.phone != null) {
         releasePhoneHeldByAnother(s.phone, userId);
       }
-      user = userRepository.save(User.builder().userId(userId).name(name).phone(phone).build());
+      user =
+          userRepository.save(
+              User.builder().userId(userId).name(name).phone(phone).profileImage(s.image).build());
       log.info("Created driver {} from the gateway profile", userId);
     } else {
       boolean changed = false;
@@ -125,6 +127,10 @@ public class UserProfileSync {
       if (s.phone != null && !s.phone.equals(user.getPhone())) {
         releasePhoneHeldByAnother(s.phone, userId);
         user.setPhone(s.phone);
+        changed = true;
+      }
+      if (s.image != null && !s.image.equals(user.getProfileImage())) {
+        user.setProfileImage(s.image);
         changed = true;
       }
       if (changed) {
@@ -165,6 +171,7 @@ public class UserProfileSync {
               .carModelYear(v.year)
               .fuelType(v.fuel)
               .licensePlate(v.plate)
+              .image(v.image)
               .build());
       return;
     }
@@ -194,24 +201,36 @@ public class UserProfileSync {
       vehicle.setLicensePlate(v.plate);
       changed = true;
     }
+    if (v.image != null && !v.image.equals(vehicle.getImage())) {
+      vehicle.setImage(v.image);
+      changed = true;
+    }
     if (changed) {
       vehicleRepository.save(vehicle);
     }
   }
 
   private record VehicleSnap(
-      String id, String brand, String model, String year, FuelType fuel, String plate) {}
+      String id,
+      String brand,
+      String model,
+      String year,
+      FuelType fuel,
+      String plate,
+      String image) {}
 
   /** The header's profile after every bound has been applied; a failed bound leaves a null. */
   private static final class Snapshot {
     String name;
     String phone;
+    String image;
     List<VehicleSnap> vehicles = List.of();
 
     static Snapshot of(UserContext.User ctx) {
       Snapshot s = new Snapshot();
       if (ctx.profile() != null) {
         s.name = MechanicProfileSync.bounded("username", ctx.profile().username(), MAX_NAME);
+        s.image = MechanicProfileSync.imageUrl("profileImage", ctx.profile().profileImage());
       }
       s.phone = MechanicProfileSync.bounded("phoneNumber", ctx.phoneNumber(), MAX_PHONE);
       if (ctx.vehicles() != null) {
@@ -238,7 +257,8 @@ public class UserProfileSync {
           MechanicProfileSync.bounded("carModel", v.carModel(), MAX_VEHICLE_FIELD),
           MechanicProfileSync.bounded("carModelYear", v.carModelYear(), MAX_VEHICLE_FIELD),
           fuel(v.fuelType()),
-          MechanicProfileSync.bounded("licensePlate", v.licensePlate(), MAX_VEHICLE_FIELD));
+          MechanicProfileSync.bounded("licensePlate", v.licensePlate(), MAX_VEHICLE_FIELD),
+          MechanicProfileSync.imageUrl("vehicle image", v.image()));
     }
 
     private static FuelType fuel(String raw) {
@@ -255,7 +275,7 @@ public class UserProfileSync {
 
     String fingerprint() {
       StringBuilder sb = new StringBuilder();
-      sb.append(name).append('|').append(phone);
+      sb.append(name).append('|').append(phone).append('|').append(image);
       for (VehicleSnap v : vehicles) {
         sb.append('|').append(v);
       }

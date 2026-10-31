@@ -477,7 +477,8 @@ class BidServiceImplTest {
     com.autofik.sos.dto.response.MechanicResponse m =
         withMech
             ? new com.autofik.sos.dto.response.MechanicResponse(
-                null, null, null, null, null, null, null, null, avgRate, null, null, null, null)
+                null, null, null, null, null, null, null, null, avgRate, null, null, null, null,
+                null)
             : null;
     return new BidSosResponse(
         UUID.randomUUID(),

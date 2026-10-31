@@ -75,7 +75,7 @@ class MechanicProfileSyncTest {
         false,
         phone,
         type,
-        new MechanicContext.Profile(name, email),
+        new MechanicContext.Profile(name, email, null),
         new MechanicContext.SkillService(tags, radius),
         avgRate);
   }
@@ -93,6 +93,33 @@ class MechanicProfileSyncTest {
 
   private void stubNoRateRow() {
     when(rates.findByMechanic(any())).thenReturn(Optional.empty());
+  }
+
+  @Test
+  void aNewMechanic_storesItsProfileImage_onlyWhenHttps() {
+    when(mechanics.findById(id)).thenReturn(Optional.empty());
+    when(mechanics.save(any(Mechanic.class))).thenAnswer(i -> i.getArgument(0));
+    stubNoRateRow();
+    MechanicContext.Mechanic withImage =
+        new MechanicContext.Mechanic(
+            "x",
+            "MECHANIC",
+            null,
+            true,
+            true,
+            "active",
+            false,
+            "+855123456789",
+            "freelance",
+            new MechanicContext.Profile("John Doe", null, "https://cdn.example/m/1.png"),
+            null,
+            null);
+
+    sync.sync(id, withImage);
+
+    ArgumentCaptor<Mechanic> saved = ArgumentCaptor.forClass(Mechanic.class);
+    verify(mechanics).save(saved.capture());
+    assertThat(saved.getValue().getProfileImage()).isEqualTo("https://cdn.example/m/1.png");
   }
 
   @Test

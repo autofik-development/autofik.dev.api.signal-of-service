@@ -53,13 +53,13 @@ class UserProfileSyncBranchesTest {
         "active",
         false,
         phone,
-        username == null ? null : new UserContext.Profile(username),
+        username == null ? null : new UserContext.Profile(username, null),
         vehicles);
   }
 
   private static UserContext.ContextVehicle car(
       String id, String brand, String model, String year, String fuel, String plate) {
-    return new UserContext.ContextVehicle(id, brand, model, year, fuel, plate);
+    return new UserContext.ContextVehicle(id, brand, model, year, fuel, plate, null);
   }
 
   private User existing() {
@@ -279,6 +279,7 @@ class UserProfileSyncBranchesTest {
             null,
             null,
             List.of(
-                new UserContext.ContextVehicle("v1", "Toyota", "Camry", "2022", "petrol", "1A"))));
+                new UserContext.ContextVehicle(
+                    "v1", "Toyota", "Camry", "2022", "petrol", "1A", null))));
   }
 }

@@ -1785,7 +1785,9 @@ public class SosServiceImpl implements SosService {
         v.getCarModel(),
         v.getCarModelYear(),
         v.getLicensePlate(),
-        v.getFuelType() == null ? null : v.getFuelType().name());
+        v.getFuelType() == null ? null : v.getFuelType().name(),
+        u.getProfileImage(),
+        v.getImage());
   }
 
   private static final ZoneId CAMBODIA = ZoneId.of("Asia/Phnom_Penh");

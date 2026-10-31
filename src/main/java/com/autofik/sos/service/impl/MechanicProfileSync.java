@@ -43,6 +43,7 @@ public class MechanicProfileSync {
   private static final int MAX_NAME = 30;
   private static final int MAX_EMAIL = 30;
   private static final int MAX_PHONE = 20;
+  static final int MAX_IMAGE_URL = 500;
   private static final int MAX_TAGS = 30;
   private static final int MAX_TAG_LENGTH = 50;
   private static final int MAX_RADIUS_KM = 100;
@@ -110,6 +111,7 @@ public class MechanicProfileSync {
                   .fullName(s.fullName)
                   .phoneNumber(s.phone)
                   .email(s.email)
+                  .profileImage(s.image)
                   .mechanicRole(s.role)
                   .serviceRadiusKm(s.radiusKm != null ? s.radiusKm : 10)
                   .build());
@@ -118,6 +120,7 @@ public class MechanicProfileSync {
       if (s.fullName != null) mechanic.setFullName(s.fullName);
       if (s.phone != null) mechanic.setPhoneNumber(s.phone);
       if (s.email != null) mechanic.setEmail(s.email);
+      if (s.image != null) mechanic.setProfileImage(s.image);
       if (s.role != null) mechanic.setMechanicRole(s.role);
       if (s.radiusKm != null) mechanic.setServiceRadiusKm(s.radiusKm);
       mechanicRepository.save(mechanic);
@@ -169,6 +172,16 @@ public class MechanicProfileSync {
     return mechanic.getMechanicId();
   }
 
+  /** Shared with {@link UserProfileSync}: an https URL within the column size, else null. */
+  static String imageUrl(String field, String value) {
+    String url = Snapshot.bounded(field, value, MAX_IMAGE_URL);
+    if (url != null && !url.regionMatches(true, 0, "https://", 0, 8)) {
+      log.warn("Profile {} is not an https URL; not stored", field);
+      return null;
+    }
+    return url;
+  }
+
   /** Shared with {@link UserProfileSync}: trimmed value, or null when blank or over {@code max}. */
   static String bounded(String field, String value, int max) {
     return Snapshot.bounded(field, value, max);
@@ -179,6 +192,7 @@ public class MechanicProfileSync {
     String fullName;
     String phone;
     String email;
+    String image;
     MechanicRole role;
     Integer radiusKm;
     String[] tags; // null = the header said nothing about tags
@@ -189,6 +203,7 @@ public class MechanicProfileSync {
       if (ctx.profile() != null) {
         s.fullName = bounded("fullName", ctx.profile().fullName(), MAX_NAME);
         s.email = bounded("email", ctx.profile().email(), MAX_EMAIL);
+        s.image = imageUrl("profileImage", ctx.profile().profileImage());
       }
       s.phone = bounded("phoneNumber", ctx.phoneNumber(), MAX_PHONE);
       s.role = role(ctx.mechanicType());
@@ -206,6 +221,7 @@ public class MechanicProfileSync {
           Objects.toString(fullName),
           Objects.toString(phone),
           Objects.toString(email),
+          Objects.toString(image),
           Objects.toString(role),
           Objects.toString(radiusKm),
           tags == null ? "null" : String.join(",", tags),

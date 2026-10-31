@@ -63,12 +63,12 @@ class UserProfileSyncTest {
         "active",
         false,
         phone,
-        username == null ? null : new UserContext.Profile(username),
+        username == null ? null : new UserContext.Profile(username, null),
         vehicles);
   }
 
   private static UserContext.ContextVehicle car(String id) {
-    return new UserContext.ContextVehicle(id, "Toyota", "Camry", "2022", "petrol", "1A 2345");
+    return new UserContext.ContextVehicle(id, "Toyota", "Camry", "2022", "petrol", "1A 2345", null);
   }
 
   private UserContext.User sample() {
@@ -110,6 +110,42 @@ class UserProfileSyncTest {
     assertThat(vehicle.getValue().getCarModelYear()).isEqualTo("2022");
     assertThat(vehicle.getValue().getFuelType()).isEqualTo(FuelType.PETROL);
     assertThat(vehicle.getValue().getLicensePlate()).isEqualTo("1A 2345");
+  }
+
+  @Test
+  void profileAndVehicleImages_areStored_whenHttps_andDroppedWhenNot() {
+    when(users.findById(id)).thenReturn(Optional.empty());
+    when(users.findByPhone("+855123456789")).thenReturn(Optional.empty());
+    when(vehicles.findById("v1")).thenReturn(Optional.empty());
+    when(vehicles.findById("v2")).thenReturn(Optional.empty());
+    stubSavesReturnArgument();
+
+    sync.sync(
+        id,
+        new UserContext.User(
+            "ignored",
+            "USER",
+            null,
+            true,
+            true,
+            "active",
+            false,
+            "+855123456789",
+            new UserContext.Profile("bothtest15", "https://cdn.example/u/1.png"),
+            List.of(
+                new UserContext.ContextVehicle(
+                    "v1", "Toyota", null, null, null, null, "https://cdn.example/v/1.png"),
+                new UserContext.ContextVehicle(
+                    "v2", "Honda", null, null, null, null, "javascript:alert(1)"))));
+
+    ArgumentCaptor<User> user = ArgumentCaptor.forClass(User.class);
+    verify(users).save(user.capture());
+    assertThat(user.getValue().getProfileImage()).isEqualTo("https://cdn.example/u/1.png");
+    ArgumentCaptor<Vehicle> vehicle = ArgumentCaptor.forClass(Vehicle.class);
+    verify(vehicles, org.mockito.Mockito.times(2)).save(vehicle.capture());
+    assertThat(vehicle.getAllValues())
+        .extracting(Vehicle::getImage)
+        .containsExactly("https://cdn.example/v/1.png", null);
   }
 
   @Test
@@ -293,7 +329,8 @@ class UserProfileSyncTest {
         ctx(
             "name",
             "+855123456789",
-            List.of(new UserContext.ContextVehicle("v1", "Toyota", null, null, "steam", null))));
+            List.of(
+                new UserContext.ContextVehicle("v1", "Toyota", null, null, "steam", null, null))));
 
     ArgumentCaptor<Vehicle> vehicle = ArgumentCaptor.forClass(Vehicle.class);
     verify(vehicles).save(vehicle.capture());

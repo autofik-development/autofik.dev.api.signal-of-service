@@ -73,7 +73,7 @@ public record MechanicContext(Mechanic mechanic, Data data) {
   }
 
   @JsonIgnoreProperties(ignoreUnknown = true)
-  public record Profile(String fullName, String email) {}
+  public record Profile(String fullName, String email, String profileImage) {}
 
   @JsonIgnoreProperties(ignoreUnknown = true)
   public record SkillService(List<String> skillTag, Integer serviceRadiusKm) {}

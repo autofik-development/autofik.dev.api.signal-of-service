@@ -48,7 +48,7 @@ public record UserContext(User user) {
   }
 
   @JsonIgnoreProperties(ignoreUnknown = true)
-  public record Profile(String username) {}
+  public record Profile(String username, String profileImage) {}
 
   /** One of the driver's vehicles as SSO describes it; {@code id} is SSO's id, not a UUID. */
   @JsonIgnoreProperties(ignoreUnknown = true)
@@ -58,5 +58,6 @@ public record UserContext(User user) {
       String carModel,
       String carModelYear,
       String fuelType,
-      String licensePlate) {}
+      String licensePlate,
+      String image) {}
 }
