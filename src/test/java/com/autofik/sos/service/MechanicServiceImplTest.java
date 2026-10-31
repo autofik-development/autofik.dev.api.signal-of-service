@@ -110,9 +110,11 @@ class MechanicServiceImplTest {
             0,
             true,
             null,
+            null,
             null);
     mechanicSummary =
-        new MechanicSummaryResponse(mechanicId, "Bob", null, 10, BigDecimal.ZERO, true, null, null);
+        new MechanicSummaryResponse(
+            mechanicId, "Bob", null, 10, BigDecimal.ZERO, true, null, null, null);
   }
 
   // ── getById ───────────────────────────────────────────────────────────────
@@ -168,7 +170,15 @@ class MechanicServiceImplTest {
     Mechanic engineMechanic = buildMechanicWithSkill("Engine");
     MechanicSummaryResponse flatTireResponse =
         new MechanicSummaryResponse(
-            flatTireMechanic.getMechanicId(), "Bob", null, 10, BigDecimal.ZERO, true, null, null);
+            flatTireMechanic.getMechanicId(),
+            "Bob",
+            null,
+            10,
+            BigDecimal.ZERO,
+            true,
+            null,
+            null,
+            null);
 
     when(mechanicRepository.findByH3Cells(anyList()))
         .thenReturn(List.of(flatTireMechanic, engineMechanic));

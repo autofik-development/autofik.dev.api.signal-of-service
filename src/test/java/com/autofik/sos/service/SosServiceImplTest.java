@@ -1302,6 +1302,7 @@ class SosServiceImplTest {
             null,
             true,
             null,
+            null,
             null);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(sosMapper.toResponse(pendingSos)).thenReturn(sosResponse);
@@ -1467,7 +1468,20 @@ class SosServiceImplTest {
             .build();
     MechanicResponse assigned =
         new MechanicResponse(
-            mechanicId, "Bob", "081", null, null, null, null, null, null, null, true, null, null);
+            mechanicId,
+            "Bob",
+            "081",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            true,
+            null,
+            null,
+            null);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(bidSosRepository.existsBySosRequestSosIdAndMechanicMechanicIdAndStatusIn(
             sosId, mechanicId, LIVE_BIDS))
@@ -1500,7 +1514,7 @@ class SosServiceImplTest {
         null,
         null,
         0,
-        new UserResponse(userId, "Alice", "012", null, null),
+        new UserResponse(userId, "Alice", "012", null, null, null),
         null,
         null,
         null,
@@ -1539,7 +1553,7 @@ class SosServiceImplTest {
     pendingSos.setLocation(GEO.createPoint(new Coordinate(104.9282, 11.5573)));
     pendingSos.setBroadcastRadiusKm(25); // already auto-expanded past the default 15
     MechanicSummaryResponse summary =
-        new MechanicSummaryResponse(mechanicId, "Bob", null, null, null, true, 11.56, 104.93);
+        new MechanicSummaryResponse(mechanicId, "Bob", null, null, null, true, 11.56, 104.93, null);
     when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
     when(mechanicRepository.findByH3CellsAndSkillTag(anyList(), eq(resolvedKey), any()))
         .thenReturn(ids(mechanic));
@@ -1566,7 +1580,8 @@ class SosServiceImplTest {
         .thenReturn(ids(mechanic));
     when(mechanicMapper.toSummary(mechanic))
         .thenReturn(
-            new MechanicSummaryResponse(mechanicId, "Bob", null, null, null, true, null, null));
+            new MechanicSummaryResponse(
+                mechanicId, "Bob", null, null, null, true, null, null, null));
 
     List<MechanicSummaryResponse> result = sosService.getNearbyMechanics(sosId, userId);
 
@@ -3098,6 +3113,8 @@ class SosServiceImplTest {
   void openOffers_carryTheCustomerAndVehicle() {
     SosRequest a = openTicket(sosId, resolvedKey);
     a.setLocationAddress("Street 271, Phnom Penh");
+    a.getUser().setProfileImage("https://cdn.example/u/1.png");
+    a.getVehicle().setImage("https://cdn.example/v/1.png");
     when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
     when(sosRequestRepository.findOpenIdsNear(eq(mechanicId), any(), anyInt()))
         .thenReturn(List.of(sosId));
@@ -3120,6 +3137,8 @@ class SosServiceImplTest {
     assertThat(offer.biddingExpiresAt().getOffset().getTotalSeconds()).isEqualTo(7 * 3600);
     assertThat(offer.customer().vehicleBrand()).isEqualTo("Toyota");
     assertThat(offer.customer().vehicleModel()).isEqualTo("Camry");
+    assertThat(offer.customer().profileImage()).isEqualTo("https://cdn.example/u/1.png");
+    assertThat(offer.customer().vehicleImage()).isEqualTo("https://cdn.example/v/1.png");
   }
 
   @Test

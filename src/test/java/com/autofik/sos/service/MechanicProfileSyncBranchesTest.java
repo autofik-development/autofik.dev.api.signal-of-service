@@ -58,7 +58,7 @@ class MechanicProfileSyncBranchesTest {
   }
 
   private static MechanicContext.Profile profile(String name, String email) {
-    return new MechanicContext.Profile(name, email);
+    return new MechanicContext.Profile(name, email, null);
   }
 
   private static MechanicContext.SkillService skill(List<String> tags, Integer radius) {

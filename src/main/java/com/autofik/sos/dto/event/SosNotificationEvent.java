@@ -35,7 +35,9 @@ public record SosNotificationEvent(
       String vehicleModel,
       String vehicleYear,
       String licensePlate,
-      String fuelType) {}
+      String fuelType,
+      String profileImage,
+      String vehicleImage) {}
 
   /**
    * {@code problemType} (machine-readable, for the icon), {@code biddingExpiresAt} (+07:00, the app

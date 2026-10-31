@@ -45,6 +45,10 @@ public class User {
   @ToString.Include
   private UserStatus status = UserStatus.ACTIVE;
 
+  // SSO profile photo URL; synced from the gateway profile.
+  @Column(name = "profile_image", length = 500)
+  private String profileImage;
+
   // Used for referral program tracking; generated at registration.
   @Column(name = "referer_code", unique = true)
   @ToString.Include

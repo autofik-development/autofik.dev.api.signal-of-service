@@ -56,6 +56,10 @@ public class Mechanic {
   @ToString.Include
   private MechanicRole mechanicRole;
 
+  // SSO profile photo URL; synced from the gateway profile.
+  @Column(name = "profile_image", length = 500)
+  private String profileImage;
+
   @Column(name = "referral_code", unique = true)
   private String referralCode;
 

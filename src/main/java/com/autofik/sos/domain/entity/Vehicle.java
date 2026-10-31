@@ -53,6 +53,10 @@ public class Vehicle {
   @ToString.Include
   private FuelType fuelType;
 
+  // SSO photo URL of the vehicle; synced from the gateway profile.
+  @Column(name = "image", length = 500)
+  private String image;
+
   // Relations
   // Owner of this vehicle. Lazily fetched; every vehicle must belong to a user.
   @ManyToOne(fetch = FetchType.LAZY)

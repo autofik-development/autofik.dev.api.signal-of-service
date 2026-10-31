@@ -17,4 +17,5 @@ public record MechanicResponse(
     Integer rateCount,
     Boolean availableStatus,
     Double latitude,
-    Double longitude) {}
+    Double longitude,
+    String profileImage) {}
