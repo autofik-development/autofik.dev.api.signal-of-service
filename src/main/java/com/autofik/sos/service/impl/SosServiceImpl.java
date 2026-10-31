@@ -50,6 +50,7 @@ import jakarta.persistence.EntityNotFoundException;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -1732,6 +1733,10 @@ public class SosServiceImpl implements SosService {
     // what the job actually is before bidding.
     List<String> photoUrls = sosMediaService.getObject().photoUrls(sosId);
     Map<UUID, EtaInfo> estimates = offerEstimates(sosId, matched, lat, lng);
+    SosRequest ticket = ticketOf(sosId);
+    SosNotificationEvent.Customer customer = ticket == null ? null : customerOf(ticket);
+    LocalDateTime deadline = ticket == null ? null : ticket.getBiddingExpiresAt();
+    String address = ticket == null ? null : ticket.getLocationAddress();
     // Straight-line radius ignores the road network: drop anyone the estimate says is too far to
     // drive. No estimate (beyond the nearest few, or Google down) never blocks an offer.
     List<Mechanic> reachable =
@@ -1749,8 +1754,48 @@ public class SosServiceImpl implements SosService {
             messagingTemplate.convertAndSendToUser(
                 m.getMechanicId().toString(),
                 "/queue/sos-new-request",
-                offerFrame(sosId, problemType, photoUrls, estimates.get(m.getMechanicId()))));
+                offerFrame(
+                    sosId,
+                    problemType,
+                    photoUrls,
+                    estimates.get(m.getMechanicId()),
+                    customer,
+                    deadline,
+                    address)));
     recordOffers(sosId, reachable);
+  }
+
+  // Same for every mechanic offered this ticket, so it is read once per fan-out. A failed read
+  // only drops the customer block and the deadline; the offer itself still goes out.
+  private SosRequest ticketOf(UUID sosId) {
+    try {
+      return sosRequestRepository.findWithCustomerBySosId(sosId).orElse(null);
+    } catch (RuntimeException e) {
+      log.warn("Could not load the customer for SOS {}: {}", sosId, e.toString());
+      return null;
+    }
+  }
+
+  private SosNotificationEvent.Customer customerOf(SosRequest sos) {
+    User u = sos.getUser();
+    Vehicle v = sos.getVehicle();
+    return new SosNotificationEvent.Customer(
+        u.getName(),
+        v.getCarBrand(),
+        v.getCarModel(),
+        v.getCarModelYear(),
+        v.getLicensePlate(),
+        v.getFuelType() == null ? null : v.getFuelType().name());
+  }
+
+  private static final ZoneId CAMBODIA = ZoneId.of("Asia/Phnom_Penh");
+
+  // The deadline as clients read it: +07:00, like the location timestamps. The stored value is the
+  // JVM's wall clock, so it is read in the JVM's zone first.
+  static OffsetDateTime inCambodia(LocalDateTime t) {
+    return t == null
+        ? null
+        : t.atZone(ZoneId.systemDefault()).withZoneSameInstant(CAMBODIA).toOffsetDateTime();
   }
 
   // G12: who was offered, so an offer never answered by a bid can be counted later. A statistics
@@ -1768,7 +1813,13 @@ public class SosServiceImpl implements SosService {
   // The offer a mechanic receives, shared by the broadcast and the reconnect sync so the two cannot
   // drift apart.
   private static SosNotificationEvent offerFrame(
-      UUID sosId, String problemType, List<String> photoUrls, EtaInfo estimate) {
+      UUID sosId,
+      String problemType,
+      List<String> photoUrls,
+      EtaInfo estimate,
+      SosNotificationEvent.Customer customer,
+      LocalDateTime biddingExpiresAt,
+      String locationAddress) {
     return new SosNotificationEvent(
         "SOS_CREATED",
         null,
@@ -1777,7 +1828,12 @@ public class SosServiceImpl implements SosService {
         "New SOS request nearby",
         "Problem: " + problemType,
         photoUrls,
-        estimate);
+        estimate,
+        null,
+        customer,
+        problemType,
+        inCambodia(biddingExpiresAt),
+        locationAddress);
   }
 
   // A 60 s bidding window keeps the number of open tickets around one mechanic tiny, so a small cap
@@ -1809,7 +1865,10 @@ public class SosServiceImpl implements SosService {
               id,
               sos.getProblemType(),
               sosMediaService.getObject().photoUrls(id),
-              readOfferEstimates(OFFER_ETA_KEY_PREFIX + id).get(mechanicId)));
+              readOfferEstimates(OFFER_ETA_KEY_PREFIX + id).get(mechanicId),
+              customerOf(sos),
+              sos.getBiddingExpiresAt(),
+              sos.getLocationAddress()));
     }
     return offers;
   }

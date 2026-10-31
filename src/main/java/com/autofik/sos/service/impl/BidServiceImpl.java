@@ -34,6 +34,7 @@ import jakarta.persistence.EntityNotFoundException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -227,12 +228,19 @@ public class BidServiceImpl implements BidService {
     // pulled to refresh, so the push notification was telling them about a bid the screen in
     // front of them could not show. Sent on the driver's private queue, not a topic — a
     // per-SOS broadcast would hand every bidder their competitors' prices.
+    Map<String, Object> received = new LinkedHashMap<>();
+    received.put("type", "BID_RECEIVED");
+    received.put("sosId", sosRequest.getSosId());
+    received.put("bid", response);
+    // For the list's countdown. Absent when the ticket has no deadline.
+    LocalDateTime deadline = sosRequest.getBiddingExpiresAt();
+    if (deadline != null) {
+      received.put("biddingExpiresAt", SosServiceImpl.inCambodia(deadline));
+    }
     AfterCommit.run(
         () ->
             messagingTemplate.convertAndSendToUser(
-                sosRequest.getUser().getUserId().toString(),
-                "/queue/sos-updates",
-                Map.of("type", "BID_RECEIVED", "sosId", sosRequest.getSosId(), "bid", response)));
+                sosRequest.getUser().getUserId().toString(), "/queue/sos-updates", received));
 
     return response;
   }
