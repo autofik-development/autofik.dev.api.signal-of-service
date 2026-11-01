@@ -188,7 +188,7 @@
         <dependency>
             <groupId>net.jqwik</groupId>
             <artifactId>jqwik</artifactId>
-            <version>1.9.3</version>
+            <version>1.10.2</version>
             <scope>test</scope>
         </dependency>
         <!-- Tracing tests: @AutoConfigureTracing / TestObservationRegistry, and an in-memory span
