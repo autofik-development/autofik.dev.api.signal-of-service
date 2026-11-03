@@ -474,7 +474,8 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
                   .header("user-context", userContext(stranger.user().getUserId()))
                   .GET());
       assertThat(r.statusCode()).as("%s: %s", id, r.body()).isEqualTo(404);
-      assertThat(r.body()).contains("SOS request not found");
+      // Fixed 404 body: it must not confirm the id exists, to a stranger as little as to anyone.
+      assertThat(r.body()).contains("Resource not found");
     }
   }
 

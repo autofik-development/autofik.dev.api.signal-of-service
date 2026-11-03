@@ -49,8 +49,6 @@ if [ -n "${COV:-}" ]; then
 Lines: ${lines}% | Statements: ${statements}% | Functions: ${functions}% | Branches: ${branches}%
 "
 fi
-text+="
-🔗 ${RUN_URL}"
 
 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
   --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \

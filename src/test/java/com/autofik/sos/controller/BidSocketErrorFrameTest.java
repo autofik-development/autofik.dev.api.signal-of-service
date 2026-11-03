@@ -41,6 +41,8 @@ class BidSocketErrorFrameTest {
   @Test
   void statuses_matchTheRestHandler() {
     assertThat(frame(new EntityNotFoundException("n")).get("status")).isEqualTo(404);
+    assertThat(frame(new EntityNotFoundException("SOS request not found: 1")).get("error"))
+        .isEqualTo("Resource not found");
     assertThat(frame(new AccessDeniedException("n")).get("status")).isEqualTo(403);
     assertThat(frame(new ConflictException("n")).get("status")).isEqualTo(409);
     assertThat(frame(new IllegalArgumentException("n")).get("status")).isEqualTo(400);
