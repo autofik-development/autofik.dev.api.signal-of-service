@@ -252,6 +252,7 @@ public class BidSocketController {
       return "Too many bids in progress, retry shortly";
     }
     return switch (statusOf(ex)) {
+      case 404 -> "Resource not found";
       case 403 -> "You are not allowed to perform this action";
       case 400 ->
           ex instanceof BadRequestException && ex.getMessage() != null

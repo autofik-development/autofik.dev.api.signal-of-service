@@ -268,7 +268,6 @@ class GatewayContextHttpTest {
                         + "\",\"approvedStatus\":\"ACCEPTED\"}"),
             "USER"),
         route("PATCH /sos/{id}/cancel", patch("/api/v1/sos/" + ANY + "/cancel"), "USER"),
-        route("POST /sos/{id}/rebroadcast", post("/api/v1/sos/" + ANY + "/rebroadcast"), "USER"),
         route(
             "PATCH /bids/{id}/status",
             patch("/api/v1/bids/" + ANY + "/status")

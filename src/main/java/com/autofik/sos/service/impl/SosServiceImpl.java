@@ -329,7 +329,7 @@ public class SosServiceImpl implements SosService {
     SosRequest s = findSosOrThrow(sosId);
     LocalDateTime now = LocalDateTime.now();
     if (s.getBiddingExpiresAt() == null || s.getBiddingExpiresAt().isAfter(now)) {
-      return null; // a window renewed since the timer was set (release, rebroadcast, auto-expand)
+      return null; // a window renewed since the timer was set (release, auto-expand)
     }
     UUID userId = s.getUser().getUserId();
 
@@ -420,7 +420,7 @@ public class SosServiceImpl implements SosService {
     boolean retriesLeft = s.getRebroadcastCount() < maxRebroadcast;
     String body =
         retriesLeft
-            ? "No mechanic was found. Tap to try again."
+            ? "No mechanic was found. Raise a new SOS request to try again."
             : "No mechanic available after " + maxRebroadcast + " attempts. Please call support.";
     sosEventProducer.publishNotification(
         new SosNotificationEvent(
@@ -590,10 +590,10 @@ public class SosServiceImpl implements SosService {
   }
 
   private SosRequest persistSos(CreateSosRequest request, String problemTypeKey) {
-    // RACE GUARD: create's first check is unlocked, so a rebroadcast (or, with Redis down, a second
-    // create) can commit a live ticket after it. The customer's row lock is the one rebroadcast
-    // takes too; the check repeated under it sees what the other committed. A missing user still
-    // fails below, as before.
+    // RACE GUARD: create's first check is unlocked, so a second create (possible when Redis, which
+    // backs the cooldown, is down) can commit a live ticket after it. The customer's row lock is
+    // what a second create takes too; the check repeated under it sees what the other committed. A
+    // missing user still fails below, as before.
     userRepository.lockById(request.userId());
     if (sosRequestRepository.existsByUserUserIdAndStatusIn(request.userId(), ACTIVE_STATUSES)) {
       throw new ConflictException("You already have an active SOS request");
@@ -1729,8 +1729,8 @@ public class SosServiceImpl implements SosService {
     List<Mechanic> matched = mechanicRepository.findAllWithRateById(matchedIds);
 
     // Photos are uploaded after the ticket is created, so this is empty on the first broadcast
-    // and populated on a rebroadcast — which is the attempt where the mechanic most needs to see
-    // what the job actually is before bidding.
+    // and populated on a widened round — which is the attempt where the mechanic most needs
+    // to see what the job actually is before bidding.
     List<String> photoUrls = sosMediaService.getObject().photoUrls(sosId);
     Map<UUID, EtaInfo> estimates = offerEstimates(sosId, matched, lat, lng);
     SosRequest ticket = ticketOf(sosId);
@@ -1781,6 +1781,7 @@ public class SosServiceImpl implements SosService {
     Vehicle v = sos.getVehicle();
     return new SosNotificationEvent.Customer(
         u.getName(),
+        u.getPhone(),
         v.getCarBrand(),
         v.getCarModel(),
         v.getCarModelYear(),
@@ -1877,7 +1878,7 @@ public class SosServiceImpl implements SosService {
 
   // Real road distance/time per mechanic for the job offer. Google bills per mechanic, so each
   // mechanic is only ever paid for once per SOS: the estimate is remembered in Redis, and a later
-  // fan-out (auto-expand, manual rebroadcast) reuses it for mechanics already offered and asks
+  // fan-out (auto-expand) reuses it for mechanics already offered and asks
   // Google only for the newly reached ones, in a single Distance Matrix request. Newly reached
   // mechanics beyond offerMaxMechanics (nearest first) still get the offer without an estimate.
   // A failed call or Redis outage yields no estimate for those mechanics — the offer never waits
@@ -1976,65 +1977,12 @@ public class SosServiceImpl implements SosService {
     }
   }
 
-  // Uses TaskScheduler (not @Scheduled) because each SOS has its own unique expiry time.
-  // The lambda re-fetches the entity inside the transaction to avoid stale-state issues.
-  // Not @Transactional: the broadcast calls Google (offer estimates), and a transaction would hold
-  // a Postgres connection for the whole of it. Only the validation and the state change run in one;
-  // the response is built inside it too, because user and vehicle are lazy and the mapper needs a
-  // live session to read them.
-  @Override
-  public SosRequestResponse rebroadcast(UUID sosId, UUID userId) {
-    Rebroadcast reopened = transactionTemplate.execute(status -> reopenSos(sosId, userId));
-    SosRequest sos = reopened.sos();
-
-    // First, and before anything that can fail: the ticket is already back to PENDING and
-    // committed, so its bidding window must always close.
-    scheduleBiddingExpiry(sos);
-
-    // Back to bidding: the previous mechanic's route is meaningless now.
-    routeEtaService.clear(sosId);
-
-    // The ticket is committed, so a notification failure must not turn into a 500 for a request
-    // that succeeded — the customer would retry into "only EXPIRED requests can be rebroadcast".
-    try {
-      int attemptsLeft = maxRebroadcast - sos.getRebroadcastCount();
-      AfterCommit.run(
-          () ->
-              messagingTemplate.convertAndSendToUser(
-                  userId.toString(),
-                  "/queue/sos-updates",
-                  Map.of(
-                      "type",
-                      "SOS_REBROADCAST",
-                      "sosId",
-                      sosId,
-                      "rebroadcastCount",
-                      sos.getRebroadcastCount(),
-                      "attemptsLeft",
-                      attemptsLeft)));
-
-      fanOutToNearbyMechanics(
-          sosId,
-          sos.getLocation().getY(),
-          sos.getLocation().getX(),
-          sos.getProblemType(),
-          sos.getBroadcastRadiusKm());
-    } catch (RuntimeException e) {
-      log.error("SOS {} was rebroadcast but notifying/broadcasting failed", sosId, e);
-    }
-
-    return reopened.response();
-  }
-
-  private record Rebroadcast(SosRequest sos, SosRequestResponse response) {}
-
   private record Released(SosRequest sos, SosStatus fromStatus, SosRequestResponse response) {}
 
   /**
    * The assigned mechanic backs out before ARRIVED: the ticket goes back to PENDING with a fresh
-   * bidding window and is offered again to everyone but the mechanic who released it. Shaped like
-   * {@link #rebroadcast}: commit first, then timer, frames and fan-out, none of which may turn a
-   * committed release into a 500.
+   * bidding window and is offered again to everyone but the mechanic who released it. Commit first,
+   * then timer, frames and fan-out, none of which may turn a committed release into a 500.
    */
   @Override
   public SosRequestResponse releaseByMechanic(UUID sosId, UUID mechanicId) {
@@ -2312,43 +2260,6 @@ public class SosServiceImpl implements SosService {
     bid.setNoShowPromptedAt(null);
     bidSosRepository.save(bid);
     return toResponseWithMechanic(sos);
-  }
-
-  // Runs inside the transaction opened by rebroadcast(); keep external calls out of it.
-  private Rebroadcast reopenSos(UUID sosId, UUID userId) {
-    // RACE GUARD: the customer's row lock first (the one create takes, so the two cannot each miss
-    // the other's live ticket), then the ticket lock cancel, release and accept take, before the
-    // ticket is read. A double tap queues behind the first reopen and then sees PENDING, so only
-    // one fan-out, one timer and one count increment happen. Order: user, ticket, mechanic.
-    userRepository.lockById(userId);
-    sosRequestRepository.lockStatus(sosId);
-    SosRequest sos = findSosOrThrow(sosId);
-
-    if (!sos.getUser().getUserId().equals(userId)) {
-      throw new AccessDeniedException("You can only rebroadcast your own SOS request");
-    }
-    if (sos.getStatus() != SosStatus.EXPIRED) {
-      throw new ConflictException("Only EXPIRED SOS requests can be rebroadcast");
-    }
-    if (sos.getRebroadcastCount() >= maxRebroadcast) {
-      throw new TooManyRequestsException(
-          "Maximum rebroadcast attempts (" + maxRebroadcast + ") reached. Please call support.");
-    }
-    // Same rule as create: one live ticket per customer. This ticket is EXPIRED, so only another
-    // one can match.
-    if (sosRequestRepository.existsByUserUserIdAndStatusIn(userId, ACTIVE_STATUSES)) {
-      throw new ConflictException("You already have an active SOS request");
-    }
-
-    // A new round: the last one's bids were closed at expiry (or turned down by the customer) and
-    // would only refuse those mechanics a second bid on a job they are offered again.
-    bidSosRepository.deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
-
-    sos.setStatus(SosStatus.PENDING);
-    sos.setRebroadcastCount(sos.getRebroadcastCount() + 1);
-    sos.setBiddingExpiresAt(LocalDateTime.now().plusSeconds(biddingWindowSeconds));
-    sosRequestRepository.save(sos);
-    return new Rebroadcast(sos, toResponseWithMechanic(sos));
   }
 
   /**

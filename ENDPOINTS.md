@@ -23,7 +23,6 @@ Base path `/api/v1`.
 | POST | `/sos/{sosId}/completion` | mechanic (assigned) | `{mechanicId, toStatus: "COMPLETED"}` | 201 |
 | PATCH | `/sos/completion` | customer | `{userId, historyId, approvedStatus: ACCEPTED\|REJECTED}` | 200 |
 | PATCH | `/sos/{sosId}/cancel` | customer (owner) | | 200 |
-| POST | `/sos/{sosId}/rebroadcast` | customer (owner) | | 200 |
 
 ### Media
 | Method | Path | Who | Params / body | Success |

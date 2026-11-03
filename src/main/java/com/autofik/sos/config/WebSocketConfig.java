@@ -218,5 +218,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     // Server-to-client pushes (SOS updates, live location). Same reasoning: not the shared
     // single-thread scheduler.
     registration.executor(webSocketOutboundExecutor());
+    registration.interceptors(subscriptionInterceptor);
   }
 }
