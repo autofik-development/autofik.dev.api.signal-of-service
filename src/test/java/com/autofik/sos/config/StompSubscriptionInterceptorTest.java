@@ -215,4 +215,52 @@ class StompSubscriptionInterceptorTest {
     Message<byte[]> okFrame = MessageBuilder.createMessage(new byte[0], ok.getMessageHeaders());
     assertThat(interceptor.preSend(okFrame, null)).isSameAs(okFrame);
   }
+
+  private Message<byte[]> frame(StompCommand command, String destination, Principal caller) {
+    StompHeaderAccessor accessor = StompHeaderAccessor.create(command);
+    accessor.setSessionId("s1");
+    accessor.setDestination(destination);
+    accessor.setUser(caller);
+    accessor.setLeaveMutable(true);
+    return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+  }
+
+  @Test
+  void aMediaFrame_isDroppedOnceTheSubscriberCanNoLongerViewTheTicket() {
+    String media = "/topic/sos/" + sosId + "/media";
+    when(sosService.canView(sosId, callerId)).thenReturn(true, true, false);
+    interceptor.preSend(frame(StompCommand.SUBSCRIBE, media, principal(callerId)), null);
+
+    Message<byte[]> first = frame(StompCommand.MESSAGE, media, null);
+    Message<byte[]> second = frame(StompCommand.MESSAGE, media, null);
+
+    // the subscribe check, then the first frame (still visible), then the second (lost the bid)
+    assertThat(interceptor.preSend(first, null)).isSameAs(first);
+    assertThat(interceptor.preSend(second, null)).isNull();
+  }
+
+  @Test
+  void aLocationFrame_isNeverReCheckedOutbound() {
+    String location = "/topic/sos/" + sosId + "/location";
+    when(sosService.isOwner(sosId, callerId)).thenReturn(true);
+    interceptor.preSend(frame(StompCommand.SUBSCRIBE, location, principal(callerId)), null);
+
+    Message<byte[]> out = frame(StompCommand.MESSAGE, location, null);
+
+    assertThat(interceptor.preSend(out, null)).isSameAs(out);
+    verify(sosService, never()).canView(any(), any());
+  }
+
+  @Test
+  void aDisconnect_forgetsTheSubscriber() {
+    String media = "/topic/sos/" + sosId + "/media";
+    when(sosService.canView(sosId, callerId)).thenReturn(true);
+    interceptor.preSend(frame(StompCommand.SUBSCRIBE, media, principal(callerId)), null);
+    interceptor.preSend(frame(StompCommand.DISCONNECT, null, null), null);
+
+    Message<byte[]> out = frame(StompCommand.MESSAGE, media, null);
+
+    assertThat(interceptor.preSend(out, null)).isSameAs(out);
+    verify(sosService, times(1)).canView(sosId, callerId); // only the subscribe
+  }
 }

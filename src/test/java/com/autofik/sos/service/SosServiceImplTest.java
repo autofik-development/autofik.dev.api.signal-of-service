@@ -717,7 +717,8 @@ class SosServiceImplTest {
     verify(sosRequestRepository, never()).save(any());
   }
 
-  // The first check is unlocked: a rebroadcast can commit a live ticket after it. The check is
+  // The first check is unlocked: a second create (possible when the Redis cooldown fails open) can
+  // commit a live ticket after it. The check is
   // repeated under the customer's row lock, and a hit there writes nothing and frees the cooldown.
   @Test
   void create_anotherTicketCommittedMeanwhile_isConflictUnderTheUserLock() {
@@ -2233,13 +2234,17 @@ class SosServiceImplTest {
     verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
   }
 
-  // ── rebroadcast: state change in a short transaction, broadcast outside it ─────
+  // ── auto-expand widening: state change in a short transaction, fan-out outside it ─────
 
-  private SosRequest expiredSosWithRadius() {
-    SosRequest sos = sosAt(SosStatus.EXPIRED);
+  /**
+   * An overdue zero-bid ticket with a radius: the expiry step widens it and fans out — the only
+   * thing that re-offers a ticket after its first broadcast.
+   */
+  private SosRequest expiringSosWithRadius() {
+    SosRequest sos = overduePending();
     sos.setBroadcastRadiusKm(15);
-    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
-    // Lenient: the broadcast stubs are not reached when the failure under test hits first.
+    when(bidSosRepository.existsBySosRequestSosId(sosId)).thenReturn(false);
+    // Lenient: the dispatch tests below replace these stubs.
     lenient()
         .when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
         .thenReturn(ids(mechanic));
@@ -2248,26 +2253,12 @@ class SosServiceImplTest {
             mechanicRepository.filterByRadiusAndBroadcast(
                 any(), anyDouble(), anyDouble(), anyDouble()))
         .thenReturn(ids(mechanic));
-    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
     return sos;
-  }
-
-  @Test
-  void rebroadcast_expiredTicket_goesBackToPendingAndBroadcasts() {
-    SosRequest sos = expiredSosWithRadius();
-
-    sosService.rebroadcast(sosId, userId);
-
-    assertThat(sos.getStatus()).isEqualTo(SosStatus.PENDING);
-    assertThat(sos.getRebroadcastCount()).isEqualTo(1);
-    verify(messagingTemplate)
-        .convertAndSendToUser(eq(mechanicId.toString()), eq("/queue/sos-new-request"), any());
-    verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
   }
 
   /** The offer-estimate Google call and the broadcast must not hold the transaction open. */
   @Test
-  void rebroadcast_broadcastRunsOutsideTheTransaction() {
+  void expiry_autoExpand_broadcastRunsOutsideTheTransaction() {
     java.util.concurrent.atomic.AtomicBoolean inTx =
         new java.util.concurrent.atomic.AtomicBoolean(false);
     doAnswer(
@@ -2283,7 +2274,7 @@ class SosServiceImplTest {
             })
         .when(transactionTemplate)
         .execute(any());
-    expiredSosWithRadius();
+    expiringSosWithRadius();
     when(googleMapsService.getDistanceInfos(any(), any()))
         .thenAnswer(
             inv -> {
@@ -2291,110 +2282,32 @@ class SosServiceImplTest {
               return List.of(new DistanceInfo(800, 420, "0.8 km", "7 mins"));
             });
 
-    sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
     verify(googleMapsService).getDistanceInfos(any(), any());
   }
 
   @Test
-  void rebroadcast_broadcastFailsAfterCommit_stillReturnsAndSchedulesExpiry() {
-    expiredSosWithRadius();
+  void expiry_autoExpand_broadcastFailsAfterCommit_stillSchedulesTheNextWindow() {
+    expiringSosWithRadius();
     doThrow(new RuntimeException("broker down"))
         .when(messagingTemplate)
         .convertAndSendToUser(anyString(), anyString(), any(Object.class));
 
-    SosRequestResponse result = sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
-    assertThat(result).isNotNull();
     verify(taskScheduler).schedule(any(Runnable.class), any(java.time.Instant.class));
   }
 
   @Test
-  void rebroadcast_notYourTicket_isDeniedAndNothingChanges() {
-    SosRequest sos = sosAt(SosStatus.EXPIRED);
-    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
+  void expiry_autoExpand_takesTheTicketLockBeforeReadingTheTicket() {
+    expiringSosWithRadius();
 
-    assertThatThrownBy(() -> sosService.rebroadcast(sosId, UUID.randomUUID()))
-        .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    expireIfDue();
 
-    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
-    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
-  }
-
-  @Test
-  void rebroadcast_notExpired_isConflict() {
-    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sosAt(SosStatus.PENDING)));
-
-    assertThatThrownBy(() -> sosService.rebroadcast(sosId, userId))
-        .isInstanceOf(IllegalStateException.class);
-  }
-
-  // A double tap must queue behind the first reopen: the lock comes before the ticket is read, so
-  // the second request reads PENDING instead of the EXPIRED it would have read before the lock.
-  @Test
-  void rebroadcast_takesTheUserLockThenTheTicketLockBeforeReadingTheTicket() {
-    expiredSosWithRadius();
-
-    sosService.rebroadcast(sosId, userId);
-
-    org.mockito.InOrder order = inOrder(userRepository, sosRequestRepository);
-    order.verify(userRepository).lockById(userId);
+    org.mockito.InOrder order = inOrder(sosRequestRepository);
     order.verify(sosRequestRepository).lockStatus(sosId);
     order.verify(sosRequestRepository).findById(sosId);
-  }
-
-  @Test
-  void rebroadcast_userHasAnotherActiveTicket_isConflictAndNothingChanges() {
-    SosRequest sos = sosAt(SosStatus.EXPIRED);
-    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(sos));
-    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), anyList()))
-        .thenReturn(true);
-
-    assertThatThrownBy(() -> sosService.rebroadcast(sosId, userId))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("already have an active SOS");
-
-    assertThat(sos.getStatus()).isEqualTo(SosStatus.EXPIRED);
-    assertThat(sos.getRebroadcastCount()).isZero();
-    verify(sosRequestRepository, never()).save(any());
-    verify(bidSosRepository, never()).deleteBySosRequestSosIdAndStatus(any(), any());
-    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
-    verifyNoInteractions(messagingTemplate);
-    verifyNoInteractions(googleMapsService);
-    verify(mechanicRepository, never()).findByH3CellsAndSkillTag(any(), any(), any());
-    verify(sosEventProducer, never()).publishNotification(any());
-  }
-
-  // Only the owner's other live tickets count, and the five live statuses are the ones create uses.
-  @Test
-  void rebroadcast_checksActiveTicketsForTheOwnerOnly() {
-    expiredSosWithRadius();
-
-    sosService.rebroadcast(sosId, userId);
-
-    verify(sosRequestRepository)
-        .existsByUserUserIdAndStatusIn(
-            userId,
-            List.of(
-                SosStatus.PENDING,
-                SosStatus.ACCEPTED,
-                SosStatus.ON_THE_WAY,
-                SosStatus.ARRIVED,
-                SosStatus.IN_PROGRESS));
-  }
-
-  @Test
-  void rebroadcast_missingTicket_is404AndNothingChanges() {
-    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> sosService.rebroadcast(sosId, userId))
-        .isInstanceOf(EntityNotFoundException.class);
-
-    verify(sosRequestRepository, never()).existsByUserUserIdAndStatusIn(any(), any());
-    verify(sosRequestRepository, never()).save(any());
-    verify(taskScheduler, never()).schedule(any(Runnable.class), any(java.time.Instant.class));
-    verifyNoInteractions(messagingTemplate);
-    verifyNoInteractions(googleMapsService);
   }
 
   @Test
@@ -2602,10 +2515,10 @@ class SosServiceImplTest {
 
   @Test
   void fanOut_asksOnlyForMechanicsSeenRecently() {
-    SosRequest sos = expiredSosWithRadius();
+    SosRequest sos = expiringSosWithRadius();
     java.time.LocalDateTime before = java.time.LocalDateTime.now().minusMinutes(5);
 
-    sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
     ArgumentCaptor<java.time.LocalDateTime> since =
         ArgumentCaptor.forClass(java.time.LocalDateTime.class);
@@ -2627,7 +2540,7 @@ class SosServiceImplTest {
 
   @Test
   void fanOut_dropsMechanicsWhoseRoadEtaIsOverTheCap_butKeepsThoseWithNoEstimate() {
-    SosRequest sos = expiredSosWithRadius();
+    SosRequest sos = expiringSosWithRadius();
     Mechanic near = otherMechanic(104.9283);
     Mechanic far = otherMechanic(104.9284);
     Mechanic unknown = otherMechanic(104.9285);
@@ -2652,7 +2565,7 @@ class SosServiceImplTest {
     // Only two of the three get an estimate: the third is beyond the Google cap.
     ReflectionTestUtils.setField(sosService, "offerMaxMechanics", 2);
 
-    sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
     verify(messagingTemplate)
         .convertAndSendToUser(
@@ -2668,7 +2581,7 @@ class SosServiceImplTest {
 
   @Test
   void fanOut_roadEtaCapDisabled_offersEveryone() {
-    expiredSosWithRadius();
+    expiringSosWithRadius();
     Mechanic far = otherMechanic(104.9284);
     when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any())).thenReturn(ids(far));
     when(mechanicRepository.filterByRadiusAndBroadcast(
@@ -2678,7 +2591,7 @@ class SosServiceImplTest {
         .thenReturn(List.of(new DistanceInfo(90_000, 3 * 3600, "90 km", "3 hours")));
     ReflectionTestUtils.setField(sosService, "maxRoadEtaMinutes", 0);
 
-    sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
     verify(messagingTemplate)
         .convertAndSendToUser(
@@ -2687,7 +2600,7 @@ class SosServiceImplTest {
 
   @Test
   void fanOut_recordsExactlyTheMechanicsThatWereOffered() {
-    expiredSosWithRadius();
+    expiringSosWithRadius();
     Mechanic near = otherMechanic(104.9283);
     Mechanic far = otherMechanic(104.9284);
     when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
@@ -2702,7 +2615,7 @@ class SosServiceImplTest {
                 new DistanceInfo(90_000, 3 * 3600, "90 km", "3 hours")));
     ReflectionTestUtils.setField(sosService, "maxRoadEtaMinutes", 30);
 
-    sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
     // The far mechanic is over the road-ETA cap, so they got no frame and no row.
     verify(sosOfferRepository).recordOffered(sosId, List.of(near.getMechanicId()));
@@ -2710,7 +2623,7 @@ class SosServiceImplTest {
 
   @Test
   void fanOut_aFailedStatisticsWrite_doesNotStopTheOffer() {
-    expiredSosWithRadius();
+    expiringSosWithRadius();
     Mechanic near = otherMechanic(104.9283);
     when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any())).thenReturn(ids(near));
     when(mechanicRepository.filterByRadiusAndBroadcast(
@@ -2720,7 +2633,7 @@ class SosServiceImplTest {
         .when(sosOfferRepository)
         .recordOffered(any(), any(java.util.Collection.class));
 
-    sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
     verify(messagingTemplate)
         .convertAndSendToUser(
@@ -2728,8 +2641,8 @@ class SosServiceImplTest {
   }
 
   @Test
-  void rebroadcast_neverOffersTheTicketToAMechanicWhoReleasedIt() {
-    expiredSosWithRadius();
+  void fanOut_neverOffersTheTicketToAMechanicWhoReleasedIt() {
+    expiringSosWithRadius();
     Mechanic releaser = otherMechanic(104.9283);
     Mechanic other = otherMechanic(104.9284);
     when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
@@ -2740,7 +2653,7 @@ class SosServiceImplTest {
     when(sosStatusHistoryRepository.findMechanicIdsByToStatus(sosId, SosStatus.PENDING))
         .thenReturn(java.util.Set.of(releaser.getMechanicId()));
 
-    sosService.rebroadcast(sosId, userId);
+    expireIfDue();
 
     verify(messagingTemplate)
         .convertAndSendToUser(
@@ -3341,15 +3254,6 @@ class SosServiceImplTest {
 
     verify(sosRequestRepository).lockStatus(sosId);
     verify(sosRequestRepository, never()).save(any());
-  }
-
-  @Test
-  void rebroadcast_startsACleanRound_byDeletingTheLastRoundsRejectedBids() {
-    expiredSosWithRadius();
-
-    sosService.rebroadcast(sosId, userId);
-
-    verify(bidSosRepository).deleteBySosRequestSosIdAndStatus(sosId, BidStatus.REJECTED);
   }
 
   private final java.util.Map<UUID, Mechanic> knownMechanics = new java.util.HashMap<>();

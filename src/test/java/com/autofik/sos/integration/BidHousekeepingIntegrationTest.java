@@ -22,8 +22,8 @@ import tools.jackson.databind.JsonNode;
 
 /**
  * What happens to bids when the request ends, and who may bid again: a cancel and an expiry close
- * the bids and tell the bidders, a rebroadcast starts a clean round, a withdrawn bid can be placed
- * again, a released job cannot, and a customer's "no" to one bid reaches that mechanic.
+ * the bids and tell the bidders, an auto-widened round accepts a fresh bid, a withdrawn bid can be
+ * placed again, a released job cannot, and a customer's "no" to one bid reaches that mechanic.
  */
 class BidHousekeepingIntegrationTest extends FlowTestSupport {
 
@@ -130,28 +130,6 @@ class BidHousekeepingIntegrationTest extends FlowTestSupport {
     sessionB.disconnect();
   }
 
-  @Test
-  void aRebroadcast_lets_aMechanicWhoBidLastRoundBidAgain() throws Exception {
-    Driver d = newDriver();
-    Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
-    UUID sosId = createSosOk(d);
-    UUID oldBid = placeBidOk(m, sosId);
-    expire(sosId);
-    assertThat(sosStatus(d, sosId)).isEqualTo("EXPIRED");
-
-    HttpResponse<String> rebroadcast =
-        send(
-            req("/api/v1/sos/" + sosId + "/rebroadcast")
-                .header("user-context", userContext(d.user().getUserId()))
-                .POST(HttpRequest.BodyPublishers.noBody()));
-    assertThat(rebroadcast.statusCode()).as(rebroadcast.body()).isEqualTo(200);
-
-    assertThat(bidSosRepository.findById(oldBid)).as("last round's bid is gone").isEmpty();
-    UUID newBid = placeBidOk(m, sosId);
-    assertThat(newBid).isNotEqualTo(oldBid);
-    assertThat(bidsOn(sosId)).as("one row per mechanic and ticket").hasSize(1);
-  }
-
   // Zero bids at expiry: the system widens and offers again on its own (SOS_AUTO_REBROADCAST),
   // and a mechanic answering that offer must get in.
   @Test
@@ -172,10 +150,9 @@ class BidHousekeepingIntegrationTest extends FlowTestSupport {
 
   // The customer asks for 5 km and nobody bids: each closed window widens the search by
   // sos.auto-expand.step-km and offers again, until sos.bidding.max-rebroadcast rounds are used;
-  // then the ticket expires and the retry button has nothing left.
+  // then the ticket expires and the customer's only retry is raising a new SOS.
   @Test
-  void aFiveKmRequestNobodyBidsOn_widensEveryRound_thenExpires_andCannotBeRetried()
-      throws Exception {
+  void aFiveKmRequestNobodyBidsOn_widensEveryRound_thenExpires() throws Exception {
     Driver d = newDriver();
     Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
     StompSession customer = stomp.connect(port, "user-context", userContext(d.user().getUserId()));
@@ -224,13 +201,6 @@ class BidHousekeepingIntegrationTest extends FlowTestSupport {
     JsonNode expired = awaitFrame(updates, sosId, "BIDDING_EXPIRED");
     assertThat(expired.get("retriesLeft").asBoolean()).isFalse();
     assertThat(expired.get("attemptsLeft").asInt()).isZero();
-
-    HttpResponse<String> retry =
-        send(
-            req("/api/v1/sos/" + sosId + "/rebroadcast")
-                .header("user-context", userContext(d.user().getUserId()))
-                .POST(HttpRequest.BodyPublishers.noBody()));
-    assertThat(retry.statusCode()).as(retry.body()).isEqualTo(429);
 
     HttpResponse<String> lateBid = placeBid(m, sosId);
     assertThat(lateBid.statusCode()).as(lateBid.body()).isEqualTo(409);

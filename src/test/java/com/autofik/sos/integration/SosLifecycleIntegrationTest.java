@@ -128,8 +128,10 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
     assertThat(sosStatus(cancelling, cancelled)).isEqualTo("CANCELLED");
     assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(cancelled)).isEmpty();
 
-    // Expiry (PENDING -> EXPIRED) by the system, then rebroadcast (EXPIRED -> PENDING) by the
-    // driver. A bid is placed first: a ticket with no bids widens its search instead of expiring.
+    // Expiry (PENDING -> EXPIRED) by the system. A bid is placed first: a ticket with no bids
+    // widens its search instead of expiring. A rebroadcast (manual retry) does not exist any more;
+    // the only transition back into bidding after EXPIRED would be a brand-new create, which
+    // writes its own ticket and no history row on this one.
     Driver expiring = newDriver();
     Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
     UUID sosId = createSosOk(expiring);
@@ -140,15 +142,6 @@ class SosLifecycleIntegrationTest extends FlowTestSupport {
 
     sosService.expireOverduePendingRequests();
     assertThat(sosStatus(expiring, sosId)).isEqualTo("EXPIRED");
-    assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)).isEmpty();
-
-    HttpResponse<String> rebroadcast =
-        send(
-            req("/api/v1/sos/" + sosId + "/rebroadcast")
-                .header("user-context", userContext(expiring.user().getUserId()))
-                .POST(HttpRequest.BodyPublishers.noBody()));
-    assertThat(rebroadcast.statusCode()).as(rebroadcast.body()).isEqualTo(200);
-    assertThat(sosStatus(expiring, sosId)).isEqualTo("PENDING");
     assertThat(historyRepository.findBySosRequestSosIdOrderByChangeAtAsc(sosId)).isEmpty();
   }
 

@@ -234,7 +234,7 @@ sos:
     cache-ttl-minutes: ${SOS_ETA_CACHE_TTL_MINUTES:15}
     # Real road distance/time shown to each mechanic in the job offer, before they bid. One
     # Distance Matrix request per fan-out, billed per mechanic (element), and only for mechanics
-    # not already given an estimate for that SOS (auto-expand/rebroadcast reuse the earlier one).
+    # not already given an estimate for that SOS (auto-expand rounds reuse the earlier one).
     # Newly reached mechanics beyond this cap (nearest first) get the offer without an estimate.
     # Google allows at most 25 origins per request. 0 disables the Google call.
     offer-max-mechanics: ${SOS_ETA_OFFER_MAX_MECHANICS:25}
@@ -269,7 +269,7 @@ sos:
     jpeg-quality: ${SOS_MEDIA_JPEG_QUALITY:0.80}
   broadcast:
     # Max photos attached to each mechanic fan-out. Each one is a fresh S3 presign per broadcast,
-    # so raising this adds presign work and payload size on every create/rebroadcast.
+    # so raising this adds presign work and payload size on every create/offer round.
     max-photos: ${SOS_BROADCAST_MAX_PHOTOS:3}
     # Starting radius (km) when the customer doesn't set broadcastRadiusKm.
     default-km: ${SOS_DEFAULT_BROADCAST_KM:15}
