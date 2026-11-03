@@ -106,7 +106,7 @@ class SosServiceImplTest {
 
   @BeforeEach
   void setUp() {
-    user = User.builder().userId(userId).name("Alice").build();
+    user = User.builder().userId(userId).name("Alice").phone("023 456 789").build();
     vehicle =
         Vehicle.builder().id(vehicleId).carBrand("Toyota").carModel("Camry").user(user).build();
     mechanic =
@@ -3044,6 +3044,8 @@ class SosServiceImplTest {
 
     assertThat(offer.customer()).isNotNull();
     assertThat(offer.customer().name()).isEqualTo("Alice");
+    assertThat(offer.customer().phone()).isEqualTo("023 456 789");
+
     assertThat(offer.locationAddress()).isEqualTo("Street 271, Phnom Penh");
     assertThat(offer.problemType()).isEqualTo(resolvedKey);
     assertThat(offer.biddingExpiresAt()).isNotNull();

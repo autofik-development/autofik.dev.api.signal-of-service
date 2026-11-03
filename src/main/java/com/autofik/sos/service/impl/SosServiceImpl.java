@@ -1729,8 +1729,8 @@ public class SosServiceImpl implements SosService {
     List<Mechanic> matched = mechanicRepository.findAllWithRateById(matchedIds);
 
     // Photos are uploaded after the ticket is created, so this is empty on the first broadcast
-    // and populated on a rebroadcast — which is the attempt where the mechanic most needs to see
-    // what the job actually is before bidding.
+    // and populated on a widened round — which is the attempt where the mechanic most needs
+    // to see what the job actually is before bidding.
     List<String> photoUrls = sosMediaService.getObject().photoUrls(sosId);
     Map<UUID, EtaInfo> estimates = offerEstimates(sosId, matched, lat, lng);
     SosRequest ticket = ticketOf(sosId);
@@ -1781,6 +1781,7 @@ public class SosServiceImpl implements SosService {
     Vehicle v = sos.getVehicle();
     return new SosNotificationEvent.Customer(
         u.getName(),
+        u.getPhone(),
         v.getCarBrand(),
         v.getCarModel(),
         v.getCarModelYear(),

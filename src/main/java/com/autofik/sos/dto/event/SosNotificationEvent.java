@@ -31,6 +31,7 @@ public record SosNotificationEvent(
   /** Who raised the SOS and with what car; mechanic fan-out only, null on every other frame. */
   public record Customer(
       String name,
+      String phone,
       String vehicleBrand,
       String vehicleModel,
       String vehicleYear,
