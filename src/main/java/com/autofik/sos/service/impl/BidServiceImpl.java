@@ -82,7 +82,7 @@ public class BidServiceImpl implements BidService {
    */
   // Longest road ETA a bid may carry; 0 disables. The straight-line eligibility check cannot see
   // rivers or one-way roads, so the Google estimate this call already fetches is the second gate.
-  @Value("${sos.dispatch.max-road-eta-minutes:30}")
+  @Value("${sos.dispatch.max-road-eta-minutes}")
   private int maxRoadEtaMinutes;
 
   @Override

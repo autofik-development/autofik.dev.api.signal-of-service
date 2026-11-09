@@ -47,6 +47,9 @@ jobs:
 
       # SosApplicationTests boots the whole context and needs a live Postgres+PostGIS,
       # Redis and Kafka. Everything else is unit and slice tests that need nothing.
+      - name: Create .env from the example
+        # application.yaml has no fallbacks; .env is the only source of values.
+        run: cp .env.example .env
       - name: Unit tests
         id: unit
         continue-on-error: true
@@ -93,8 +96,11 @@ jobs:
 
       # Testcontainers: Postgres+PostGIS, Redis, Kafka (Docker is on the runner). About 10 minutes.
       # application.yaml reads spring.profiles.active from SPRING_PROFILES_ACTIVE with no default,
-      # and the repository tests (@DataJpaTest) fail to load their context without it. Locally the
-      # variable comes from .env, which CI does not have.
+      # and the repository tests (@DataJpaTest) fail to load their context without it. The .env
+      # copied from .env.example says dev, so the job sets test here (a real env var wins).
+      - name: Create .env from the example
+        # application.yaml has no fallbacks; .env is the only source of values.
+        run: cp .env.example .env
       - name: Integration tests
         id: it
         continue-on-error: true

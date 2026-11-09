@@ -4,6 +4,9 @@ spring:
   application:
     name: sos
   config:
+    # .env is the only source of values: application.yaml has no fallbacks, so every
+    # placeholder below must be set there (or as a real environment variable, which wins).
+    # .env.example lists every name with a working value.
     import: "optional:file:.env[.properties]"
   datasource:
     url: jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}
@@ -18,13 +21,13 @@ spring:
       minimum-idle: ${DB_POOL_MIN_IDLE}
       # Fail fast instead of the 30s default — a stuck pool should surface as an
       # error quickly, not hang every caller behind it.
-      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:5000}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS}
       # Without these a SELECT ... FOR UPDATE on a ticket waits forever behind a stuck transaction,
       # and every caller of that ticket queues on a pool connection until the pool is dry.
       # lock_timeout ends a wait for a row lock (answered 503, see GlobalExceptionHandler);
       # statement_timeout ends a runaway statement. Flyway is kept off this pool (spring.flyway.url
       # below): a CREATE INDEX on a big table must not be killed by statement_timeout.
-      connection-init-sql: SET lock_timeout = ${DB_LOCK_TIMEOUT_MS:5000}; SET statement_timeout = ${DB_STATEMENT_TIMEOUT_MS:15000}
+      connection-init-sql: SET lock_timeout = ${DB_LOCK_TIMEOUT_MS}; SET statement_timeout = ${DB_STATEMENT_TIMEOUT_MS}
   jpa:
     open-in-view: false
     hibernate:
@@ -45,8 +48,8 @@ spring:
   servlet:
     multipart:
       # Same env var as sos.media.max-upload-mb so the two limits can't drift.
-      max-file-size: ${SOS_MEDIA_MAX_UPLOAD_MB:10}MB
-      max-request-size: ${SOS_MEDIA_MAX_UPLOAD_MB:10}MB
+      max-file-size: ${SOS_MEDIA_MAX_UPLOAD_MB}MB
+      max-request-size: ${SOS_MEDIA_MAX_UPLOAD_MB}MB
   data:
     web:
       pageable:
@@ -59,19 +62,19 @@ spring:
       # Fail fast instead of Lettuce's 60s default — a slow/unresponsive (not fully down) Redis
       # should hit the Kafka fallback (see RedisLocationListenerConfig) quickly, not after a
       # minute-long stall per command.
-      timeout: ${REDIS_TIMEOUT_MS:1000}ms
+      timeout: ${REDIS_TIMEOUT_MS}ms
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
     # PLAINTEXT for a Kafka without login (local, the master cluster's single broker). SASL_PLAINTEXT
     # (or SASL_SSL) for one that requires it, such as the Strimzi cluster with its SCRAM users. Every
     # producer, consumer and admin client here is built from these spring.kafka settings.
     security:
-      protocol: ${KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
+      protocol: ${KAFKA_SECURITY_PROTOCOL}
     properties:
       # Both are ignored unless the protocol is SASL_*. KAFKA_SASL_JAAS_CONFIG is the whole
       # sasl.jaas.config line, as in the `sasl.jaas.config` key of the app's KafkaUser Secret.
-      sasl.mechanism: ${KAFKA_SASL_MECHANISM:SCRAM-SHA-512}
-      sasl.jaas.config: ${KAFKA_SASL_JAAS_CONFIG:}
+      sasl.mechanism: ${KAFKA_SASL_MECHANISM}
+      sasl.jaas.config: ${KAFKA_SASL_JAAS_CONFIG}
     admin:
       fail-fast: false
     producer:
@@ -84,11 +87,11 @@ spring:
         enable.idempotence: true
         # Fail fast when the broker is unreachable. The default max.block.ms (60 s) holds the
         # calling request thread that long, so a Kafka outage would pin every Tomcat thread.
-        max.block.ms: ${KAFKA_PRODUCER_MAX_BLOCK_MS:2000}
-        request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS:5000}
-        delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:10000}
+        max.block.ms: ${KAFKA_PRODUCER_MAX_BLOCK_MS}
+        request.timeout.ms: ${KAFKA_PRODUCER_REQUEST_TIMEOUT_MS}
+        delivery.timeout.ms: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS}
     consumer:
-      group-id: ${KAFKA_CONSUMER_GROUP_ID:sos-location-group}
+      group-id: ${KAFKA_CONSUMER_GROUP_ID}
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
@@ -99,21 +102,26 @@ spring:
 onesignal:
   app-id: ${ONESIGNAL_APP_ID}
   api-key: ${ONESIGNAL_API_KEY}
+  # Push sends run on their own pool, one blocking OneSignal call each.
+  push-threads: ${ONESIGNAL_PUSH_THREADS}
+  push-queue-capacity: ${ONESIGNAL_PUSH_QUEUE_CAPACITY}
 
 google:
   maps:
     api-key: ${GOOGLE_MAPS_API_KEY}
-    base-url: ${GOOGLE_MAPS_BASE_URL:}
+    base-url: ${GOOGLE_MAPS_BASE_URL}
+    # Google Maps calls per second this service may make.
+    query-rate-limit: ${GOOGLE_MAPS_QUERY_RATE_LIMIT}
     
 aws:
   s3:
-    endpoint: ${S3_ENDPOINT:https://fsgw.evauto24.com/}
+    endpoint: ${S3_ENDPOINT}
     access-key: ${S3_ACCESS_KEY}
     secret-key: ${S3_SECRET_KEY}
-    region: ${S3_REGION:us-east-1}
-    bucket: ${S3_BUCKET_NAME:autofik-sos-api}
+    region: ${S3_REGION}
+    bucket: ${S3_BUCKET_NAME}
     # How long presigned photo URLs (upload responses and mechanic broadcasts) stay valid.
-    presign-ttl-minutes: ${S3_PRESIGN_TTL_MINUTES:15}
+    presign-ttl-minutes: ${S3_PRESIGN_TTL_MINUTES}
 
 server:
   port: ${SERVER_PORT}
@@ -129,7 +137,7 @@ management:
         # /actuator/** is permitAll in SecurityConfig, so anything exposed here is public to whoever
         # can reach the port. Default stays at health; set to health,prometheus on a private
         # network (load-test stack, internal scrape) only.
-        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health}
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE}
   metrics:
     distribution:
       percentiles-histogram:
@@ -174,28 +182,50 @@ jdbc:
 websocket:
   # Restrict to your domain in production, e.g. https://*.autofik.com
   # Set WEBSOCKET_ALLOWED_ORIGINS env var or override in application-prod.yaml
-  allowed-origins: ${WEBSOCKET_ALLOWED_ORIGINS:*}
+  allowed-origins: ${WEBSOCKET_ALLOWED_ORIGINS}
+  # STOMP thread pools. Inbound handles client frames, outbound writes to sockets; a frame waits
+  # in the queue when every thread is busy.
+  inbound:
+    core-pool-size: ${WEBSOCKET_INBOUND_CORE_POOL_SIZE}
+    max-pool-size: ${WEBSOCKET_INBOUND_MAX_POOL_SIZE}
+    queue-capacity: ${WEBSOCKET_INBOUND_QUEUE_CAPACITY}
+  outbound:
+    core-pool-size: ${WEBSOCKET_OUTBOUND_CORE_POOL_SIZE}
+    max-pool-size: ${WEBSOCKET_OUTBOUND_MAX_POOL_SIZE}
+    queue-capacity: ${WEBSOCKET_OUTBOUND_QUEUE_CAPACITY}
+  # Socket bids and syncs run here, off the shared inbound threads.
+  bid-commands:
+    threads: ${WEBSOCKET_BID_COMMANDS_THREADS}
+    queue-capacity: ${WEBSOCKET_BID_COMMANDS_QUEUE_CAPACITY}
 
 medusa:
   base-url: ${MEDUSA_BASE_URL}
   public-key: ${MEDUSA_PUBLIC_KEY}
+  # SOS create waits on this call, so both stay short.
+  connect-timeout-ms: ${MEDUSA_CONNECT_TIMEOUT_MS}
+  read-timeout-ms: ${MEDUSA_READ_TIMEOUT_MS}
 
 billing:
-  enabled: ${BILLING_ENABLED:false}
-  base-url: ${BILLING_SERVICE_URL:}
-  service-key: ${BILLING_SERVICE_KEY:}
-  verify-path: ${BILLING_VERIFY_PATH:/internal/billings/verify}
+  enabled: ${BILLING_ENABLED}
+  base-url: ${BILLING_SERVICE_URL}
+  service-key: ${BILLING_SERVICE_KEY}
+  verify-path: ${BILLING_VERIFY_PATH}
+  connect-timeout-ms: ${BILLING_CONNECT_TIMEOUT_MS}
+  read-timeout-ms: ${BILLING_READ_TIMEOUT_MS}
   allowed-tiers:
-    customer: ${BILLING_ALLOWED_TIERS_CUSTOMER:}
-    mechanic: ${BILLING_ALLOWED_TIERS_MECHANIC:}
+    customer: ${BILLING_ALLOWED_TIERS_CUSTOMER}
+    mechanic: ${BILLING_ALLOWED_TIERS_MECHANIC}
 
 kafka:
   topic:
     # 1 is correct only for this repo's single-broker dev Kafka (see project CLAUDE.md). A
     # multi-broker SIT/prod cluster needs at least 3 for real durability — set via env there.
-    replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
+    replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR}
     # Partitions per app-managed topic. Kafka can only increase this on an existing topic.
-    partitions: ${KAFKA_TOPIC_PARTITIONS:3}
+    partitions: ${KAFKA_TOPIC_PARTITIONS}
+  consumer:
+    # Consumer threads for sos.notification (each push is a blocking OneSignal call).
+    notification-concurrency: ${KAFKA_NOTIFICATION_CONCURRENCY}
 
 sos:
   arrival:
@@ -204,106 +234,114 @@ sos:
     # with the request, which the mechanic controls and could simply set to the customer's.
     # Note current_location is written at most once per sos.location.pg-sync-seconds (10s default), so a fast-moving mechanic's stored
     # position can lag their real one; raise this if legitimate arrivals are being rejected.
-    max-distance-meters: ${SOS_ARRIVAL_MAX_DISTANCE_M:50}
+    max-distance-meters: ${SOS_ARRIVAL_MAX_DISTANCE_M}
+    # How long the customer has to confirm the mechanic's arrival before it is accepted.
+    approval-window-seconds: ${SOS_ARRIVAL_APPROVAL_WINDOW_SECONDS}
   auto-expand:
     # Step size and ceiling for widening the broadcast radius on a zero-bid retry. Deliberately
     # separate from the customer's own broadcastRadiusKm preference cap (@Max(20) in
     # CreateSosRequest) — this is the system's own last-resort fallback, allowed to search wider
     # than the customer ever asked for.
-    step-km: ${SOS_AUTO_EXPAND_STEP_KM:5}
-    max-km: ${SOS_AUTO_EXPAND_MAX_KM:35}
+    step-km: ${SOS_AUTO_EXPAND_STEP_KM}
+    max-km: ${SOS_AUTO_EXPAND_MAX_KM}
   no-show:
     # An assigned mechanic who has not moved for this many minutes is asked "are you still coming?".
     # 0 turns the sweep off. Needs the mobile app to show the question (frame STILL_COMING_CHECK)
     # and answer it with PATCH /sos/{id}/still-coming or /sos/{id}/mechanic-release.
-    stalled-minutes: ${SOS_NO_SHOW_STALLED_MINUTES:5}
+    stalled-minutes: ${SOS_NO_SHOW_STALLED_MINUTES}
     # How long they have to answer before the job is released and offered to someone else.
-    prompt-response-seconds: ${SOS_NO_SHOW_PROMPT_RESPONSE_SECONDS:60}
+    prompt-response-seconds: ${SOS_NO_SHOW_PROMPT_RESPONSE_SECONDS}
     # How often the check runs.
-    sweep-interval-ms: ${SOS_NO_SHOW_SWEEP_INTERVAL_MS:30000}
+    sweep-interval-ms: ${SOS_NO_SHOW_SWEEP_INTERVAL_MS}
   dispatch:
     # A mechanic whose last location ping is older than this is not offered jobs and cannot bid
     # (they have probably closed the app). A mechanic with no recorded ping yet is treated as
     # fresh, so a deploy does not drop everyone who is offline at that moment.
-    location-max-age-minutes: ${SOS_DISPATCH_LOCATION_MAX_AGE_MINUTES:5}
+    location-max-age-minutes: ${SOS_DISPATCH_LOCATION_MAX_AGE_MINUTES}
     # A mechanic whose road ETA to the SOS is longer than this is not offered the job, and a bid
     # carrying a longer ETA is refused. Straight-line radius ignores rivers and one-way roads.
     # Only applied where a Google estimate exists (the nearest offer-max-mechanics, and the bid's
     # own); no estimate never blocks. 0 disables.
-    max-road-eta-minutes: ${SOS_DISPATCH_MAX_ROAD_ETA_MINUTES:30}
+    max-road-eta-minutes: ${SOS_DISPATCH_MAX_ROAD_ETA_MINUTES}
   eta:
     # How often a mechanic's location ping is allowed to trigger a real Google Distance Matrix
     # call while ACCEPTED/ON_THE_WAY; every other ping in the window interpolates against the
     # cached snapshot for free. This is the single biggest driver of Maps API spend (~86% of it
     # at typical usage) — lower for tighter live-ETA accuracy, raise to cut cost. The displayed
     # ETA keeps updating smoothly between refreshes either way (see RouteEtaServiceImpl#interpolate).
-    refresh-interval-seconds: ${SOS_ETA_REFRESH_INTERVAL_SECONDS:30}
+    refresh-interval-seconds: ${SOS_ETA_REFRESH_INTERVAL_SECONDS}
     # Lifetime of the cached ETA snapshot. Must outlive refresh-interval-seconds so pings between
     # refreshes always have a snapshot to interpolate against.
-    cache-ttl-minutes: ${SOS_ETA_CACHE_TTL_MINUTES:15}
+    cache-ttl-minutes: ${SOS_ETA_CACHE_TTL_MINUTES}
     # Real road distance/time shown to each mechanic in the job offer, before they bid. One
     # Distance Matrix request per fan-out, billed per mechanic (element), and only for mechanics
     # not already given an estimate for that SOS (auto-expand rounds reuse the earlier one).
     # Newly reached mechanics beyond this cap (nearest first) get the offer without an estimate.
     # Google allows at most 25 origins per request. 0 disables the Google call.
-    offer-max-mechanics: ${SOS_ETA_OFFER_MAX_MECHANICS:25}
+    offer-max-mechanics: ${SOS_ETA_OFFER_MAX_MECHANICS}
     # A stored offer estimate older than this is re-fetched on the next fan-out (mechanic has moved).
-    offer-estimate-max-age-seconds: ${SOS_ETA_OFFER_ESTIMATE_MAX_AGE_SECONDS:300}
+    offer-estimate-max-age-seconds: ${SOS_ETA_OFFER_ESTIMATE_MAX_AGE_SECONDS}
   location:
     # Mechanic GPS is written to Postgres at most once per this many seconds (Redis/Kafka carry
     # every ping). Lower = fresher current_location for the ARRIVED proximity check, more DB writes.
-    pg-sync-seconds: ${MECHANIC_LOCATION_PG_SYNC_SECONDS:10}
+    pg-sync-seconds: ${MECHANIC_LOCATION_PG_SYNC_SECONDS}
     # A persisted ping this far (metres) from the previous one counts as the mechanic having moved.
-    moved-threshold-meters: ${SOS_LOCATION_MOVED_THRESHOLD_M:20}
+    moved-threshold-meters: ${SOS_LOCATION_MOVED_THRESHOLD_M}
   h3:
     # WARNING: every stored mechanic current_h3_index was computed at this resolution. Changing it
     # breaks nearby-mechanic search until all rows are recomputed. center-to-center-km must match
     # the resolution (2.114 km is correct only for resolution 7).
-    resolution: ${SOS_H3_RESOLUTION:7}
-    center-to-center-km: ${SOS_H3_CENTER_TO_CENTER_KM:2.114}
+    resolution: ${SOS_H3_RESOLUTION}
+    center-to-center-km: ${SOS_H3_CENTER_TO_CENTER_KM}
   geo:
     # Mean Earth radius for straight-line (haversine) distance fallbacks.
-    earth-radius-m: ${SOS_EARTH_RADIUS_M:6371000}
+    earth-radius-m: ${SOS_EARTH_RADIUS_M}
   media:
     # Max source image width/height in pixels, checked before decode. Security guard against
     # decompression-bomb uploads; raising it increases worst-case memory per upload.
-    max-source-dimension: ${SOS_MEDIA_MAX_SOURCE_DIMENSION:8000}
-    max-upload-mb: ${SOS_MEDIA_MAX_UPLOAD_MB:10}
+    max-source-dimension: ${SOS_MEDIA_MAX_SOURCE_DIMENSION}
+    max-upload-mb: ${SOS_MEDIA_MAX_UPLOAD_MB}
     # Photos decoded at once; another upload waits 2 s for a slot, then answers 503.
-    max-concurrent-decodes: ${SOS_MEDIA_MAX_CONCURRENT_DECODES:2}
+    max-concurrent-decodes: ${SOS_MEDIA_MAX_CONCURRENT_DECODES}
     # Photos kept per ticket; the next upload answers 409.
-    max-per-sos: ${SOS_MEDIA_MAX_PER_SOS:10}
+    max-per-sos: ${SOS_MEDIA_MAX_PER_SOS}
     # Stored photos are resized to fit this box, then re-encoded at this JPEG quality (0.0-1.0).
-    max-image-dimension: ${SOS_MEDIA_MAX_IMAGE_DIMENSION:1280}
-    jpeg-quality: ${SOS_MEDIA_JPEG_QUALITY:0.80}
+    max-image-dimension: ${SOS_MEDIA_MAX_IMAGE_DIMENSION}
+    jpeg-quality: ${SOS_MEDIA_JPEG_QUALITY}
   broadcast:
     # Max photos attached to each mechanic fan-out. Each one is a fresh S3 presign per broadcast,
     # so raising this adds presign work and payload size on every create/offer round.
-    max-photos: ${SOS_BROADCAST_MAX_PHOTOS:3}
+    max-photos: ${SOS_BROADCAST_MAX_PHOTOS}
     # Starting radius (km) when the customer doesn't set broadcastRadiusKm.
-    default-km: ${SOS_DEFAULT_BROADCAST_KM:15}
+    default-km: ${SOS_DEFAULT_BROADCAST_KM}
   gateway:
     # The secret only the internal gateway knows, sent on every request in this header. Blank
     # turns the check off (local runs, tests); set it in every deployed environment, because
     # user-context / mechanic-context are unsigned and SOS acts on them completely.
-    header: ${SOS_GATEWAY_HEADER:X-Edge-Auth}
-    secret: ${SOS_GATEWAY_SECRET:}
+    header: ${SOS_GATEWAY_HEADER}
+    secret: ${SOS_GATEWAY_SECRET}
   bidding:
     # Seconds mechanics have to bid per broadcast attempt, and max rebroadcasts per ticket.
-    window-seconds: ${SOS_BIDDING_WINDOW_SECONDS:60}
-    max-rebroadcast: ${SOS_MAX_REBROADCAST:3}
+    window-seconds: ${SOS_BIDDING_WINDOW_SECONDS}
+    max-rebroadcast: ${SOS_MAX_REBROADCAST}
   completion:
     # How long the customer has to approve or reject a mechanic's completion request. After that it
     # is approved automatically, so an unanswered request cannot leave the job open (it blocks the
     # customer from a new SOS and keeps the mechanic tied to it). Default 2 minutes (120 s); 90 s also works.
-    approval-window-seconds: ${SOS_COMPLETION_APPROVAL_WINDOW_SECONDS:120}
+    approval-window-seconds: ${SOS_COMPLETION_APPROVAL_WINDOW_SECONDS}
     # How often the service looks for requests past that window.
-    sweep-interval-ms: ${SOS_COMPLETION_SWEEP_INTERVAL_MS:15000}
+    sweep-interval-ms: ${SOS_COMPLETION_SWEEP_INTERVAL_MS}
     # F-11: shortest time between starting a job (IN_PROGRESS) and the mechanic proposing COMPLETED; 0 = off
-    min-in-progress-seconds: ${SOS_COMPLETION_MIN_IN_PROGRESS_SECONDS:60}
+    min-in-progress-seconds: ${SOS_COMPLETION_MIN_IN_PROGRESS_SECONDS}
   create:
     # Minimum gap between two SOS creations by the same user.
-    cooldown-seconds: ${SOS_CREATE_COOLDOWN_SECONDS:60}
+    cooldown-seconds: ${SOS_CREATE_COOLDOWN_SECONDS}
+  customer-wait:
+    # Minutes a mechanic waits at ARRIVED before they may end the job for a missing customer.
+    minutes: ${SOS_CUSTOMER_WAIT_MINUTES}
+  scheduler:
+    # Threads for the timers (bidding expiry, sweeps).
+    pool-size: ${SOS_SCHEDULER_POOL_SIZE}
 
 logging:
   level:

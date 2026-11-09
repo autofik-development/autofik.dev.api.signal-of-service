@@ -976,6 +976,37 @@ class SosServiceImplTest {
             argThat((SosNotificationEvent e) -> e.estimate() == null));
   }
 
+  // The offer reads the customer block (name, phone, vehicle) from the ticket; a vehicle without a
+  // fuel type still goes out.
+  @Test
+  void create_offerCarriesTheCustomerBlockFromTheTicket() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic));
+    when(sosRequestRepository.findWithCustomerBySosId(sosId)).thenReturn(Optional.of(pendingSos));
+    when(googleMapsService.getDistanceInfos(any(), any())).thenReturn(null);
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-new-request"),
+            argThat(
+                (SosNotificationEvent e) ->
+                    e.customer() != null && "Alice".equals(e.customer().name())));
+  }
+
   @Test
   void create_offerEstimate_mechanicAlreadyOffered_reusesStoredEstimateAndSkipsGoogle() {
     stubCreateGuards();

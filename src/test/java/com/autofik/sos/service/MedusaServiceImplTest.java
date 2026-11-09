@@ -54,6 +54,8 @@ class MedusaServiceImplTest {
 
   private MedusaConfig config() {
     MedusaConfig cfg = new MedusaConfig();
+    cfg.setConnectTimeoutMs(2000);
+    cfg.setReadTimeoutMs(3000);
     cfg.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
     cfg.setPublicKey("pk_unit");
     return cfg;
@@ -159,6 +161,8 @@ class MedusaServiceImplTest {
   @Test
   void connectionRefused_becomesServiceUnavailable() {
     MedusaConfig cfg = new MedusaConfig();
+    cfg.setConnectTimeoutMs(2000);
+    cfg.setReadTimeoutMs(3000);
     cfg.setBaseUrl("http://127.0.0.1:1");
     cfg.setPublicKey("k");
 
@@ -181,6 +185,8 @@ class MedusaServiceImplTest {
           ex.close();
         });
     MedusaConfig cfg = new MedusaConfig();
+    cfg.setConnectTimeoutMs(2000);
+    cfg.setReadTimeoutMs(3000);
     cfg.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
     cfg.setPublicKey("k");
     cfg.setReadTimeoutMs(300);
@@ -198,6 +204,8 @@ class MedusaServiceImplTest {
   @Test
   void defaultTimeouts_areShort() {
     MedusaConfig cfg = new MedusaConfig();
+    cfg.setConnectTimeoutMs(2000);
+    cfg.setReadTimeoutMs(3000);
     assertThat(cfg.getConnectTimeoutMs()).isEqualTo(2000);
     assertThat(cfg.getReadTimeoutMs()).isEqualTo(3000);
   }

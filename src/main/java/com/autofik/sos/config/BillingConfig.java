@@ -9,7 +9,8 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * The billing service SOS asks, on the internal network, whether a customer or mechanic may use
- * SOS. Off by default: with {@code billing.enabled=false} nothing in SOS calls billing.
+ * SOS. Every value comes from the environment ({@code BILLING_*}, see .env.example) through
+ * application.yaml, which is the only place fallbacks live; this class holds none.
  */
 @Configuration
 @ConfigurationProperties(prefix = "billing")
@@ -17,37 +18,50 @@ import org.springframework.context.annotation.Configuration;
 @Setter
 public class BillingConfig {
 
-  private boolean enabled = false;
+  /** {@code BILLING_ENABLED}. False: nothing in SOS calls billing. */
+  private boolean enabled;
 
-  /** Internal base URL of the billing service. */
+  /** {@code BILLING_SERVICE_URL}: internal base URL of the billing service. */
   private String baseUrl;
 
-  /** Sent as {@code X-Service-Key}. Never logged. */
+  /** {@code BILLING_SERVICE_KEY}: sent as {@code X-Service-Key}. Never logged. */
   private String serviceKey;
 
-  // ponytail: method and path are assumed until billing confirms them.
-  private String verifyPath = "/internal/billings/verify";
+  /** {@code BILLING_VERIFY_PATH}. ponytail: method and path assumed until billing confirms. */
+  private String verifyPath;
 
-  /** SOS create and bid wait on this call, so it must stay short. */
-  private int connectTimeoutMs = 2000;
+  /** {@code BILLING_CONNECT_TIMEOUT_MS}. SOS create and bid wait on this call. */
+  private int connectTimeoutMs;
 
-  private int readTimeoutMs = 3000;
+  /** {@code BILLING_READ_TIMEOUT_MS}. */
+  private int readTimeoutMs;
 
   private AllowedTiers allowedTiers = new AllowedTiers();
 
-  /** Tiers (or plan ids) that may use SOS, per role. Empty means every tier is allowed. */
+  /**
+   * {@code BILLING_ALLOWED_TIERS_CUSTOMER} / {@code _MECHANIC}: tiers (or plan ids) that may use
+   * SOS, comma-separated. Empty or unset means every tier is allowed.
+   */
   @Getter
   @Setter
   public static class AllowedTiers {
-    private List<String> customer = List.of();
-    private List<String> mechanic = List.of();
+    private List<String> customer;
+    private List<String> mechanic;
   }
 
   @PostConstruct
-  void requireUrlAndKeyWhenEnabled() {
-    if (enabled && (isBlank(baseUrl) || isBlank(serviceKey))) {
+  void requireSettingsWhenEnabled() {
+    if (!enabled) {
+      return;
+    }
+    if (isBlank(baseUrl) || isBlank(serviceKey) || isBlank(verifyPath)) {
       throw new IllegalStateException(
-          "billing.enabled is true but billing.base-url or billing.service-key is empty");
+          "BILLING_ENABLED is true but BILLING_SERVICE_URL, BILLING_SERVICE_KEY or"
+              + " BILLING_VERIFY_PATH is empty");
+    }
+    if (connectTimeoutMs <= 0 || readTimeoutMs <= 0) {
+      throw new IllegalStateException(
+          "BILLING_CONNECT_TIMEOUT_MS and BILLING_READ_TIMEOUT_MS must be above 0");
     }
   }
 

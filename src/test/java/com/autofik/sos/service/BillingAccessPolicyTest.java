@@ -65,6 +65,13 @@ class BillingAccessPolicyTest {
   }
 
   @Test
+  void anUnsetTierList_allowsEveryTier() {
+    config.getAllowedTiers().setCustomer(null);
+    assertThatCode(() -> policy.check(CallerRole.USER, plan("Anything", 3, false, true)))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
   void anEmptyTierList_allowsEveryTier() {
     assertThatCode(() -> policy.check(CallerRole.USER, plan("Anything", 3, false, true)))
         .doesNotThrowAnyException();
@@ -104,7 +111,7 @@ class BillingAccessPolicyTest {
   }
 
   private static void invokeValidation(BillingConfig cfg) throws Exception {
-    var m = BillingConfig.class.getDeclaredMethod("requireUrlAndKeyWhenEnabled");
+    var m = BillingConfig.class.getDeclaredMethod("requireSettingsWhenEnabled");
     m.setAccessible(true);
     m.invoke(cfg);
   }

@@ -18,8 +18,8 @@ public class MedusaConfig {
   private String publicKey;
 
   /** Connect timeout for Medusa calls. SOS create waits on this call, so it must stay short. */
-  private int connectTimeoutMs = 2000;
+  private int connectTimeoutMs; // MEDUSA_CONNECT_TIMEOUT_MS
 
   /** Read timeout for Medusa calls; a hung Medusa must not hold a request thread. */
-  private int readTimeoutMs = 3000;
+  private int readTimeoutMs; // MEDUSA_READ_TIMEOUT_MS
 }

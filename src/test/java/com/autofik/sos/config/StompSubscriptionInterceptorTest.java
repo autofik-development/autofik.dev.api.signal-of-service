@@ -263,4 +263,47 @@ class StompSubscriptionInterceptorTest {
     assertThat(interceptor.preSend(out, null)).isSameAs(out);
     verify(sosService, times(1)).canView(sosId, callerId); // only the subscribe
   }
+
+  @Test
+  void outboundFrames_withoutASessionOrDestination_passThrough() {
+    String media = "/topic/sos/" + sosId + "/media";
+    StompHeaderAccessor noSession = StompHeaderAccessor.create(StompCommand.MESSAGE);
+    noSession.setDestination(media);
+    noSession.setLeaveMutable(true);
+    Message<byte[]> withoutSession =
+        MessageBuilder.createMessage(new byte[0], noSession.getMessageHeaders());
+    Message<byte[]> withoutDestination = frame(StompCommand.MESSAGE, null, null);
+
+    assertThat(interceptor.preSend(withoutSession, null)).isSameAs(withoutSession);
+    assertThat(interceptor.preSend(withoutDestination, null)).isSameAs(withoutDestination);
+    verify(sosService, never()).canView(any(), any());
+  }
+
+  @Test
+  void outboundFrames_onOtherTopics_areNotReChecked() {
+    Message<byte[]> other = frame(StompCommand.MESSAGE, "/topic/announcements", null);
+
+    assertThat(interceptor.preSend(other, null)).isSameAs(other);
+    verify(sosService, never()).canView(any(), any());
+  }
+
+  @Test
+  void aDisconnectWithoutASession_isHarmless() {
+    StompHeaderAccessor bye = StompHeaderAccessor.create(StompCommand.DISCONNECT);
+    bye.setLeaveMutable(true);
+    Message<byte[]> frame = MessageBuilder.createMessage(new byte[0], bye.getMessageHeaders());
+
+    assertThat(interceptor.preSend(frame, null)).isSameAs(frame);
+  }
+
+  @Test
+  void aSubscribeWithASessionButNoUser_isNotRemembered() {
+    interceptor.preSend(frame(StompCommand.SUBSCRIBE, null, null), null);
+    String media = "/topic/sos/" + sosId + "/media";
+
+    Message<byte[]> out = frame(StompCommand.MESSAGE, media, null);
+
+    assertThat(interceptor.preSend(out, null)).isSameAs(out);
+    verify(sosService, never()).canView(any(), any());
+  }
 }

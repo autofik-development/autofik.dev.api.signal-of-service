@@ -61,6 +61,9 @@ class BillingClientImplTest {
     BillingConfig cfg = new BillingConfig();
     cfg.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
     cfg.setServiceKey("key_unit");
+    cfg.setVerifyPath("/internal/billings/verify");
+    cfg.setConnectTimeoutMs(2000);
+    cfg.setReadTimeoutMs(3000);
     return new BillingClientImpl(cfg);
   }
 
@@ -136,7 +139,9 @@ class BillingClientImplTest {
     BillingConfig cfg = new BillingConfig();
     cfg.setBaseUrl("http://127.0.0.1:1");
     cfg.setServiceKey("k");
+    cfg.setVerifyPath("/internal/billings/verify");
     cfg.setConnectTimeoutMs(300);
+    cfg.setReadTimeoutMs(300);
     assertThatThrownBy(() -> new BillingClientImpl(cfg).verify(id, null))
         .isInstanceOf(ServiceUnavailableException.class);
   }

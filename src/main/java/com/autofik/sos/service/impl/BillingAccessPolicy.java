@@ -27,7 +27,7 @@ public class BillingAccessPolicy {
         role == CallerRole.MECHANIC
             ? config.getAllowedTiers().getMechanic()
             : config.getAllowedTiers().getCustomer();
-    if (!allowed.isEmpty() && !isAllowed(allowed, plan)) {
+    if (allowed != null && !allowed.isEmpty() && !isAllowed(allowed, plan)) {
       throw new PlanRequiredException(Reason.TIER_NOT_ALLOWED);
     }
     // null means a plan without tokens: nothing to count. ponytail: billing to confirm that shape.
