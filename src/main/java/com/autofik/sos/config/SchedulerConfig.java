@@ -18,7 +18,7 @@ public class SchedulerConfig {
 
   // Every per-ticket expiry timer and every @Scheduled sweep (expiry, completion, no-show) runs on
   // this pool. A mass expiry makes the sweep work through hundreds of tickets one after another.
-  @Value("${sos.scheduler.pool-size:4}")
+  @Value("${sos.scheduler.pool-size}")
   private int poolSize;
 
   @Bean

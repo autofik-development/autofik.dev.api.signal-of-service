@@ -65,6 +65,7 @@ public class BidServiceImpl implements BidService {
   private final SosEventProducer sosEventProducer; // Publishes asynchronous system events to Kafka
   private final TransactionTemplate transactionTemplate;
   private final SosService sosService;
+  private final BillingGate billingGate;
   private final SimpMessagingTemplate
       messagingTemplate; // Handles instant WebSocket communication directly to mobile apps
 
@@ -81,12 +82,16 @@ public class BidServiceImpl implements BidService {
    */
   // Longest road ETA a bid may carry; 0 disables. The straight-line eligibility check cannot see
   // rivers or one-way roads, so the Google estimate this call already fetches is the second gate.
-  @Value("${sos.dispatch.max-road-eta-minutes:30}")
+  @Value("${sos.dispatch.max-road-eta-minutes}")
   private int maxRoadEtaMinutes;
 
   @Override
   public BidSosResponse create(CreateBidRequest request) {
     Route route = transactionTemplate.execute(status -> checkBidAllowed(request));
+
+    // External call, outside any transaction. After the local checks, so a mechanic who could
+    // not bid anyway never costs a billing call.
+    billingGate.requireMechanic(request.mechanicId());
 
     // External call, outside any transaction.
     DistanceInfo info =

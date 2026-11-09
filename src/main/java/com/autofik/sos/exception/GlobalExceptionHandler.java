@@ -306,6 +306,18 @@ public class GlobalExceptionHandler {
         .body(new ErrorResponse(400, "Bad Request", "Unknown sort property", LocalDateTime.now()));
   }
 
+  /** The caller's billing plan does not allow this request. 403, with the reason for the app. */
+  @ExceptionHandler(PlanRequiredException.class)
+  @ResponseStatus(HttpStatus.FORBIDDEN)
+  public ErrorResponse handlePlanRequired(PlanRequiredException ex) {
+    return new ErrorResponse(
+        HttpStatus.FORBIDDEN.value(),
+        HttpStatus.FORBIDDEN.getReasonPhrase(),
+        ex.getMessage(),
+        LocalDateTime.now(),
+        java.util.Map.of("reason", ex.reason().name()));
+  }
+
   /**
    * Handles custom downtime or external integration failures. Maps to HTTP 503 Service Unavailable.
    */

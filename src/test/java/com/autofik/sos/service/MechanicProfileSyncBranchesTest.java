@@ -113,7 +113,7 @@ class MechanicProfileSyncBranchesTest {
   @Test
   void outOfBoundValues_areNotStored() {
     Mechanic m = existing();
-    String tooLong = "x".repeat(40);
+    String tooLong = "x".repeat(101);
 
     sync.sync(
         id, ctx(profile(tooLong, "   "), skill(List.of(), 500), "9".repeat(30), "mystery", "7.5"));

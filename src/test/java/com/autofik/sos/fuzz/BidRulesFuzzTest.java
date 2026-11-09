@@ -57,6 +57,7 @@ class BidRulesFuzzTest {
 
   @Mock com.autofik.sos.service.SosService sosService;
 
+  @Mock com.autofik.sos.service.impl.BillingGate billingGate;
   @InjectMocks BidServiceImpl bidService;
 
   private AutoCloseable mocks;

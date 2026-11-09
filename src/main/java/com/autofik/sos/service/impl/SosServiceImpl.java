@@ -102,41 +102,41 @@ public class SosServiceImpl implements SosService {
   // Resolution 7 ≈ 5 km² per H3 cell — fixed by what is stored in current_h3_index on Mechanic.
   // Changing this would require a schema + data migration; kRing radius is the adaptive variable
   // instead.
-  @Value("${sos.h3.resolution:7}")
+  @Value("${sos.h3.resolution}")
   private int h3Resolution;
 
   // Center-to-center distance between adjacent resolution-7 cells ≈ edge * sqrt(3) ≈ 2.114 km.
   // Used to convert a km radius into the minimum kRing radius that covers it.
-  @Value("${sos.h3.center-to-center-km:2.114}")
+  @Value("${sos.h3.center-to-center-km}")
   private double h3CenterToCenterKm;
 
-  @Value("${sos.geo.earth-radius-m:6371000}")
+  @Value("${sos.geo.earth-radius-m}")
   private double earthRadiusM;
 
   // A stored offer estimate older than this is treated as stale and re-fetched (and re-billed)
   // on the next fan-out, because the mechanic has probably moved. Short enough that a rebroadcast
   // after the customer waited a while shows a current number; long enough that the usual
   // back-to-back auto-expand windows reuse it.
-  @Value("${sos.eta.offer-estimate-max-age-seconds:300}")
+  @Value("${sos.eta.offer-estimate-max-age-seconds}")
   private int offerEstimateMaxAgeSeconds;
 
   // A mechanic whose last location ping is older than this is not offered jobs (they have
   // probably closed the app); a mechanic with no recorded ping is kept.
-  @Value("${sos.dispatch.location-max-age-minutes:5}")
+  @Value("${sos.dispatch.location-max-age-minutes}")
   private int locationMaxAgeMinutes;
 
   // A mechanic whose road ETA to the SOS is longer than this is not offered the job. Straight-line
   // radius ignores rivers and one-way roads. Only applied where an estimate already exists.
   // 0 disables.
-  @Value("${sos.dispatch.max-road-eta-minutes:30}")
+  @Value("${sos.dispatch.max-road-eta-minutes}")
   private int maxRoadEtaMinutes;
 
   // How long an assigned mechanic may stand still before being asked "are you still coming?"
   // (0 turns the no-show sweep off), and how long they have to answer before the job is released.
-  @Value("${sos.no-show.stalled-minutes:5}")
+  @Value("${sos.no-show.stalled-minutes}")
   private int noShowStalledMinutes;
 
-  @Value("${sos.no-show.prompt-response-seconds:60}")
+  @Value("${sos.no-show.prompt-response-seconds}")
   private int noShowPromptResponseSeconds;
 
   private LocalDateTime locationFreshSince() {
@@ -144,41 +144,41 @@ public class SosServiceImpl implements SosService {
   }
 
   // How many of the nearest mechanics get a real (billed) distance/time in the job offer.
-  @Value("${sos.eta.offer-max-mechanics:25}")
+  @Value("${sos.eta.offer-max-mechanics}")
   private int offerMaxMechanics;
 
   // Default broadcast radius used for fan-out when the SOS request has no user-defined limit.
-  @Value("${sos.broadcast.default-km:15}")
+  @Value("${sos.broadcast.default-km}")
   private int defaultBroadcastKm;
 
   // Seconds mechanics have to bid before a broadcast attempt expires, and how many times a
   // zero-bid ticket may be rebroadcast (auto or manual) before it gives up.
-  @Value("${sos.bidding.window-seconds:60}")
+  @Value("${sos.bidding.window-seconds}")
   private int biddingWindowSeconds;
 
   // How long the customer has to answer a completion request. When it passes, the request is
   // approved automatically, so a customer who never answers cannot leave the job open forever (it
   // blocks them from a new SOS and keeps the mechanic tied to it).
   // F-11: a job cannot be marked complete the moment it starts. 0 turns the check off.
-  @Value("${sos.completion.min-in-progress-seconds:60}")
+  @Value("${sos.completion.min-in-progress-seconds}")
   private int minInProgressSeconds;
 
-  @Value("${sos.completion.approval-window-seconds:120}")
+  @Value("${sos.completion.approval-window-seconds}")
   private long completionApprovalWindowSeconds;
 
   // Same idea for the "your mechanic has arrived" confirmation, but shorter: the mechanic is
   // already checked to be at the breakdown, so silence means the customer is not there, not that
   // the arrival is false. When it passes, ARRIVED is confirmed automatically and the wait below
   // starts.
-  @Value("${sos.arrival.approval-window-seconds:60}")
+  @Value("${sos.arrival.approval-window-seconds}")
   private long arrivalApprovalWindowSeconds;
 
   // How long after ARRIVED took effect a mechanic must wait before they may end the job because
   // the customer never came to the car. 0 turns the action off.
-  @Value("${sos.customer-wait.minutes:10}")
+  @Value("${sos.customer-wait.minutes}")
   private int customerWaitMinutes;
 
-  @Value("${sos.bidding.max-rebroadcast:3}")
+  @Value("${sos.bidding.max-rebroadcast}")
   private int maxRebroadcast;
 
   private static final String SOS_COOLDOWN_KEY_PREFIX = "sos:cooldown:";
@@ -192,7 +192,7 @@ public class SosServiceImpl implements SosService {
   private static final int MAX_MATRIX_ORIGINS = 25;
 
   // Minimum gap between two SOS creations by the same user.
-  @Value("${sos.create.cooldown-seconds:60}")
+  @Value("${sos.create.cooldown-seconds}")
   private int createCooldownSeconds;
 
   // Collection of states indicating that a customer ticket is unresolved
@@ -236,6 +236,7 @@ public class SosServiceImpl implements SosService {
   private final GoogleMapsService googleMapsService;
   private final RouteEtaService routeEtaService;
   private final MedusaService medusaService;
+  private final BillingGate billingGate;
   private final SosEventProducer sosEventProducer;
   private final SimpMessagingTemplate messagingTemplate;
   private final TaskScheduler taskScheduler;
@@ -249,7 +250,7 @@ public class SosServiceImpl implements SosService {
   // How close a mechanic must be, by road, before they may mark ARRIVED. Configurable because
   // the right value depends on the road layout: a divided boulevard can put someone standing
   // beside the customer several hundred metres away by road.
-  @Value("${sos.arrival.max-distance-meters:50}")
+  @Value("${sos.arrival.max-distance-meters}")
   private int arrivalMaxDistanceMeters;
 
   // Auto-expand step/ceiling for a zero-bid retry — deliberately separate from the customer's own
@@ -257,10 +258,10 @@ public class SosServiceImpl implements SosService {
   // customer chose; this is the system's own last-resort fallback when nobody responded, so it's
   // allowed to search wider than the customer ever asked for. Configurable so the step size and
   // ceiling can be tuned per-environment without a redeploy.
-  @Value("${sos.auto-expand.step-km:5}")
+  @Value("${sos.auto-expand.step-km}")
   private int autoExpandStepKm;
 
-  @Value("${sos.auto-expand.max-km:35}")
+  @Value("${sos.auto-expand.max-km}")
   private int autoExpandMaxKm;
 
   // At startup: expire what was missed while the service was down, then re-arm a timer for every
@@ -512,7 +513,9 @@ public class SosServiceImpl implements SosService {
     String problemTypeKey;
     SosRequest sos;
     try {
-      // External call, outside any transaction.
+      // External calls, outside any transaction. Billing first: a customer whose plan does not
+      // allow SOS gets the specific 403 before anything else is asked.
+      billingGate.requireCustomer(request.userId());
       problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
 
       // The only transactional part: look up the projections, pick the radius, insert the ticket.

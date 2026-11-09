@@ -40,7 +40,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
   private static final String CALLER_ATTRIBUTE = "callerAuthentication";
 
-  @Value("${websocket.allowed-origins:*}")
+  @Value("${websocket.allowed-origins}")
   private String allowedOrigins;
 
   /** See SecurityConfig — local-development switch, never enabled anywhere else. */
@@ -152,22 +152,22 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
   // Pool sizes are properties so they can be tuned without a code change; the defaults are what
   // the comments below were written against.
-  @Value("${websocket.inbound.core-pool-size:32}")
+  @Value("${websocket.inbound.core-pool-size}")
   private int inboundCore;
 
-  @Value("${websocket.inbound.max-pool-size:64}")
+  @Value("${websocket.inbound.max-pool-size}")
   private int inboundMax;
 
-  @Value("${websocket.inbound.queue-capacity:1000}")
+  @Value("${websocket.inbound.queue-capacity}")
   private int inboundQueue;
 
-  @Value("${websocket.outbound.core-pool-size:8}")
+  @Value("${websocket.outbound.core-pool-size}")
   private int outboundCore;
 
-  @Value("${websocket.outbound.max-pool-size:16}")
+  @Value("${websocket.outbound.max-pool-size}")
   private int outboundMax;
 
-  @Value("${websocket.outbound.queue-capacity:1000}")
+  @Value("${websocket.outbound.queue-capacity}")
   private int outboundQueue;
 
   // Threads beyond the core size are only created once the queue is full, so an unbounded queue
