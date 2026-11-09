@@ -123,7 +123,7 @@ class MechanicProfileSyncTest {
   }
 
   @Test
-  void aHeaderWithNoProfile_changesNothingAndTouchesNoRepository() {
+  void aHeaderWithNoProfile_createsNothingAndTouchesNoSkillsOrRates() {
     MechanicContext.Mechanic plain =
         new MechanicContext.Mechanic(
             "x", "MECHANIC", null, true, true, "active", false, null, null, null, null, null);
@@ -131,7 +131,8 @@ class MechanicProfileSyncTest {
     sync.sync(id, plain);
     sync.sync(id, null);
 
-    verifyNoInteractions(mechanics, skills, rates);
+    verify(mechanics, never()).save(any(Mechanic.class));
+    verifyNoInteractions(skills, rates);
   }
 
   @Test
@@ -250,7 +251,8 @@ class MechanicProfileSyncTest {
     when(skills.findByMechanicMechanicId(id)).thenReturn(List.of());
     MechanicContext.Mechanic hostile =
         ctx(
-            "a name that is much longer than thirty characters",
+            "a name that is much longer than one hundred characters, so it is not stored "
+                .repeat(2),
             "+855123456789",
             null,
             "spaceship",

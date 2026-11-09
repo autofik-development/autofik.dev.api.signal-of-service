@@ -70,6 +70,7 @@ class BidServiceImplTest {
 
   @Mock com.autofik.sos.service.SosService sosService;
 
+  @Mock com.autofik.sos.service.impl.BillingGate billingGate;
   @InjectMocks BidServiceImpl bidService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -188,6 +189,23 @@ class BidServiceImplTest {
     assertThat(event.sosId()).isEqualTo(sosId);
     assertThat(event.mechanicId()).isEqualTo(mechanicId);
     assertThat(event.price()).isEqualTo(BigDecimal.valueOf(500));
+  }
+
+  @Test
+  void create_whenBillingRefuses_nothingIsSaved() {
+    CreateBidRequest request = new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500));
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    org.mockito.Mockito.doThrow(
+            new com.autofik.sos.exception.PlanRequiredException(
+                com.autofik.sos.exception.PlanRequiredException.Reason.EXPIRED))
+        .when(billingGate)
+        .requireMechanic(mechanicId);
+
+    assertThatThrownBy(() -> bidService.create(request))
+        .isInstanceOf(com.autofik.sos.exception.PlanRequiredException.class);
+
+    verify(bidSosRepository, never()).save(any(BidSos.class));
   }
 
   @Test

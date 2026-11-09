@@ -236,6 +236,7 @@ public class SosServiceImpl implements SosService {
   private final GoogleMapsService googleMapsService;
   private final RouteEtaService routeEtaService;
   private final MedusaService medusaService;
+  private final BillingGate billingGate;
   private final SosEventProducer sosEventProducer;
   private final SimpMessagingTemplate messagingTemplate;
   private final TaskScheduler taskScheduler;
@@ -512,7 +513,9 @@ public class SosServiceImpl implements SosService {
     String problemTypeKey;
     SosRequest sos;
     try {
-      // External call, outside any transaction.
+      // External calls, outside any transaction. Billing first: a customer whose plan does not
+      // allow SOS gets the specific 403 before anything else is asked.
+      billingGate.requireCustomer(request.userId());
       problemTypeKey = medusaService.resolveServiceGroupKey(request.serviceGroupId());
 
       // The only transactional part: look up the projections, pick the radius, insert the ticket.

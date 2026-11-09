@@ -180,6 +180,15 @@ medusa:
   base-url: ${MEDUSA_BASE_URL}
   public-key: ${MEDUSA_PUBLIC_KEY}
 
+billing:
+  enabled: ${BILLING_ENABLED:false}
+  base-url: ${BILLING_SERVICE_URL:}
+  service-key: ${BILLING_SERVICE_KEY:}
+  verify-path: ${BILLING_VERIFY_PATH:/internal/billings/verify}
+  allowed-tiers:
+    customer: ${BILLING_ALLOWED_TIERS_CUSTOMER:}
+    mechanic: ${BILLING_ALLOWED_TIERS_MECHANIC:}
+
 kafka:
   topic:
     # 1 is correct only for this repo's single-broker dev Kafka (see project CLAUDE.md). A

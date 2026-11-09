@@ -84,6 +84,7 @@ class SosServiceImplTest {
   @Mock org.springframework.beans.factory.ObjectProvider<SosMediaService> sosMediaService;
   @Mock SosMediaService sosMediaServiceBean;
 
+  @Mock com.autofik.sos.service.impl.BillingGate billingGate;
   @InjectMocks SosServiceImpl sosService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -595,6 +596,26 @@ class SosServiceImplTest {
         .isInstanceOf(com.autofik.sos.exception.ServiceUnavailableException.class);
 
     verify(redisTemplate).delete(endsWith(userId.toString()));
+  }
+
+  @Test
+  void create_whenBillingRefuses_releasesTheCooldown_andNeverReachesMedusa() {
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+    when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+    org.mockito.Mockito.doThrow(
+            new com.autofik.sos.exception.PlanRequiredException(
+                com.autofik.sos.exception.PlanRequiredException.Reason.NO_TOKENS))
+        .when(billingGate)
+        .requireCustomer(userId);
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
+
+    assertThatThrownBy(() -> sosService.create(request))
+        .isInstanceOf(com.autofik.sos.exception.PlanRequiredException.class);
+
+    verify(redisTemplate).delete(endsWith(userId.toString()));
+    verify(medusaService, never()).resolveServiceGroupKey(any());
   }
 
   @Test

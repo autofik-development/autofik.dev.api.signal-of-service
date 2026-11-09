@@ -65,6 +65,7 @@ public class BidServiceImpl implements BidService {
   private final SosEventProducer sosEventProducer; // Publishes asynchronous system events to Kafka
   private final TransactionTemplate transactionTemplate;
   private final SosService sosService;
+  private final BillingGate billingGate;
   private final SimpMessagingTemplate
       messagingTemplate; // Handles instant WebSocket communication directly to mobile apps
 
@@ -87,6 +88,10 @@ public class BidServiceImpl implements BidService {
   @Override
   public BidSosResponse create(CreateBidRequest request) {
     Route route = transactionTemplate.execute(status -> checkBidAllowed(request));
+
+    // External call, outside any transaction. After the local checks, so a mechanic who could
+    // not bid anyway never costs a billing call.
+    billingGate.requireMechanic(request.mechanicId());
 
     // External call, outside any transaction.
     DistanceInfo info =
