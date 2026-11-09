@@ -47,10 +47,12 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(EntityNotFoundException.class)
   @ResponseStatus(HttpStatus.NOT_FOUND)
   public ErrorResponse handleNotFound(EntityNotFoundException ex) {
+    // The detail names the id looked up; it stays in the log, the caller gets a fixed body.
+    log.debug("Not found: {}", ex.getMessage());
     return new ErrorResponse(
         HttpStatus.NOT_FOUND.value(),
         HttpStatus.NOT_FOUND.getReasonPhrase(),
-        ex.getMessage(),
+        "Resource not found",
         LocalDateTime.now());
   }
 
@@ -64,7 +66,7 @@ public class GlobalExceptionHandler {
     return new ErrorResponse(
         HttpStatus.NOT_FOUND.value(),
         HttpStatus.NOT_FOUND.getReasonPhrase(),
-        ex.getMessage(),
+        "Resource not found",
         LocalDateTime.now());
   }
 

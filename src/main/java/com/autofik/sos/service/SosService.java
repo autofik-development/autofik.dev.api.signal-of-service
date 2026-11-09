@@ -116,16 +116,6 @@ public interface SosService {
   SosRequestResponse cancel(UUID sosId, UUID userId);
 
   /**
-   * Use case: re-opens an EXPIRED SOS request and re-broadcasts to nearby mechanics. Capped at
-   * sos.bidding.max-rebroadcast attempts; throws TooManyRequestsException when exhausted.
-   *
-   * @param sosId identify the target SOS
-   * @param userId security check — only the owner can rebroadcast
-   * @return the updated SOS ticket now back in PENDING state
-   */
-  SosRequestResponse rebroadcast(UUID sosId, UUID userId);
-
-  /**
    * Use case: the assigned mechanic backs out of an accepted job before ARRIVED. The ticket returns
    * to PENDING with a fresh bidding window and is offered again, except to the releasing mechanic.
    *

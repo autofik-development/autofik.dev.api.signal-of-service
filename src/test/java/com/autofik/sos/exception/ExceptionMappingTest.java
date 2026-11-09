@@ -37,11 +37,11 @@ class ExceptionMappingTest {
   private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
   @Test
-  void entityNotFound_is404_withTheMessage() {
+  void entityNotFound_is404_withAFixedMessage() {
     ErrorResponse r =
         handler.handleNotFound(new EntityNotFoundException("SOS request not found: 1"));
     assertThat(r.status()).isEqualTo(404);
-    assertThat(r.message()).isEqualTo("SOS request not found: 1");
+    assertThat(r.message()).isEqualTo("Resource not found");
   }
 
   @Test
