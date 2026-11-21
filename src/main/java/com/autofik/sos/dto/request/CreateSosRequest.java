@@ -20,10 +20,10 @@ public record CreateSosRequest(
     // ceiling sos.auto-expand.max-km) when no mechanic responds — a customer request above 20 is
     // refused with that explanation, not silently clamped or silently accepted.
     @Min(value = 5, message = "broadcastRadiusKm must be at least 5 km")
-    @Max(
-        value = 20,
-        message =
-            "broadcastRadiusKm cannot exceed 20 km. The system widens the search radius beyond"
-                + " this automatically when no mechanic responds; you cannot request a wider radius"
-                + " yourself.")
-    Integer broadcastRadiusKm) {}
+        @Max(
+            value = 20,
+            message =
+                "broadcastRadiusKm cannot exceed 20 km. The system widens the search radius beyond"
+                    + " this automatically when no mechanic responds; you cannot request a wider radius"
+                    + " yourself.")
+        Integer broadcastRadiusKm) {}

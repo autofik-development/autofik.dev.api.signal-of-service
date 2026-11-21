@@ -95,7 +95,9 @@ public class MedusaServiceImpl implements MedusaService {
       // blank key can never match anything, so it is refused here rather than dispatching on it.
       String key = response.serviceGroup().key();
       if (key == null || key.isBlank()) {
-        log.warn("Medusa service group '{}' carries no usable key; refusing to dispatch on it", serviceGroupId);
+        log.warn(
+            "Medusa service group '{}' carries no usable key; refusing to dispatch on it",
+            serviceGroupId);
         throw new EntityNotFoundException("Service group has no usable key: " + serviceGroupId);
       }
       return key.trim().toUpperCase(java.util.Locale.ROOT);

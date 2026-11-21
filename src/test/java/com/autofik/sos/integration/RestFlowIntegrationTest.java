@@ -110,8 +110,12 @@ class RestFlowIntegrationTest extends FlowTestSupport {
               req("/api/v1/sos")
                   .header("user-context", userContext(d.user().getUserId()))
                   .header("Content-Type", "application/json")
-                  .POST(HttpRequest.BodyPublishers.ofString(
-                      createBody(d).replace("\"broadcastRadiusKm\":10", "\"broadcastRadiusKm\":" + tooWide))));
+                  .POST(
+                      HttpRequest.BodyPublishers.ofString(
+                          createBody(d)
+                              .replace(
+                                  "\"broadcastRadiusKm\":10",
+                                  "\"broadcastRadiusKm\":" + tooWide))));
 
       assertThat(r.statusCode()).as("radius %s: %s", tooWide, r.body()).isEqualTo(400);
       var details = parse(r.body()).get("details");
