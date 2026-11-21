@@ -2,10 +2,12 @@ package com.autofik.sos.dto.response;
 
 import com.autofik.sos.domain.enums.BidStatus;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record BidSosResponse(
     UUID bidId,
     BigDecimal price,

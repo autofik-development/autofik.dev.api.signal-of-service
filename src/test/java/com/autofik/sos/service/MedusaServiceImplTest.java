@@ -112,6 +112,24 @@ class MedusaServiceImplTest {
     assertThat(seenPath.get()).isEqualTo("/store/service-groups/sg_1");
   }
 
+  // The key is matched against mechanic skill tags, which are stored trim + upper (Locale.ROOT).
+  // Medusa's own key formatting must not decide whether dispatch matches.
+  @Test
+  void theKey_isTrimmed_andCasedWithLocaleRoot_notTheJvmDefault() {
+    body = "{\"service_group\":{\"key\":\"  flat tyre  \"}}";
+
+    assertThat(service().resolveServiceGroupKey("sg_1")).isEqualTo("FLAT TYRE");
+  }
+
+  @Test
+  void aNullOrBlankKey_isRefused_itCouldNeverMatchAnything() {
+    body = "{\"service_group\":{\"key\":\" \"}}";
+
+    assertThatThrownBy(() -> service().resolveServiceGroupKey("sg_1"))
+        .isInstanceOf(EntityNotFoundException.class)
+        .hasMessageContaining("no usable key");
+  }
+
   @Test
   void idWithSlashes_isEncodedIntoOneSegment_notTreatedAsAPath() {
     body = "{\"service_group\":{\"key\":\"x\"}}";

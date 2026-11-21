@@ -133,7 +133,7 @@ public class SosServiceImpl implements SosService {
 
   // How long an assigned mechanic may stand still before being asked "are you still coming?"
   // (0 turns the no-show sweep off), and how long they have to answer before the job is released.
-  @Value("${sos.no-show.stalled-minutes:5}")
+  @Value("${sos.no-show.stalled-minutes:15}")
   private int noShowStalledMinutes;
 
   @Value("${sos.no-show.prompt-response-seconds:60}")

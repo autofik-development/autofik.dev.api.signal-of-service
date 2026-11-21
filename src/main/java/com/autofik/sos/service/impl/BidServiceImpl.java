@@ -1,5 +1,6 @@
 package com.autofik.sos.service.impl;
 
+import com.autofik.sos.config.BidPricing;
 import com.autofik.sos.domain.entity.BidSos;
 import com.autofik.sos.domain.entity.Mechanic;
 import com.autofik.sos.domain.entity.SosRequest;
@@ -65,6 +66,7 @@ public class BidServiceImpl implements BidService {
   private final SosEventProducer sosEventProducer; // Publishes asynchronous system events to Kafka
   private final TransactionTemplate transactionTemplate;
   private final SosService sosService;
+  private final BidPricing bidPricing; // Whether bids carry a price (off until money features ship)
   private final SimpMessagingTemplate
       messagingTemplate; // Handles instant WebSocket communication directly to mobile apps
 
@@ -86,6 +88,9 @@ public class BidServiceImpl implements BidService {
 
   @Override
   public BidSosResponse create(CreateBidRequest request) {
+    if (bidPricing.enabled() && request.price() == null) {
+      throw new BadRequestException("price is required");
+    }
     Route route = transactionTemplate.execute(status -> checkBidAllowed(request));
 
     // External call, outside any transaction.
@@ -168,7 +173,10 @@ public class BidServiceImpl implements BidService {
     Mechanic mechanic = loadAvailableMechanic(request.mechanicId());
 
     BidSos.BidSosBuilder bidBuilder =
-        BidSos.builder().price(request.price()).sosRequest(sosRequest).mechanic(mechanic);
+        BidSos.builder()
+            .price(bidPricing.visible(request.price())) // a price sent while off is dropped
+            .sosRequest(sosRequest)
+            .mechanic(mechanic);
     if (info != null) {
       bidBuilder
           .estimatedDistanceM(info.distanceMeters())
@@ -205,7 +213,7 @@ public class BidServiceImpl implements BidService {
             savedBid.getBidId(),
             sosRequest.getSosId(),
             mechanic.getMechanicId(),
-            savedBid.getPrice(),
+            bidPricing.visible(savedBid.getPrice()),
             savedBid.getEstimatedDistanceM(),
             savedBid.getEstimatedDurationS(),
             savedBid.getEstimatedDistanceText(),
@@ -273,7 +281,10 @@ public class BidServiceImpl implements BidService {
     if (sortBy == null) return bids;
 
     // Apply in-memory Stream sorting based on the user's selected preference tab
-    return switch (sortBy) {
+    // With prices off there is nothing to sort by, so the cheapest tab shows the nearest first.
+    BidSortFilter sort =
+        sortBy == BidSortFilter.CHEAPEST && !bidPricing.enabled() ? BidSortFilter.NEAREST : sortBy;
+    return switch (sort) {
       case NEAREST ->
           bids.stream()
               .sorted(
@@ -284,7 +295,10 @@ public class BidServiceImpl implements BidService {
               .toList();
       case CHEAPEST ->
           bids.stream()
-              .sorted(Comparator.comparing(BidSosResponse::price)) // Lowest price tag first
+              .sorted(
+                  Comparator.comparing(
+                      BidSosResponse::price,
+                      Comparator.nullsLast(Comparator.naturalOrder()))) // Lowest price first
               .toList();
       case TOP_RATED ->
           bids.stream()

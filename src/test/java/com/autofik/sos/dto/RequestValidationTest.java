@@ -108,7 +108,7 @@ class RequestValidationTest {
   @Test
   void bid_missingFields() {
     assertThat(bad(new CreateBidRequest(null, null, null)))
-        .containsExactlyInAnyOrder("mechanicId", "sosId", "price");
+        .containsExactlyInAnyOrder("mechanicId", "sosId");
   }
 
   @ParameterizedTest

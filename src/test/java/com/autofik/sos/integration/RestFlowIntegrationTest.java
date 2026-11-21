@@ -98,6 +98,33 @@ class RestFlowIntegrationTest extends FlowTestSupport {
         .isFalse();
   }
 
+  // 20 km is the customer's cap; wider radii are the system's own auto-expand fallback
+  // (resolveStartingRadiusKm / autoExpandAndRebroadcast). A customer asking for more is refused
+  // with an explanation, not a generic "must be less than or equal to 20".
+  @Test
+  void broadcastRadiusAbove20_is400_withAnExplanationOfTheAutomaticWidening() throws Exception {
+    Driver d = newDriver();
+    for (String tooWide : new String[] {"35", "21"}) {
+      HttpResponse<String> r =
+          send(
+              req("/api/v1/sos")
+                  .header("user-context", userContext(d.user().getUserId()))
+                  .header("Content-Type", "application/json")
+                  .POST(HttpRequest.BodyPublishers.ofString(
+                      createBody(d).replace("\"broadcastRadiusKm\":10", "\"broadcastRadiusKm\":" + tooWide))));
+
+      assertThat(r.statusCode()).as("radius %s: %s", tooWide, r.body()).isEqualTo(400);
+      var details = parse(r.body()).get("details");
+      assertThat(details.get("broadcastRadiusKm").asString())
+          .as("radius %s", tooWide)
+          .contains("cannot exceed 20 km")
+          .contains("widens the search radius beyond this automatically");
+      assertThat(redis.hasKey("sos:cooldown:" + d.user().getUserId()))
+          .as("radius %s: a rejected request must not burn the cooldown", tooWide)
+          .isFalse();
+    }
+  }
+
   @Test
   void malformedJson_andWrongContentType_areClientErrors_notServerErrors() throws Exception {
     Driver d = newDriver();

@@ -45,7 +45,8 @@ public class BidSos {
   // errors.
   // precision 10, scale 2 means: max 10 digits total, with 2 digits after the decimal point (e.g.,
   // 99999999.99)
-  @Column(name = "price", nullable = false, precision = 10, scale = 2)
+  // Null while bid prices are switched off (sos.features.bid-price-enabled).
+  @Column(name = "price", precision = 10, scale = 2)
   private BigDecimal price;
 
   // Tracks the state of the bid (e.g., PENDING, ACCEPTED, REJECTED)

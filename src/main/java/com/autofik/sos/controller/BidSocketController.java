@@ -67,7 +67,7 @@ public class BidSocketController {
 
   public record PlaceBid(
       @NotNull UUID sosId,
-      @NotNull @DecimalMin("0.01") BigDecimal price,
+      @DecimalMin("0.01") BigDecimal price, // required only while bid prices are enabled
       @Size(max = 64) String clientMessageId) {}
 
   /** {@code status} is ACCEPTED or REJECTED; CANCELLED is refused by the service. */

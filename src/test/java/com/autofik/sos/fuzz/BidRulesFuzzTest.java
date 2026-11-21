@@ -57,6 +57,9 @@ class BidRulesFuzzTest {
 
   @Mock com.autofik.sos.service.SosService sosService;
 
+  @org.mockito.Spy
+  com.autofik.sos.config.BidPricing bidPricing = new com.autofik.sos.config.BidPricing(true);
+
   @InjectMocks BidServiceImpl bidService;
 
   private AutoCloseable mocks;

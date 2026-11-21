@@ -45,6 +45,7 @@ import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
       VehicleMapperImpl.class,
       MechanicMapperImpl.class,
       BidSosMapperImpl.class,
+      com.autofik.sos.config.BidPricing.class,
       FeedbackMapperImpl.class,
       MechanicSkillMapperImpl.class,
       SosMediaMapperImpl.class,
@@ -187,6 +188,23 @@ class MapperTest {
     assertThat(rs.get(0).status()).isEqualTo(BidStatus.PENDING);
     assertThat(rs.get(0).mechanic().latitude()).isEqualTo(LAT);
     assertThat(rs.get(0).estimatedDistanceM()).isEqualTo(1200L);
+  }
+
+  @Test
+  void bid_priceIsHiddenWhileThePriceFlagIsOff() {
+    BidSos bid =
+        BidSos.builder()
+            .bidId(UUID.randomUUID())
+            .price(new BigDecimal("25.00"))
+            .mechanic(mechanic())
+            .build();
+    var off = new BidSosMapperImpl();
+    org.springframework.test.util.ReflectionTestUtils.setField(
+        off, "mechanicMapper", mechanicMapper);
+    org.springframework.test.util.ReflectionTestUtils.setField(
+        off, "bidPricing", new com.autofik.sos.config.BidPricing(false));
+
+    assertThat(off.toResponse(bid).price()).isNull();
   }
 
   @Test

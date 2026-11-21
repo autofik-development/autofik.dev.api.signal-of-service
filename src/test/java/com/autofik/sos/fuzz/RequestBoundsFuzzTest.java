@@ -93,7 +93,7 @@ class RequestBoundsFuzzTest {
   void bidPrice_isValidFromOneCent(@ForAll("prices") BigDecimal price) {
     CreateBidRequest r = new CreateBidRequest(UUID.randomUUID(), UUID.randomUUID(), price);
 
-    boolean valid = price != null && price.compareTo(new BigDecimal("0.01")) >= 0;
+    boolean valid = price == null || price.compareTo(new BigDecimal("0.01")) >= 0;
 
     assertThat(invalidFields(r).contains("price")).as("price=%s", price).isEqualTo(!valid);
   }

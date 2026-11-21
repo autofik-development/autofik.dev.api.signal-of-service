@@ -207,7 +207,7 @@ sos:
     # An assigned mechanic who has not moved for this many minutes is asked "are you still coming?".
     # 0 turns the sweep off. Needs the mobile app to show the question (frame STILL_COMING_CHECK)
     # and answer it with PATCH /sos/{id}/still-coming or /sos/{id}/mechanic-release.
-    stalled-minutes: ${SOS_NO_SHOW_STALLED_MINUTES:5}
+    stalled-minutes: ${SOS_NO_SHOW_STALLED_MINUTES:15}
     # How long they have to answer before the job is released and offered to someone else.
     prompt-response-seconds: ${SOS_NO_SHOW_PROMPT_RESPONSE_SECONDS:60}
     # How often the check runs.
@@ -273,6 +273,11 @@ sos:
     max-photos: ${SOS_BROADCAST_MAX_PHOTOS:3}
     # Starting radius (km) when the customer doesn't set broadcastRadiusKm.
     default-km: ${SOS_DEFAULT_BROADCAST_KM:15}
+  features:
+    # false: bids carry no price. A price sent by a client is dropped and a stored one is never
+    # returned or published, so this is safe to turn back off. true: price is required on a bid.
+    # Turn on when money features release. Needs a restart.
+    bid-price-enabled: ${SOS_FEATURE_BID_PRICE_ENABLED}
   gateway:
     # The secret only the internal gateway knows, sent on every request in this header. Blank
     # turns the check off (local runs, tests); set it in every deployed environment, because

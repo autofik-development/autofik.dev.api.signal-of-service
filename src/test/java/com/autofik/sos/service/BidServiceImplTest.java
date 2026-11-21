@@ -70,6 +70,9 @@ class BidServiceImplTest {
 
   @Mock com.autofik.sos.service.SosService sosService;
 
+  @org.mockito.Spy
+  com.autofik.sos.config.BidPricing bidPricing = new com.autofik.sos.config.BidPricing(true);
+
   @InjectMocks BidServiceImpl bidService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -188,6 +191,48 @@ class BidServiceImplTest {
     assertThat(event.sosId()).isEqualTo(sosId);
     assertThat(event.mechanicId()).isEqualTo(mechanicId);
     assertThat(event.price()).isEqualTo(BigDecimal.valueOf(500));
+  }
+
+  @Test
+  void create_priceOn_missingPrice_isRejected() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> bidService.create(new CreateBidRequest(mechanicId, sosId, null)))
+        .isInstanceOf(com.autofik.sos.exception.BadRequestException.class)
+        .hasMessageContaining("price");
+    verify(bidSosRepository, org.mockito.Mockito.never()).save(any());
+  }
+
+  @Test
+  void create_priceOff_dropsTheSentPriceAndPublishesNone() {
+    org.springframework.test.util.ReflectionTestUtils.setField(
+        bidService, "bidPricing", new com.autofik.sos.config.BidPricing(false));
+    BidSos stored = BidSos.builder().bidId(bidId).sosRequest(pendingSos).mechanic(mechanic).build();
+    when(sosRequestRepository.findById(sosId)).thenReturn(Optional.of(pendingSos));
+    when(mechanicRepository.findById(mechanicId)).thenReturn(Optional.of(mechanic));
+    when(bidSosRepository.save(any(BidSos.class))).thenReturn(stored);
+    when(bidSosMapper.toResponse(stored)).thenReturn(bidResponse);
+
+    // No price is fine, and one sent anyway is ignored.
+    bidService.create(new CreateBidRequest(mechanicId, sosId, null));
+    bidService.create(new CreateBidRequest(mechanicId, sosId, BigDecimal.valueOf(500)));
+
+    ArgumentCaptor<BidSos> saved = ArgumentCaptor.forClass(BidSos.class);
+    verify(bidSosRepository, org.mockito.Mockito.times(2)).save(saved.capture());
+    assertThat(saved.getAllValues()).allSatisfy(b -> assertThat(b.getPrice()).isNull());
+    ArgumentCaptor<BidCreatedEvent> event = ArgumentCaptor.forClass(BidCreatedEvent.class);
+    verify(sosEventProducer, org.mockito.Mockito.times(2)).publishBidCreated(event.capture());
+    assertThat(event.getAllValues()).allSatisfy(e -> assertThat(e.price()).isNull());
+  }
+
+  @Test
+  void getBySosRequest_cheapest_priceOff_fallsBackToNearest() {
+    org.springframework.test.util.ReflectionTestUtils.setField(
+        bidService, "bidPricing", new com.autofik.sos.config.BidPricing(false));
+    BidSosResponse far = sortable(1, 900L, null, false);
+    BidSosResponse near = sortable(2, 100L, null, false);
+
+    assertThat(sorted(com.autofik.sos.domain.enums.BidSortFilter.CHEAPEST, List.of(far, near)))
+        .containsExactly(near, far);
   }
 
   @Test

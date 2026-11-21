@@ -88,7 +88,17 @@ public class MedusaServiceImpl implements MedusaService {
         throw new EntityNotFoundException("Service group not found: " + serviceGroupId);
       }
 
-      return response.serviceGroup().key().toUpperCase();
+      // The key is a dispatch vocabulary token: mechanic skill tags are stored trim +
+      // toUpperCase(Locale.ROOT) (MechanicServiceImpl.normalizeTags), so the key must be
+      // normalized the same way or the exact-match tag query can never hit. Locale.ROOT (not the
+      // JVM default) keeps the casing stable whatever locale the server runs under; a null or
+      // blank key can never match anything, so it is refused here rather than dispatching on it.
+      String key = response.serviceGroup().key();
+      if (key == null || key.isBlank()) {
+        log.warn("Medusa service group '{}' carries no usable key; refusing to dispatch on it", serviceGroupId);
+        throw new EntityNotFoundException("Service group has no usable key: " + serviceGroupId);
+      }
+      return key.trim().toUpperCase(java.util.Locale.ROOT);
     } catch (HttpClientErrorException.NotFound e) {
       // Explicit 404 from external API map nicely to domestic entity misses
       throw new EntityNotFoundException("Service group not found: " + serviceGroupId);

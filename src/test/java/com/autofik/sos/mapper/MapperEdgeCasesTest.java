@@ -126,6 +126,8 @@ class MapperEdgeCasesTest {
     assertThat(historyMapper.toResponseList(List.of(history))).hasSize(1);
     var bidMapper = new BidSosMapperImpl();
     ReflectionTestUtils.setField(bidMapper, "mechanicMapper", mechanics);
+    ReflectionTestUtils.setField(
+        bidMapper, "bidPricing", new com.autofik.sos.config.BidPricing(true));
     assertThat(bidMapper.toResponseList(List.of(bid))).hasSize(1);
   }
 
