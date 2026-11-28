@@ -1034,7 +1034,9 @@ public class SosServiceImpl implements SosService {
       if (history.getToStatus() == SosStatus.COMPLETED) {
         sos.setJobCompletedAt(LocalDateTime.now());
         UUID customerId = sos.getUser().getUserId();
-        AfterCommit.run(() -> billingTokenCutter.consumeAsync(sos.getSosId(), customerId));
+        UUID workedBy = history.getProposedBy().getMechanicId();
+        AfterCommit.run(
+            () -> billingTokenCutter.consumeAsync(sos.getSosId(), customerId, workedBy));
       }
       sosRequestRepository.save(sos);
       routeEtaService.clear(sos.getSosId()); // COMPLETED — no drive left to count down

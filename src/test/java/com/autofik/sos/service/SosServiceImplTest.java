@@ -1177,7 +1177,7 @@ class SosServiceImplTest {
     assertThat(h.getApprovedBy()).as("approved by the system, not a person").isNull();
     assertThat(h.getApproveAt()).isNotNull();
     assertThat(sos.getStatus()).isEqualTo(SosStatus.COMPLETED);
-    verify(billingTokenCutter).consumeAsync(any(), any());
+    verify(billingTokenCutter).consumeAsync(any(), notNull(), notNull());
     assertThat(sos.getJobCompletedAt()).isNotNull();
     verify(sosEventProducer).publishStatusUpdated(any());
     verify(messagingTemplate)
@@ -1896,7 +1896,7 @@ class SosServiceImplTest {
     verify(sosEventProducer, times(2)).publishNotification(any(SosNotificationEvent.class));
     assertThat(inProgressSos.getStatus()).isEqualTo(SosStatus.COMPLETED);
     assertThat(inProgressSos.getJobCompletedAt()).isNotNull();
-    verify(billingTokenCutter).consumeAsync(eq(inProgressSos.getSosId()), any());
+    verify(billingTokenCutter).consumeAsync(eq(inProgressSos.getSosId()), notNull(), notNull());
   }
 
   // ── IN_PROGRESS lifecycle ────────────────────────────────────────────────

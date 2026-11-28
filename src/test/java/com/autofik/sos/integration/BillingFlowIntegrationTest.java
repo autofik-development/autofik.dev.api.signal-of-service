@@ -240,7 +240,7 @@ class BillingFlowIntegrationTest extends FlowTestSupport {
   // ── completion ─────────────────────────────────────────────────────────────
 
   @Test
-  void completingTheJob_cutsExactlyOneToken_withTheSosIdAsRequestId() throws Exception {
+  void completingTheJob_cutsOneTokenFromTheCustomerAndOneFromTheMechanic() throws Exception {
     Driver d = newDriver();
     Mechanic m = skilledMechanic(SOS_LAT, SOS_LNG, PROBLEM_TYPE);
     UUID sosId = createSosOk(d);
@@ -248,15 +248,24 @@ class BillingFlowIntegrationTest extends FlowTestSupport {
 
     completeJob(d, m, sosId);
 
-    awaitConsumes(1);
-    Call cut = consumes().get(0);
-    assertThat(cut.method()).isEqualTo("POST");
-    assertThat(cut.key()).isEqualTo(KEY);
-    assertThat(parse(cut.body()).get("userId").asString())
+    awaitConsumes(2);
+    assertThat(consumes()).allSatisfy(c -> assertThat(c.key()).isEqualTo(KEY));
+    assertThat(consumes()).allSatisfy(c -> assertThat(c.method()).isEqualTo("POST"));
+    Call customer = cutFor(sosId + ":customer");
+    assertThat(parse(customer.body()).get("userId").asString())
         .isEqualTo(d.user().getUserId().toString());
-    assertThat(parse(cut.body()).get("requestId").asString()).isEqualTo(sosId.toString());
-    assertThat(parse(cut.body()).get("userRole").asString()).isEqualTo("USER");
+    assertThat(parse(customer.body()).get("userRole").asString()).isEqualTo("USER");
+    Call mechanic = cutFor(sosId + ":mechanic");
+    assertThat(parse(mechanic.body()).get("userId").asString())
+        .isEqualTo(m.getMechanicId().toString());
     assertThat(sosStatus(d, sosId)).isEqualTo("COMPLETED");
+  }
+
+  private static Call cutFor(String requestId) {
+    return consumes().stream()
+        .filter(c -> parse(c.body()).get("requestId").asString().equals(requestId))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("no token cut for " + requestId));
   }
 
   @Test
@@ -268,10 +277,11 @@ class BillingFlowIntegrationTest extends FlowTestSupport {
 
     completeJob(d, m, sosId);
 
-    awaitConsumes(2);
+    // Two cuts, and the one that got the 500 is tried again: three calls, two distinct ids.
+    awaitConsumes(3);
     assertThat(consumes())
         .extracting(c -> parse(c.body()).get("requestId").asString())
-        .containsOnly(sosId.toString());
+        .containsOnly(sosId + ":customer", sosId + ":mechanic");
     assertThat(sosStatus(d, sosId)).isEqualTo("COMPLETED");
   }
 
