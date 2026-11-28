@@ -48,18 +48,18 @@ public class KafkaConfig {
   public static final String TOPIC_SOS_MEDIA_UPLOADED = "sos.media.uploaded";
 
   // Partitions per app-managed topic; caps consumer parallelism per topic.
-  @Value("${kafka.topic.partitions:3}")
+  @Value("${kafka.topic.partitions}")
   private int partitionCount;
 
   // 1 is correct only for this repo's single-broker dev Kafka (see CLAUDE.md) — a multi-broker
   // SIT/prod cluster needs 3 for real durability. Configurable per-environment so this doesn't
   // require a code change (and a redeploy) to fix when SIT/prod Kafka stops being single-broker.
-  @Value("${kafka.topic.replication-factor:1}")
+  @Value("${kafka.topic.replication-factor}")
   private short replicationFactor;
 
   // Push notifications make one blocking OneSignal call per record; one consumer thread drained a
   // burst of SOS fan-out at ~3 messages/s. Keep at or below the partition count.
-  @Value("${kafka.consumer.notification-concurrency:3}")
+  @Value("${kafka.consumer.notification-concurrency}")
   private int notificationConcurrency;
 
   private final KafkaProperties kafkaProperties;

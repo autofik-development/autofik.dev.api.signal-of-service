@@ -77,7 +77,8 @@ public class UserProfileSync {
         || ctx == null
         || (ctx.profile() == null
             && ctx.phoneNumber() == null
-            && (ctx.vehicles() == null || ctx.vehicles().isEmpty()))) {
+            && (ctx.vehicles() == null || ctx.vehicles().isEmpty())
+            && ctx.role() == null)) {
       return;
     }
     try {
@@ -102,6 +103,10 @@ public class UserProfileSync {
   private void apply(UUID userId, Snapshot s) {
     User user = userRepository.findById(userId).orElse(null);
     if (user == null) {
+      // Identity-only header (the gateway dropped the profile): a role alone never creates a row.
+      if (s.identityOnly) {
+        return;
+      }
       // A bad SSO or gateway release must not block an emergency: create the row with stand-ins
       // and let the real values replace them on a later request (the update branch below).
       if (s.name == null || s.phone == null) {
@@ -116,7 +121,13 @@ public class UserProfileSync {
       }
       user =
           userRepository.save(
-              User.builder().userId(userId).name(name).phone(phone).profileImage(s.image).build());
+              User.builder()
+                  .userId(userId)
+                  .name(name)
+                  .phone(phone)
+                  .profileImage(s.image)
+                  .role(s.ssoRole)
+                  .build());
       log.info("Created driver {} from the gateway profile", userId);
     } else {
       boolean changed = false;
@@ -131,6 +142,10 @@ public class UserProfileSync {
       }
       if (s.image != null && !s.image.equals(user.getProfileImage())) {
         user.setProfileImage(s.image);
+        changed = true;
+      }
+      if (s.ssoRole != null && !s.ssoRole.equals(user.getRole())) {
+        user.setRole(s.ssoRole);
         changed = true;
       }
       if (changed) {
@@ -224,15 +239,22 @@ public class UserProfileSync {
     String name;
     String phone;
     String image;
+    String ssoRole; // the raw SSO account type, upper-cased (for example GARAGE, CUSTOMER)
+    boolean identityOnly; // no profile, phone or vehicles: the header carries only the role
     List<VehicleSnap> vehicles = List.of();
 
     static Snapshot of(UserContext.User ctx) {
       Snapshot s = new Snapshot();
+      s.ssoRole = MechanicProfileSync.ssoRole(ctx.role());
       if (ctx.profile() != null) {
         s.name = MechanicProfileSync.bounded("username", ctx.profile().username(), MAX_NAME);
         s.image = MechanicProfileSync.imageUrl("profileImage", ctx.profile().profileImage());
       }
       s.phone = MechanicProfileSync.bounded("phoneNumber", ctx.phoneNumber(), MAX_PHONE);
+      s.identityOnly =
+          ctx.profile() == null
+              && ctx.phoneNumber() == null
+              && (ctx.vehicles() == null || ctx.vehicles().isEmpty());
       if (ctx.vehicles() != null) {
         s.vehicles =
             ctx.vehicles().stream()
@@ -275,7 +297,13 @@ public class UserProfileSync {
 
     String fingerprint() {
       StringBuilder sb = new StringBuilder();
-      sb.append(name).append('|').append(phone).append('|').append(image);
+      sb.append(name)
+          .append('|')
+          .append(phone)
+          .append('|')
+          .append(image)
+          .append('|')
+          .append(ssoRole);
       for (VehicleSnap v : vehicles) {
         sb.append('|').append(v);
       }

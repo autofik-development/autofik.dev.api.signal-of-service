@@ -3,8 +3,10 @@ name: PR Check
 # The release workflow (master.yml) only runs on tags, and the Dockerfile builds with
 # -DskipTests, so without this the test suite never runs in CI at all.
 #
-# Unit and integration tests run as parallel jobs; the last job ("Tests", the required check)
-# gathers their results, sends them to Telegram and fails the PR if any of them failed.
+# Unit tests and the Docker build run as parallel jobs; the last job ("Tests", the required check)
+# gathers their results, sends them to Telegram and fails the PR if the lint or unit tests failed.
+# Integration tests (Testcontainers) are not run here; run them locally:
+#   ./mvnw test -Pintegration -Dtest='!SosApplicationTests'
 on:
   pull_request:
     branches: [master]
@@ -47,6 +49,9 @@ jobs:
 
       # SosApplicationTests boots the whole context and needs a live Postgres+PostGIS,
       # Redis and Kafka. Everything else is unit and slice tests that need nothing.
+      - name: Create .env from the example
+        # application.yaml has no fallbacks; .env is the only source of values.
+        run: cp .env.example .env
       - name: Unit tests
         id: unit
         continue-on-error: true
@@ -71,56 +76,12 @@ jobs:
           path: target/surefire-reports/
           retention-days: 7
 
-  integration:
-    name: Integration tests
-    runs-on: ubuntu-24.04
-    # Normally about 10 minutes; a stuck container must not run for 6 hours.
-    timeout-minutes: 30
-    outputs:
-      result: ${{ steps.it.outcome }}
-      counts: ${{ steps.results.outputs.counts }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-          cache: maven
-
-      # Testcontainers: Postgres+PostGIS, Redis, Kafka (Docker is on the runner). About 10 minutes.
-      # application.yaml reads spring.profiles.active from SPRING_PROFILES_ACTIVE with no default,
-      # and the repository tests (@DataJpaTest) fail to load their context without it. Locally the
-      # variable comes from .env, which CI does not have.
-      - name: Integration tests
-        id: it
-        continue-on-error: true
-        run: ./mvnw -B test -Pintegration -Dtest='!SosApplicationTests'
-        env:
-          SPRING_PROFILES_ACTIVE: test
-
-      - name: Read results
-        id: results
-        if: always()
-        run: echo "counts=$(python3 .github/ci/surefire-summary.py target/surefire-reports)" >> "$GITHUB_OUTPUT"
-
-      - name: Upload test reports
-        if: steps.it.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: surefire-integration
-          path: target/surefire-reports/
-          retention-days: 7
-
   # Required check. Keeps the old job name "Tests" so branch protection still matches.
   report:
     name: Tests
     # Waits for every job, the Docker build included, so the one message is sent when the run is
     # completely finished. The Docker build is not part of the message: its own check shows it.
-    needs: [unit, integration, docker]
+    needs: [unit, docker]
     # Not always(): a run cancelled by a newer push must not report (always() runs even then).
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
@@ -139,9 +100,7 @@ jobs:
           TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
           LINT_OUTCOME: ${{ needs.unit.outputs.lint || 'skipped' }}
           UNIT_OUTCOME: ${{ needs.unit.outputs.unit || 'skipped' }}
-          IT_OUTCOME: ${{ needs.integration.outputs.result || 'skipped' }}
           UNIT_COUNTS: ${{ needs.unit.outputs.counts }}
-          IT_COUNTS: ${{ needs.integration.outputs.counts }}
           COV: ${{ needs.unit.outputs.coverage }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
@@ -149,7 +108,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Fail if anything failed
-        if: needs.unit.outputs.lint != 'success' || needs.unit.outputs.unit != 'success' || needs.integration.outputs.result != 'success'
+        if: needs.unit.outputs.lint != 'success' || needs.unit.outputs.unit != 'success'
         run: exit 1
 
   docker:

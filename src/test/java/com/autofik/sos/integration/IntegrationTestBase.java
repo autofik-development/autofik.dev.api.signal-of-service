@@ -148,6 +148,9 @@ public abstract class IntegrationTestBase {
     // WebSocket handshake on for local work. Tests must run with the real handshake, and the
     // app refuses to start with that flag outside the dev profile.
     r.add("websocket.dev-insecure-handshake", () -> "false");
+    // The no-show tests stand a mechanic still for ten minutes; pin the threshold below that so a
+    // change to the deployed default does not move them.
+    r.add("SOS_NO_SHOW_STALLED_MINUTES", () -> "5");
     r.add("DB_POOL_MAX", () -> String.valueOf(DB_POOL_MAX));
     r.add("DB_POOL_MIN_IDLE", () -> "1");
     r.add("DB_CONNECTION_TIMEOUT_MS", () -> "2000");

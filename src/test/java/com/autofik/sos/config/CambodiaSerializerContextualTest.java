@@ -30,4 +30,12 @@ class CambodiaSerializerContextualTest {
     String json = mapper.writeValueAsString(new Localised(LocalDateTime.of(2026, 1, 2, 3, 4, 5)));
     assertThat(json).contains("Jan");
   }
+
+  record PatternOnly(@JsonFormat(pattern = "MMM") LocalDateTime at) {}
+
+  @Test
+  void aPatternWithoutALocale_usesEnglish() {
+    String json = mapper.writeValueAsString(new PatternOnly(LocalDateTime.of(2026, 1, 2, 3, 4, 5)));
+    assertThat(json).contains("Jan");
+  }
 }

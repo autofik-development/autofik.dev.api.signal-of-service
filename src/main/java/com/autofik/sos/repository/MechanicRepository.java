@@ -236,4 +236,20 @@ public interface MechanicRepository extends JpaRepository<Mechanic, UUID> {
   @EntityGraph(attributePaths = "rate")
   @Query("SELECT m FROM Mechanic m WHERE m.mechanicId IN :ids")
   List<Mechanic> findAllWithRateById(@Param("ids") List<UUID> ids);
+
+  /** Saves billing's plan for this account. Returns the rows changed: 0 means no such row. */
+  @Transactional
+  @Modifying
+  @Query(
+      "UPDATE Mechanic e SET e.billingId = :billingId, e.planId = :planId, e.planTier = :tier,"
+          + " e.planExpired = :expired, e.planCanUse = :canUse, e.planCheckedAt = :checkedAt"
+          + " WHERE e.mechanicId = :id")
+  int updatePlan(
+      @Param("id") UUID id,
+      @Param("billingId") String billingId,
+      @Param("planId") String planId,
+      @Param("tier") String tier,
+      @Param("expired") Boolean expired,
+      @Param("canUse") Boolean canUse,
+      @Param("checkedAt") java.time.LocalDateTime checkedAt);
 }

@@ -69,21 +69,21 @@ import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignReques
 public class SosMediaServiceImpl implements SosMediaService {
 
   // Strict upload file size ceiling. Same env var drives spring.servlet.multipart limits.
-  @Value("${sos.media.max-upload-mb:10}")
+  @Value("${sos.media.max-upload-mb}")
   private long maxUploadMb;
 
   // Target maximum dimension bounding box for resized images — sized for mobile
   // viewing, not print/zoom detail
-  @Value("${sos.media.max-image-dimension:1280}")
+  @Value("${sos.media.max-image-dimension}")
   private int maxImageDimension;
 
   // Hard ceiling on source pixel dimensions, checked before decode. Guards against
   // decompression-bomb uploads (small file, huge declared dimensions) exhausting memory.
-  @Value("${sos.media.max-source-dimension:8000}")
+  @Value("${sos.media.max-source-dimension}")
   private int maxSourceDimension;
 
   // JPEG compression quality (0.0-1.0) balancing clarity and bandwidth efficiency
-  @Value("${sos.media.jpeg-quality:0.80}")
+  @Value("${sos.media.jpeg-quality}")
   private double jpegQuality;
 
   // Strict whitelist of permitted MIME types mapped to their uniform extensions
@@ -109,15 +109,15 @@ public class SosMediaServiceImpl implements SosMediaService {
 
   // Photos attached to the fan-out payload sent to every nearby mechanic
   // Presigned URL expiration window. Broadcast photo links stop working after this.
-  @Value("${aws.s3.presign-ttl-minutes:15}")
+  @Value("${aws.s3.presign-ttl-minutes}")
   private int presignTtlMinutes;
 
-  @Value("${sos.broadcast.max-photos:3}")
+  @Value("${sos.broadcast.max-photos}")
   private int maxBroadcastPhotos;
 
   // Photos kept per ticket. ponytail: counted before the insert, so two uploads at the same moment
   // can overshoot by one; a lock on the ticket row if that ever matters.
-  @Value("${sos.media.max-per-sos:10}")
+  @Value("${sos.media.max-per-sos}")
   private int maxPerSos;
 
   // Photos decoded at once. A photo may be up to maxSourceDimension squared pixels (~256 MB at the
@@ -130,7 +130,7 @@ public class SosMediaServiceImpl implements SosMediaService {
   // instead of piling up request threads.
   private static final long DECODE_WAIT_MS = 2000;
 
-  @Value("${sos.media.max-concurrent-decodes:2}")
+  @Value("${sos.media.max-concurrent-decodes}")
   public void setMaxConcurrentDecodes(int permits) {
     decodeSlots = new Semaphore(permits);
   }

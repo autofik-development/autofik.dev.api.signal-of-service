@@ -84,6 +84,8 @@ class SosServiceImplTest {
   @Mock org.springframework.beans.factory.ObjectProvider<SosMediaService> sosMediaService;
   @Mock SosMediaService sosMediaServiceBean;
 
+  @Mock com.autofik.sos.service.impl.BillingGate billingGate;
+  @Mock com.autofik.sos.service.impl.BillingTokenCutter billingTokenCutter;
   @InjectMocks SosServiceImpl sosService;
 
   private static final GeometryFactory GEO = new GeometryFactory(new PrecisionModel(), 4326);
@@ -598,6 +600,26 @@ class SosServiceImplTest {
   }
 
   @Test
+  void create_whenBillingRefuses_releasesTheCooldown_andNeverReachesMedusa() {
+    when(sosRequestRepository.existsByUserUserIdAndStatusIn(eq(userId), any())).thenReturn(false);
+    when(redisTemplate.opsForValue()).thenReturn(valueOps);
+    when(valueOps.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
+    org.mockito.Mockito.doThrow(
+            new com.autofik.sos.exception.PlanRequiredException(
+                com.autofik.sos.exception.PlanRequiredException.Reason.NO_TOKENS))
+        .when(billingGate)
+        .requireCustomer(userId);
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7, 100.5, vehicleId, null);
+
+    assertThatThrownBy(() -> sosService.create(request))
+        .isInstanceOf(com.autofik.sos.exception.PlanRequiredException.class);
+
+    verify(redisTemplate).delete(endsWith(userId.toString()));
+    verify(medusaService, never()).resolveServiceGroupKey(any());
+  }
+
+  @Test
   void create_whenTheTicketCannotBeSaved_releasesTheCooldown() {
     stubCreateGuards();
     when(ssoProjection.user(userId)).thenThrow(new EntityNotFoundException("User not found"));
@@ -955,6 +977,37 @@ class SosServiceImplTest {
             argThat((SosNotificationEvent e) -> e.estimate() == null));
   }
 
+  // The offer reads the customer block (name, phone, vehicle) from the ticket; a vehicle without a
+  // fuel type still goes out.
+  @Test
+  void create_offerCarriesTheCustomerBlockFromTheTicket() {
+    stubCreateGuards();
+    CreateSosRequest request =
+        new CreateSosRequest(userId, serviceGroupId, null, 13.7563, 100.5018, vehicleId, null);
+    when(ssoProjection.user(userId)).thenReturn(user);
+    when(ssoProjection.vehicle(vehicleId, user)).thenReturn(vehicle);
+    when(mechanicRepository.findByH3CellsAndSkillTag(any(), any(), any()))
+        .thenReturn(ids(mechanic));
+    when(mechanicRepository.filterByRadiusAndBroadcast(
+            any(), anyDouble(), anyDouble(), anyDouble()))
+        .thenReturn(ids(mechanic));
+    when(sosRequestRepository.findWithCustomerBySosId(sosId)).thenReturn(Optional.of(pendingSos));
+    when(googleMapsService.getDistanceInfos(any(), any())).thenReturn(null);
+    stubSaveAssignsSosId();
+    when(googleMapsService.reverseGeocode(anyDouble(), anyDouble())).thenReturn(null);
+    when(sosMapper.toResponse(any(SosRequest.class))).thenReturn(sosResponse);
+
+    sosService.create(request);
+
+    verify(messagingTemplate)
+        .convertAndSendToUser(
+            eq(mechanicId.toString()),
+            eq("/queue/sos-new-request"),
+            argThat(
+                (SosNotificationEvent e) ->
+                    e.customer() != null && "Alice".equals(e.customer().name())));
+  }
+
   @Test
   void create_offerEstimate_mechanicAlreadyOffered_reusesStoredEstimateAndSkipsGoogle() {
     stubCreateGuards();
@@ -1124,6 +1177,7 @@ class SosServiceImplTest {
     assertThat(h.getApprovedBy()).as("approved by the system, not a person").isNull();
     assertThat(h.getApproveAt()).isNotNull();
     assertThat(sos.getStatus()).isEqualTo(SosStatus.COMPLETED);
+    verify(billingTokenCutter).consumeAsync(any(), notNull(), notNull());
     assertThat(sos.getJobCompletedAt()).isNotNull();
     verify(sosEventProducer).publishStatusUpdated(any());
     verify(messagingTemplate)
@@ -1842,6 +1896,7 @@ class SosServiceImplTest {
     verify(sosEventProducer, times(2)).publishNotification(any(SosNotificationEvent.class));
     assertThat(inProgressSos.getStatus()).isEqualTo(SosStatus.COMPLETED);
     assertThat(inProgressSos.getJobCompletedAt()).isNotNull();
+    verify(billingTokenCutter).consumeAsync(eq(inProgressSos.getSosId()), notNull(), notNull());
   }
 
   // ── IN_PROGRESS lifecycle ────────────────────────────────────────────────

@@ -40,8 +40,8 @@ public class GatewaySecretFilter extends OncePerRequestFilter {
   private final Environment environment;
 
   public GatewaySecretFilter(
-      @Value("${sos.gateway.header:X-Edge-Auth}") String headerName,
-      @Value("${sos.gateway.secret:}") String secret,
+      @Value("${sos.gateway.header}") String headerName,
+      @Value("${sos.gateway.secret}") String secret,
       AuthErrorResponder errorResponder,
       Environment environment) {
     this.headerName = headerName;

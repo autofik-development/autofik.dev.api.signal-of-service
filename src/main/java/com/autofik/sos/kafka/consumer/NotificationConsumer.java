@@ -43,8 +43,8 @@ public class NotificationConsumer {
   @Autowired
   public NotificationConsumer(
       OneSignalService oneSignalService,
-      @Value("${onesignal.push-threads:32}") int pushThreads,
-      @Value("${onesignal.push-queue-capacity:1000}") int queueCapacity) {
+      @Value("${onesignal.push-threads}") int pushThreads,
+      @Value("${onesignal.push-queue-capacity}") int queueCapacity) {
     this.oneSignalService = oneSignalService;
     ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
     pool.setThreadNamePrefix("onesignal-push-");

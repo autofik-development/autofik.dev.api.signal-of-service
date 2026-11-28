@@ -38,7 +38,7 @@ public class Mechanic {
   @ToString.Include
   private UUID mechanicId;
 
-  @Column(name = "full_name", length = 30, nullable = false)
+  @Column(name = "full_name", length = 100, nullable = false)
   @ToString.Include
   private String fullName;
 
@@ -46,15 +46,40 @@ public class Mechanic {
   @ToString.Include
   private String phoneNumber;
 
-  @Column(length = 30)
+  @Column(length = 255)
   @ToString.Include
   private String email;
+
+  // SSO account type last seen with (for example GARAGE, MECHANIC), recorded only. Not the same as
+  // mechanicRole, which says how the mechanic works.
+  @Column(length = 20)
+  @ToString.Include
+  private String role;
 
   // under_garage = works at a fixed shop; freeland = mobile/independent.
   @Enumerated(EnumType.STRING)
   @Column(name = "mechanic_role")
   @ToString.Include
   private MechanicRole mechanicRole;
+
+  // Billing's plan as of the last verify (V8). A snapshot; the live verify decides.
+  @Column(name = "billing_id", length = 64)
+  private String billingId;
+
+  @Column(name = "plan_id", length = 64)
+  private String planId;
+
+  @Column(name = "plan_tier", length = 32)
+  private String planTier;
+
+  @Column(name = "plan_expired")
+  private Boolean planExpired;
+
+  @Column(name = "plan_can_use")
+  private Boolean planCanUse;
+
+  @Column(name = "plan_checked_at")
+  private java.time.LocalDateTime planCheckedAt;
 
   // SSO profile photo URL; synced from the gateway profile.
   @Column(name = "profile_image", length = 500)

@@ -50,7 +50,7 @@ public class KafkaTopologyCheck {
 
   private final KafkaAdmin kafkaAdmin;
 
-  @Value("${kafka.topic.replication-factor:1}")
+  @Value("${kafka.topic.replication-factor}")
   private int configuredReplicationFactor;
 
   @EventListener(ApplicationReadyEvent.class)

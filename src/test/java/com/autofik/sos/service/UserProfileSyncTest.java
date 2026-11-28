@@ -80,10 +80,11 @@ class UserProfileSyncTest {
   }
 
   @Test
-  void aHeaderWithNoProfile_touchesNoRepository() {
+  void aHeaderWithNoProfile_createsNothingAndTouchesNoVehicles() {
     sync.sync(id, ctx(null, null, null));
 
-    verifyNoInteractions(users, vehicles);
+    verify(users, never()).save(any(User.class));
+    verifyNoInteractions(vehicles);
   }
 
   @Test

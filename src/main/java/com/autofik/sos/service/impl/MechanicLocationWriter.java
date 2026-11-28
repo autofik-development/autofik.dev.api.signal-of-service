@@ -29,7 +29,7 @@ import org.springframework.stereotype.Component;
 public class MechanicLocationWriter {
 
   // Must stay 7 unless every stored current_h3_index is recomputed — see sos.h3.resolution.
-  @Value("${sos.h3.resolution:7}")
+  @Value("${sos.h3.resolution}")
   private int h3Resolution;
 
   private static final H3Core H3;
@@ -44,11 +44,11 @@ public class MechanicLocationWriter {
 
   private static final String PG_SYNC_KEY_PREFIX = "mechanic:pg-sync:";
 
-  @Value("${sos.location.pg-sync-seconds:10}")
+  @Value("${sos.location.pg-sync-seconds}")
   private int pgSyncSeconds;
 
   // A persisted ping this far from the previous one counts as the mechanic having moved.
-  @Value("${sos.location.moved-threshold-meters:20}")
+  @Value("${sos.location.moved-threshold-meters}")
   private int movedThresholdMeters;
 
   private final MechanicRepository mechanicRepository;

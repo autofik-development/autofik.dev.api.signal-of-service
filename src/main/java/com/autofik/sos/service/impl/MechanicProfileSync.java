@@ -40,8 +40,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Slf4j
 public class MechanicProfileSync {
 
-  private static final int MAX_NAME = 30;
-  private static final int MAX_EMAIL = 30;
+  // Same as the mechanic.full_name and mechanic.email columns (V7); SSO allows at least this much.
+  private static final int MAX_NAME = 100;
+  private static final int MAX_EMAIL = 255;
+  private static final int MAX_ROLE = 20;
   private static final int MAX_PHONE = 20;
   static final int MAX_IMAGE_URL = 500;
   private static final int MAX_TAGS = 30;
@@ -75,7 +77,7 @@ public class MechanicProfileSync {
   public void sync(UUID mechanicId, MechanicContext.Mechanic ctx) {
     if (mechanicId == null
         || ctx == null
-        || (ctx.skillService() == null && ctx.profile() == null)) {
+        || (ctx.skillService() == null && ctx.profile() == null && ctx.role() == null)) {
       return;
     }
     try {
@@ -113,6 +115,7 @@ public class MechanicProfileSync {
                   .email(s.email)
                   .profileImage(s.image)
                   .mechanicRole(s.role)
+                  .role(s.ssoRole)
                   .serviceRadiusKm(s.radiusKm != null ? s.radiusKm : 10)
                   .build());
       log.info("Created mechanic {} from the gateway profile", mechanicId);
@@ -122,6 +125,7 @@ public class MechanicProfileSync {
       if (s.email != null) mechanic.setEmail(s.email);
       if (s.image != null) mechanic.setProfileImage(s.image);
       if (s.role != null) mechanic.setMechanicRole(s.role);
+      if (s.ssoRole != null) mechanic.setRole(s.ssoRole);
       if (s.radiusKm != null) mechanic.setServiceRadiusKm(s.radiusKm);
       mechanicRepository.save(mechanic);
     }
@@ -182,6 +186,19 @@ public class MechanicProfileSync {
     return url;
   }
 
+  /**
+   * Shared with {@link UserProfileSync}: the SSO role as sent, trimmed and upper-cased, or null
+   * when blank or over the column size. Recorded only; nothing in SOS decides on it.
+   */
+  static String ssoRole(String value) {
+    if (value != null && value.isBlank()) {
+      log.warn("Profile role is blank; not stored");
+      return null;
+    }
+    String role = bounded("role", value, MAX_ROLE);
+    return role == null ? null : role.toUpperCase(Locale.ROOT);
+  }
+
   /** Shared with {@link UserProfileSync}: trimmed value, or null when blank or over {@code max}. */
   static String bounded(String field, String value, int max) {
     return Snapshot.bounded(field, value, max);
@@ -194,6 +211,7 @@ public class MechanicProfileSync {
     String email;
     String image;
     MechanicRole role;
+    String ssoRole; // the raw SSO account type, stored as the header sent it (upper-cased)
     Integer radiusKm;
     String[] tags; // null = the header said nothing about tags
     BigDecimal avgRate;
@@ -207,6 +225,7 @@ public class MechanicProfileSync {
       }
       s.phone = bounded("phoneNumber", ctx.phoneNumber(), MAX_PHONE);
       s.role = role(ctx.mechanicType());
+      s.ssoRole = ssoRole(ctx.role());
       if (ctx.skillService() != null) {
         s.radiusKm = radius(ctx.skillService().serviceRadiusKm());
         s.tags = tags(ctx.skillService().skillTag());
@@ -223,6 +242,7 @@ public class MechanicProfileSync {
           Objects.toString(email),
           Objects.toString(image),
           Objects.toString(role),
+          Objects.toString(ssoRole),
           Objects.toString(radiusKm),
           tags == null ? "null" : String.join(",", tags),
           Objects.toString(avgRate));

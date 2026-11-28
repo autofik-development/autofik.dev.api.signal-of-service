@@ -49,6 +49,29 @@ public class User {
   @Column(name = "profile_image", length = 500)
   private String profileImage;
 
+  // SSO account type last seen with (for example USER, CUSTOMER), recorded only.
+  @Column(length = 20)
+  private String role;
+
+  // Billing's plan as of the last verify (V8). A snapshot; the live verify decides.
+  @Column(name = "billing_id", length = 64)
+  private String billingId;
+
+  @Column(name = "plan_id", length = 64)
+  private String planId;
+
+  @Column(name = "plan_tier", length = 32)
+  private String planTier;
+
+  @Column(name = "plan_expired")
+  private Boolean planExpired;
+
+  @Column(name = "plan_can_use")
+  private Boolean planCanUse;
+
+  @Column(name = "plan_checked_at")
+  private java.time.LocalDateTime planCheckedAt;
+
   // Used for referral program tracking; generated at registration.
   @Column(name = "referer_code", unique = true)
   @ToString.Include

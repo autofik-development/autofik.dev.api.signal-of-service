@@ -40,15 +40,15 @@ public class RouteEtaServiceImpl implements RouteEtaService {
   // window per active SOS). Configurable so it can be tuned against the bill without a redeploy;
   // the displayed ETA keeps ticking smoothly between refreshes via interpolate(), so widening
   // this is not user-visible the way it would be on a naive "poll and freeze" implementation.
-  @Value("${sos.eta.refresh-interval-seconds:30}")
+  @Value("${sos.eta.refresh-interval-seconds}")
   private int refreshIntervalSeconds;
 
-  @Value("${sos.geo.earth-radius-m:6371000}")
+  @Value("${sos.geo.earth-radius-m}")
   private double earthRadiusM;
 
   // Outlives the refresh interval so the snapshot is always available to interpolate against;
   // bounded so an abandoned job cannot pin the entry forever.
-  @Value("${sos.eta.cache-ttl-minutes:15}")
+  @Value("${sos.eta.cache-ttl-minutes}")
   private int cacheTtlMinutes;
 
   // The only two states that mean "a mechanic is currently driving toward the customer".

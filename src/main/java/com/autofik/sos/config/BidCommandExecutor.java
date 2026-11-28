@@ -31,8 +31,8 @@ public class BidCommandExecutor implements DisposableBean {
 
   @Autowired
   public BidCommandExecutor(
-      @Value("${websocket.bid-commands.threads:32}") int threads,
-      @Value("${websocket.bid-commands.queue-capacity:200}") int queueCapacity) {
+      @Value("${websocket.bid-commands.threads}") int threads,
+      @Value("${websocket.bid-commands.queue-capacity}") int queueCapacity) {
     AtomicInteger n = new AtomicInteger();
     pool =
         new ThreadPoolExecutor(

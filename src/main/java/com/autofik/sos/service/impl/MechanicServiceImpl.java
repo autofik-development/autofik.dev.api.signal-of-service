@@ -44,12 +44,12 @@ import tools.jackson.databind.ObjectMapper;
 public class MechanicServiceImpl implements MechanicService {
 
   // Must stay 7 unless every stored current_h3_index is recomputed — see sos.h3.resolution.
-  @Value("${sos.h3.resolution:7}")
+  @Value("${sos.h3.resolution}")
   private int h3Resolution;
 
   // Center-to-center distance between adjacent resolution-7 cells ≈ edge × √3 ≈ 2.114 km.
   // Matches the constant in SosServiceImpl so both fan-out and availability use the same formula.
-  @Value("${sos.h3.center-to-center-km:2.114}")
+  @Value("${sos.h3.center-to-center-km}")
   private double h3CenterToCenterKm;
 
   // The service is Cambodia-only — see the coordinate bounds on the controller.

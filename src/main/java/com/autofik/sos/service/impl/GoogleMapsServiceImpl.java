@@ -34,7 +34,7 @@ public class GoogleMapsServiceImpl implements GoogleMapsService {
 
   // Injected by Spring; stays null when the class is built by hand (tests), which counts as
   // enabled.
-  @Value("${google.maps.api-key:}")
+  @Value("${google.maps.api-key}")
   private String apiKey;
 
   // Set by Spring; stays NOOP when the class is built by hand (tests), which records nothing.

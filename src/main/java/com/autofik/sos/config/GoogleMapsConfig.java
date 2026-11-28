@@ -15,16 +15,16 @@ public class GoogleMapsConfig {
 
   // The ':' after the key name sets an empty string as the default, allowing the app
   // to start without a Maps key configured (geocoding will silently return null).
-  @Value("${google.maps.api-key:}")
+  @Value("${google.maps.api-key}")
   private String apiKey;
 
   // Empty in every real environment, so the SDK talks to Google. The load-test stack points it at a
   // WireMock stub so a slow Distance Matrix call can be reproduced without a key or a bill.
-  @Value("${google.maps.base-url:}")
+  @Value("${google.maps.base-url}")
   private String baseUrl;
 
   // Queries per second the SDK allows itself, and the number of calls it lets run at once.
-  @Value("${google.maps.query-rate-limit:50}")
+  @Value("${google.maps.query-rate-limit}")
   private int queryRateLimit;
 
   @Bean

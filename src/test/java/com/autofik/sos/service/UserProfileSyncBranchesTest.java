@@ -93,10 +93,11 @@ class UserProfileSyncBranchesTest {
   }
 
   @Test
-  void aHeaderWithOnlyAnEmptyVehicleList_touchesNothing() {
+  void aHeaderWithOnlyAnEmptyVehicleList_createsNothing() {
     sync.sync(id, ctx(null, null, List.of()));
 
-    verifyNoInteractions(users, vehicles);
+    verify(users, never()).save(any(User.class));
+    verifyNoInteractions(vehicles);
   }
 
   @Test
@@ -112,6 +113,7 @@ class UserProfileSyncBranchesTest {
   @Test
   void anUnchangedNameAndPhone_areNotWritten() {
     User user = existing();
+    user.setRole("USER");
 
     sync.sync(id, ctx("Old Name", "+855111", null));
 

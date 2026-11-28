@@ -75,3 +75,5 @@ reports/
 load-tests/
 __pycache__/
 .10x/
+# Local generated reports and diagrams (pentest, infra, plans)
+output/
