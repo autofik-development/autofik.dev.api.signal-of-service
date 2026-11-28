@@ -110,6 +110,7 @@ class SosStateMachineFuzzTest {
   @Mock ObjectProvider<SosMediaService> sosMediaService;
 
   @Mock com.autofik.sos.service.impl.BillingGate billingGate;
+  @Mock com.autofik.sos.service.impl.BillingTokenCutter billingTokenCutter;
   @InjectMocks SosServiceImpl sosService;
 
   private AutoCloseable mocks;

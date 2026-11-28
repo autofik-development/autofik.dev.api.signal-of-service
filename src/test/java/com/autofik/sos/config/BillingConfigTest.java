@@ -15,6 +15,7 @@ class BillingConfigTest {
     c.setBaseUrl("http://billing");
     c.setServiceKey("k");
     c.setVerifyPath("/internal/billings/verify");
+    c.setConsumePath("/internal/billings/tokens/consume");
     c.setConnectTimeoutMs(2000);
     c.setReadTimeoutMs(3000);
     return c;
@@ -71,5 +72,13 @@ class BillingConfigTest {
     assertThatThrownBy(connect::requireSettingsWhenEnabled)
         .isInstanceOf(IllegalStateException.class);
     assertThatThrownBy(read::requireSettingsWhenEnabled).isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void enabledWithoutAConsumePath_stops() {
+    BillingConfig c = complete();
+    c.setConsumePath("");
+
+    assertThatThrownBy(c::requireSettingsWhenEnabled).isInstanceOf(IllegalStateException.class);
   }
 }

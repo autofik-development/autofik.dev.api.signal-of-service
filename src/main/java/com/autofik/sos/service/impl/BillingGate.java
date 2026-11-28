@@ -29,6 +29,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Slf4j
 public class BillingGate {
 
+  // Billing requires userRole and matches it by family; used while a row has no SSO role yet.
+  private static final String DEFAULT_CUSTOMER_ROLE = "user";
+  private static final String DEFAULT_MECHANIC_ROLE = "mechanic";
+
   private final BillingConfig config;
   private final BillingClient client;
   private final BillingAccessPolicy policy;
@@ -40,7 +44,7 @@ public class BillingGate {
     if (!config.isEnabled()) {
       return;
     }
-    String role = userRepository.findById(userId).map(User::getRole).orElse(null);
+    String role = userRepository.findById(userId).map(User::getRole).orElse(DEFAULT_CUSTOMER_ROLE);
     BillingVerifyResponse.Data plan = verified(userId, role);
     saveQuietly(
         () ->
@@ -59,7 +63,11 @@ public class BillingGate {
     if (!config.isEnabled()) {
       return;
     }
-    String role = mechanicRepository.findById(mechanicId).map(Mechanic::getRole).orElse(null);
+    String role =
+        mechanicRepository
+            .findById(mechanicId)
+            .map(Mechanic::getRole)
+            .orElse(DEFAULT_MECHANIC_ROLE);
     BillingVerifyResponse.Data plan = verified(mechanicId, role);
     saveQuietly(
         () ->

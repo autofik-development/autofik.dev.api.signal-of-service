@@ -30,6 +30,9 @@ public class BillingConfig {
   /** {@code BILLING_VERIFY_PATH}. ponytail: method and path assumed until billing confirms. */
   private String verifyPath;
 
+  /** {@code BILLING_CONSUME_PATH}: POST that cuts one token after the job. */
+  private String consumePath;
+
   /** {@code BILLING_CONNECT_TIMEOUT_MS}. SOS create and bid wait on this call. */
   private int connectTimeoutMs;
 
@@ -54,10 +57,10 @@ public class BillingConfig {
     if (!enabled) {
       return;
     }
-    if (isBlank(baseUrl) || isBlank(serviceKey) || isBlank(verifyPath)) {
+    if (isBlank(baseUrl) || isBlank(serviceKey) || isBlank(verifyPath) || isBlank(consumePath)) {
       throw new IllegalStateException(
           "BILLING_ENABLED is true but BILLING_SERVICE_URL, BILLING_SERVICE_KEY or"
-              + " BILLING_VERIFY_PATH is empty");
+              + " BILLING_VERIFY_PATH or BILLING_CONSUME_PATH is empty");
     }
     if (connectTimeoutMs <= 0 || readTimeoutMs <= 0) {
       throw new IllegalStateException(

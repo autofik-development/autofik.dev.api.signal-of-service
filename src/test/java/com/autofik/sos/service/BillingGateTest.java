@@ -103,7 +103,7 @@ class BillingGateTest {
   void anExpiredPlan_isStillSaved_thenRefused() {
     config.setEnabled(true);
     when(users.findById(id)).thenReturn(Optional.empty());
-    when(client.verify(id, null)).thenReturn(plan(id.toString(), 3, true));
+    when(client.verify(id, "user")).thenReturn(plan(id.toString(), 3, true));
 
     assertThatThrownBy(() -> gate.requireCustomer(id)).isInstanceOf(PlanRequiredException.class);
 
@@ -114,7 +114,7 @@ class BillingGateTest {
   void aNoPlanAnswer_savesNothing() {
     config.setEnabled(true);
     when(users.findById(id)).thenReturn(Optional.empty());
-    when(client.verify(id, null))
+    when(client.verify(id, "user"))
         .thenThrow(new PlanRequiredException(PlanRequiredException.Reason.NO_PLAN));
 
     assertThatThrownBy(() -> gate.requireCustomer(id)).isInstanceOf(PlanRequiredException.class);
@@ -126,7 +126,7 @@ class BillingGateTest {
   void billingDown_isUnavailable() {
     config.setEnabled(true);
     when(users.findById(id)).thenReturn(Optional.empty());
-    when(client.verify(id, null)).thenThrow(new ServiceUnavailableException("down"));
+    when(client.verify(id, "user")).thenThrow(new ServiceUnavailableException("down"));
 
     assertThatThrownBy(() -> gate.requireCustomer(id))
         .isInstanceOf(ServiceUnavailableException.class);
@@ -136,7 +136,7 @@ class BillingGateTest {
   void anAnswerForAnotherAccount_isRefused_andNeverSaved() {
     config.setEnabled(true);
     when(users.findById(id)).thenReturn(Optional.empty());
-    when(client.verify(id, null)).thenReturn(plan(UUID.randomUUID().toString(), 3, false));
+    when(client.verify(id, "user")).thenReturn(plan(UUID.randomUUID().toString(), 3, false));
 
     assertThatThrownBy(() -> gate.requireCustomer(id))
         .isInstanceOf(ServiceUnavailableException.class);
@@ -148,7 +148,7 @@ class BillingGateTest {
   void anAnswerWithoutAUserId_isRefused() {
     config.setEnabled(true);
     when(users.findById(id)).thenReturn(Optional.empty());
-    when(client.verify(id, null)).thenReturn(plan(null, 3, false));
+    when(client.verify(id, "user")).thenReturn(plan(null, 3, false));
 
     assertThatThrownBy(() -> gate.requireCustomer(id))
         .isInstanceOf(ServiceUnavailableException.class);
@@ -158,7 +158,7 @@ class BillingGateTest {
   void aFailedSave_doesNotFailTheRequest() {
     config.setEnabled(true);
     when(users.findById(id)).thenReturn(Optional.empty());
-    when(client.verify(id, null)).thenReturn(plan(id.toString(), 3, false));
+    when(client.verify(id, "user")).thenReturn(plan(id.toString(), 3, false));
     when(users.updatePlan(any(), any(), any(), any(), any(), any(), any()))
         .thenThrow(new IllegalStateException("db"));
 

@@ -237,6 +237,7 @@ public class SosServiceImpl implements SosService {
   private final RouteEtaService routeEtaService;
   private final MedusaService medusaService;
   private final BillingGate billingGate;
+  private final BillingTokenCutter billingTokenCutter;
   private final SosEventProducer sosEventProducer;
   private final SimpMessagingTemplate messagingTemplate;
   private final TaskScheduler taskScheduler;
@@ -1032,6 +1033,8 @@ public class SosServiceImpl implements SosService {
       sos.setStatus(history.getToStatus());
       if (history.getToStatus() == SosStatus.COMPLETED) {
         sos.setJobCompletedAt(LocalDateTime.now());
+        UUID customerId = sos.getUser().getUserId();
+        AfterCommit.run(() -> billingTokenCutter.consumeAsync(sos.getSosId(), customerId));
       }
       sosRequestRepository.save(sos);
       routeEtaService.clear(sos.getSosId()); // COMPLETED — no drive left to count down

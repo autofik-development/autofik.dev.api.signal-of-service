@@ -210,6 +210,7 @@ billing:
   base-url: ${BILLING_SERVICE_URL}
   service-key: ${BILLING_SERVICE_KEY}
   verify-path: ${BILLING_VERIFY_PATH}
+  consume-path: ${BILLING_CONSUME_PATH}
   connect-timeout-ms: ${BILLING_CONNECT_TIMEOUT_MS}
   read-timeout-ms: ${BILLING_READ_TIMEOUT_MS}
   allowed-tiers:
