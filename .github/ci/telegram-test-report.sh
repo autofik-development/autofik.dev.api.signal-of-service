@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sends the PR test result to the Telegram group. Everything comes in through the environment:
 # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_MESSAGE_THREAD_ID (optional), and the
-# LINT/UNIT/IT_OUTCOME, UNIT_*, IT_*, COV values, REPO, BRANCH, ACTOR, RUN_URL set by
+# LINT/UNIT_OUTCOME, UNIT_COUNTS, COV values, REPO, BRANCH, ACTOR, RUN_URL set by
 # pr-check.yml.
 set -u
 
@@ -23,8 +23,7 @@ line() { # label outcome "tests failed skipped"
   fi
 }
 
-if [ "$LINT_OUTCOME" = "success" ] && [ "$UNIT_OUTCOME" = "success" ] \
-  && [ "$IT_OUTCOME" = "success" ]; then
+if [ "$LINT_OUTCOME" = "success" ] && [ "$UNIT_OUTCOME" = "success" ]; then
   title="✅ <b>All Tests Passed</b>"
 else
   title="❌ <b>Tests Failed</b>"
@@ -40,7 +39,6 @@ Triggered by: $(esc "$ACTOR")
 ❌ <b>Lint (spotless):</b> failed"
 text+="
 $(line 'Unit Tests' "$UNIT_OUTCOME" "${UNIT_COUNTS:-}")
-$(line 'Integration Tests' "$IT_OUTCOME" "${IT_COUNTS:-}")
 "
 if [ -n "${COV:-}" ]; then
   read -r lines statements functions branches <<<"$COV"
